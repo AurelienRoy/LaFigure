@@ -563,7 +563,7 @@ caught the mismatch (see bug #6).**
    scene's "double-click deselects everything" handler**
    (`_on_scene_clicked`'s `ev.double()` branch, which doesn't check
    `ev.isAccepted()`). This exact tension already exists for double-
-   clicking a title/axis-label to edit it (see gotcha #5 above) and
+   clicking a title/axis-label to edit it (`editable_text.py`) and
    evidently doesn't cause a practical problem there, so annotation text
    editing reuses the same native-`mouseDoubleClickEvent` pattern rather
    than defending against a coexistence issue that may not be real. If

@@ -39,7 +39,8 @@ pg.setConfigOptions(useOpenGL=False)
 class FakeClickEvent:
     """Duck-types pyqtgraph's MouseClickEvent enough to drive
     _on_scene_clicked() directly, without going through real Qt mouse-event
-    dispatch (unreliable to simulate headlessly -- see HANDOFF.md)."""
+    dispatch (unreliable to simulate headlessly -- see CLAUDE.md, "Headless testing by
+    calling methods directly")."""
 
     def __init__(self, pos, double=False, accepted=False, button=QtCore.Qt.LeftButton,
                  modifiers=QtCore.Qt.NoModifier):
@@ -190,7 +191,8 @@ assert c2.opts['pen'].width() == w2_selected - 3
 # NOTE: _deselect_curve() is called directly here. The real trigger --
 # _on_scene_clicked() reading ev.isAccepted() to tell "clicked a curve" from
 # "clicked empty space" -- goes through pyqtgraph's live mouse-event dispatch,
-# which this harness can't simulate reliably (see HANDOFF.md). Verify that
+# which this harness can't simulate reliably (see CLAUDE.md, "Headless
+# testing by calling methods directly"). Verify that
 # path interactively: click a curve to select it, then click empty canvas
 # and confirm the highlight goes away.
 

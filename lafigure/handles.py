@@ -26,7 +26,8 @@
 
 DragHandle is the shared base: a QGraphicsRectItem using native Qt
 mousePress/Move/ReleaseEvent overrides (not pyqtgraph's own "clickable"
-protocol -- see CLAUDE.md gotcha on that). Subclasses just report drag
+protocol -- see CLAUDE.md, "Native Qt event overrides for custom graphics
+items"). Subclasses just report drag
 deltas/positions to whatever owns them; they don't know how to interpret
 the drag themselves.
 
