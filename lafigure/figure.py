@@ -497,7 +497,6 @@ class LaFigure(QtWidgets.QMainWindow):
             row, col = position
             self.layout_widget.removeItem(plot_item)
         self.plots.remove(plot_item)
-        self._brushers.pop(plot_item, None)
         self._forget_removed_plot(plot_item)
         self._reset_grid_stretch()
         self.registry.notify_subplots_changed(self)
@@ -566,6 +565,7 @@ class LaFigure(QtWidgets.QMainWindow):
     def _forget_removed_plot(self, plot_item):
         """Shared active-plot/active-curve bookkeeping after a plot leaves
         self.plots, regardless of which removal path was used."""
+        self._brushers.pop(plot_item, None)
         if plot_item in self.selected_plots:
             self.selected_plots.remove(plot_item)
         if self.active_plot is plot_item:

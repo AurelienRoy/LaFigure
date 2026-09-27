@@ -664,7 +664,20 @@ def test_add_subplot_is_the_only_subplot_construction_site():
     assert 'def add_subplot' in src  # control: the scan is reading the right file
 
 
+def test_undoing_fft_drops_its_brusher():
+    f = m.LaFigure()
+    f._on_plot_clicked(f.plots[0])
+    f.fft_below()
+    fft_plot = f.plots[-1]
+    assert fft_plot in f._brushers  # control: the FFT subplot really got a brusher
+    f.undo()
+    assert fft_plot not in f.plots
+    assert set(f._brushers) <= set(f.plots), "a removed subplot's RectBrush must not linger"
+    f.close()
+
+
 for _test in (
+    test_undoing_fft_drops_its_brusher,
     test_new_subplot_adopts_link_x,
     test_link_x_survives_deleting_the_reference_subplot,
     test_new_subplot_adopts_brushing,
