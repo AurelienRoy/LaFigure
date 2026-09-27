@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+
+# Unrelated content living inside this working directory, not part of this project
+/engineering-method-with-claude/
