@@ -261,15 +261,18 @@ the actual code — this list is a summary, not a substitute for checking.
 - [x] Del key: deletes **everything selected, whatever its kind** —
       annotations, then curves, then subplots — each through its own
       existing single-item `delete_annotation`/`delete_curve`/
-      `delete_subplot` call and its own undo entry. Curves and
-      subplot-owned annotations whose subplot is also being deleted are
-      skipped: the subplot's own undo restores them, while separate
-      entries would target the dead `PlotItem`. A multi-delete, a group
-      drag, or a multi-annotation Properties… edit of N items takes N
-      presses of Undo to fully revert, since there's no batched-undo-entry
-      concept anywhere in this codebase (LibreOffice/MATLAB would make
-      each one gesture = one Undo). Deliberate, not an oversight; don't
-      add one without checking first, since it'd be the first of its kind.
+      `delete_subplot` call. Curves and subplot-owned annotations whose
+      subplot is also being deleted are skipped: the subplot's own undo
+      restores them, while separate steps would target the dead
+      `PlotItem`.
+- [x] **One gesture = one Undo**, as in LibreOffice Draw / MATLAB:
+      `with self.undo_group():` folds every `_push_history` inside it into
+      a single entry (undo runs the steps in reverse, redo in order —
+      exactly what N separate presses did, so each step's closures stay
+      valid; groups nest; a one-step group is pushed unwrapped). Used by
+      multi-delete, group annotation drag and multi-annotation
+      Properties…. Any new action that loops over a selection pushing
+      one entry per item should wrap its loop the same way.
 - [x] Ctrl+Z / Ctrl+Y: undo/redo for the last N actions (bounded history,
       `max_history = 20`), covering delete/rename/paste a curve, remove
       average, add/delete a subplot, FFT insert, and axis-label edits. The

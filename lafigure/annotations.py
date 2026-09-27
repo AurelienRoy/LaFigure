@@ -425,10 +425,11 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             return
         group, self._group_drag = self._group_drag, None
         moved = False
-        for a, origin, _ in group:
-            if a.pos() != origin:
-                moved = True
-                a._push_move_history(origin, a.pos())
+        with self.figure.undo_group():
+            for a, origin, _ in group:
+                if a.pos() != origin:
+                    moved = True
+                    a._push_move_history(origin, a.pos())
         if not moved and self._collapse_on_release:
             self.figure._select_annotation(self)
         ev.accept()

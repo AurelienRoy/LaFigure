@@ -944,8 +944,7 @@ def test_dragging_a_selected_annotation_moves_the_whole_group():
         moved = _scene_pos(ann) - before
         assert abs(moved.x() - 30) < 0.5 and abs(moved.y() - 20) < 0.5, (name, moved)
     assert f.selected_annotations == [rect, ellipse], "a real drag keeps the group selected"
-    f.undo()
-    f.undo()
+    f.undo()  # one gesture, one Undo
     assert (_scene_pos(rect) - rect_before).manhattanLength() < 0.5
     assert (_scene_pos(ellipse) - ellipse_before).manhattanLength() < 0.5
     f.close()
@@ -1007,7 +1006,74 @@ def test_properties_apply_to_every_selected_annotation():
     f.close()
 
 
+# Grouped undo: one gesture on N selected items = one Undo entry.
+
+def test_undo_group_nests_and_replays_in_order():
+    f = m.LaFigure()
+    log = []
+    n_undo = len(f.undo_stack)
+    with f.undo_group():
+        f._push_history(lambda: log.append('undo a'), lambda: log.append('redo a'))
+        with f.undo_group():
+            f._push_history(lambda: log.append('undo b'), lambda: log.append('redo b'))
+    assert len(f.undo_stack) == n_undo + 1, "a nested group folds into the outer one"
+    f.undo()
+    f.redo()
+    assert log == ['undo b', 'undo a', 'redo a', 'redo b']
+    single = (lambda: None, lambda: None)
+    with f.undo_group():
+        f._push_history(*single)
+    assert f.undo_stack[-1] == single, "a one-step group is pushed as-is, not wrapped"
+    f.close()
+
+
+def test_multi_delete_is_one_undo_entry_and_round_trips():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    p0, p2 = f.plots[0], f.plots[2]
+    counts = lambda: (len(f.plots), len(f.plots[0].listDataItems()), len(f.annotations))
+    before, n_undo = counts(), len(f.undo_stack)
+    _click_annotation(f, rect)
+    _click_curve(f, p0, curve, modifiers=SHIFT)
+    _click_subplot(f, p2, modifiers=SHIFT)
+    f.delete_selection()
+    after = counts()
+    assert after == (before[0] - 1, before[1] - 1, before[2] - 1), after
+    assert len(f.undo_stack) == n_undo + 1
+    f.undo()
+    assert counts() == before
+    f.redo()
+    assert counts() == after
+    f.undo()
+    assert counts() == before, "a second undo must still work (holders refreshed by redo)"
+    f.close()
+
+
+def test_multi_properties_is_one_undo_entry():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    old = {a: (a.pen.color(), a.pen.widthF()) for a in (rect, ellipse)}
+    _click_annotation(f, rect)
+    _click_annotation(f, ellipse, modifiers=SHIFT)
+    n_undo = len(f.undo_stack)
+    saved = (QtWidgets.QColorDialog.getColor, QtWidgets.QInputDialog.getDouble,
+             QtWidgets.QMessageBox.question)
+    QtWidgets.QColorDialog.getColor = staticmethod(lambda *a, **k: QtGui.QColor(255, 0, 0))
+    QtWidgets.QInputDialog.getDouble = staticmethod(lambda *a, **k: (4.0, True))
+    QtWidgets.QMessageBox.question = staticmethod(lambda *a, **k: QtWidgets.QMessageBox.No)
+    try:
+        f._edit_annotation_properties(rect)
+    finally:
+        (QtWidgets.QColorDialog.getColor, QtWidgets.QInputDialog.getDouble,
+         QtWidgets.QMessageBox.question) = saved
+    assert len(f.undo_stack) == n_undo + 1
+    f.undo()
+    assert {a: (a.pen.color(), a.pen.widthF()) for a in (rect, ellipse)} == old
+    f.close()
+
+
 for _test in (
+    test_undo_group_nests_and_replays_in_order,
+    test_multi_delete_is_one_undo_entry_and_round_trips,
+    test_multi_properties_is_one_undo_entry,
     test_shift_click_on_empty_space_changes_nothing,
     test_escape_deselects_everything,
     test_escape_cancels_relink_and_deselects_in_one_press,

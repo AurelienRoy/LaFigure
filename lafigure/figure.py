@@ -33,6 +33,7 @@ See CLAUDE.md for the design lessons behind this file's structure -- in
 particular, why "plain add/delete a subplot" and "FFT's whole-row
 shift" are kept as two genuinely different code paths.
 """
+import contextlib
 import os
 import sys
 import numpy as np
@@ -92,6 +93,7 @@ class LaFigure(QtWidgets.QMainWindow):
         self.max_history = 20
         self.undo_stack = []     # list of (undo_fn, redo_fn)
         self.redo_stack = []
+        self._undo_group = None  # list of steps while an undo_group() block is open
 
         # Row/col stretch factors; resizing a border adjusts them so the grid
         # layout reflows the rest of the grid for free.
@@ -1206,7 +1208,32 @@ class LaFigure(QtWidgets.QMainWindow):
         return None
 
     # -- undo / redo -------------------------------------------------
+    @contextlib.contextmanager
+    def undo_group(self):
+        """Fold every _push_history inside this block into one undo entry:
+        one gesture = one Undo, as in LibreOffice Draw / MATLAB. Undo runs
+        the steps in reverse and redo in order -- exactly what N separate
+        presses did, so each step's own closures stay valid. Nests."""
+        outer = self._undo_group is None
+        if outer:
+            self._undo_group = []
+        try:
+            yield
+        finally:
+            if outer:
+                steps, self._undo_group = self._undo_group, None
+                if len(steps) == 1:
+                    self._push_history(*steps[0])
+                elif steps:
+                    self._push_history(
+                        undo_fn=lambda: [u() for u, _ in reversed(steps)],
+                        redo_fn=lambda: [r() for _, r in steps],
+                    )
+
     def _push_history(self, undo_fn, redo_fn):
+        if self._undo_group is not None:
+            self._undo_group.append((undo_fn, redo_fn))
+            return
         self.undo_stack.append((undo_fn, redo_fn))
         if len(self.undo_stack) > self.max_history:
             self.undo_stack.pop(0)
@@ -1236,23 +1263,22 @@ class LaFigure(QtWidgets.QMainWindow):
     # -- delete (curve or subplot) ---------------------------------------
     def delete_selection(self):
         """Del key / toolbar Delete: remove everything selected, whatever
-        its kind. Each deletion pushes its own undo entry (so undoing a
-        multi-delete undoes one item at a time), matching how
-        delete_curve/delete_subplot already work.
+        its kind, as one undo entry.
 
         Curves and subplot-owned annotations on a subplot that is itself
         being deleted are skipped: the subplot's own undo restores them,
-        while their separate undo entries would target the dead PlotItem."""
+        while their separate undo steps would target the dead PlotItem."""
         doomed_plots = list(self.selected_plots)
-        for ann in list(self.selected_annotations):
-            if ann.anchor == 'figure' or ann.parent_plot not in doomed_plots:
-                self.delete_annotation(ann)
-        for curve in list(self.selected_curves):
-            plot_item = self._curve_plot(curve)
-            if plot_item is not None and plot_item not in doomed_plots:
-                self.delete_curve(curve)
-        for plot_item in doomed_plots:
-            self.delete_subplot(plot_item)
+        with self.undo_group():
+            for ann in list(self.selected_annotations):
+                if ann.anchor == 'figure' or ann.parent_plot not in doomed_plots:
+                    self.delete_annotation(ann)
+            for curve in list(self.selected_curves):
+                plot_item = self._curve_plot(curve)
+                if plot_item is not None and plot_item not in doomed_plots:
+                    self.delete_curve(curve)
+            for plot_item in doomed_plots:
+                self.delete_subplot(plot_item)
 
     def delete_curve(self, curve):
         plot_item = self._curve_plot(curve)
@@ -2145,14 +2171,15 @@ class LaFigure(QtWidgets.QMainWindow):
                 target._text_item.setDefaultTextColor(pen.color())
             target.update()
 
-        for t in targets:
-            old_pen, old_brush = t.pen, t.brush
-            new_brush = new_fill if (new_fill is not None and t.kind in ('rect', 'ellipse')) else old_brush
-            apply(t, new_pen, new_brush)
-            self._push_history(
-                undo_fn=lambda t=t, p=old_pen, b=old_brush: apply(t, p, b),
-                redo_fn=lambda t=t, p=new_pen, b=new_brush: apply(t, p, b),
-            )
+        with self.undo_group():
+            for t in targets:
+                old_pen, old_brush = t.pen, t.brush
+                new_brush = new_fill if (new_fill is not None and t.kind in ('rect', 'ellipse')) else old_brush
+                apply(t, new_pen, new_brush)
+                self._push_history(
+                    undo_fn=lambda t=t, p=old_pen, b=old_brush: apply(t, p, b),
+                    redo_fn=lambda t=t, p=new_pen, b=new_brush: apply(t, p, b),
+                )
 
     # -- reparenting ("filiation"): right-click an annotation -> Link to...
     # -> click its new parent (a subplot, or empty space for free-floating)
