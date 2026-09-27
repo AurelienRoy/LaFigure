@@ -98,9 +98,8 @@ class LinkedScatter:
         self.highlight.setData(x=self.x[mask], y=self.y[mask])
 
     def set_brushing(self, enabled):
+        # Pan-disabling is LaFigure._apply_mouse_enabled's job, not ours.
         self.brushing_enabled = enabled
-        # Disable normal pan while brushing so drags draw a rubber band instead.
-        self.view_box.setMouseEnabled(x=not enabled, y=not enabled)
 
     def _wrap_drag(self, original_drag):
         def handler(ev, axis=None):
@@ -187,9 +186,8 @@ class RectBrush:
         return [c for c in self.plot_item.listDataItems() if isinstance(c, pg.PlotDataItem)]
 
     def set_brushing(self, enabled):
+        # Pan-disabling is LaFigure._apply_mouse_enabled's job, not ours.
         self.brushing_enabled = enabled
-        # Disable normal pan while brushing so drags draw a rubber band instead.
-        self.view_box.setMouseEnabled(x=not enabled, y=not enabled)
         if not enabled:
             self.clear_selection()
 

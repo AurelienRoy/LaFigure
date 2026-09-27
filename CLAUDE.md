@@ -148,7 +148,17 @@ the actual code — this list is a summary, not a substitute for checking.
 - [x] Compute FFT and plot on a new subplot beneath the current one, acting
       on the **selected curve** if one is selected (falls back to the
       subplot's first curve otherwise — no longer *always* first-curve-only)
-- [x] Link subplots by X axis (toolbar toggle)
+- [x] Link subplots by X axis (toolbar toggle). Every subplot links to
+      `plots[0]`, re-applied on every add/remove (`_apply_link_x`), so a
+      subplot added/pasted/FFT'd while Link X is on is linked too, and
+      deleting `plots[0]` re-links the rest to the new `plots[0]`.
+- [x] **Figure-wide toggles reach subplots created later.** Mode, Brush and
+      Link X are all adopted in `add_subplot`, the only `addPlot()` call site
+      (guarded by `test_add_subplot_is_the_only_subplot_construction_site`
+      in `smoke_test.py`). A ViewBox's mouse-enabled state has exactly one
+      writer, `_apply_mouse_enabled`: pan is off if Select mode **or**
+      brushing is on. Before 2026-09-27, Brush and Link X only reached
+      existing subplots, and turning Brush off re-enabled pan in Select mode.
 - [x] Data brushing, two layers:
       - **Linked** (`LinkedScatter`, `selection.py`): rectangular drag-select
         on a scatter subplot, broadcast through a shared `SelectionModel` to

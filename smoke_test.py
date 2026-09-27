@@ -595,4 +595,81 @@ assert pasted_ann.kind == 'rect' and pasted_ann.parent_plot is pasted_plot
 other.close()
 app.processEvents()
 
+
+# Figure-wide toggles vs. subplots created later. Actions are driven with
+# .trigger() -- what a real click does. setChecked() alone never emits
+# `triggered`, so a test using it would pass without running the handler.
+
+def _is_x_linked(plot_item):
+    return plot_item.getViewBox().linkedView(pg.ViewBox.XAxis) is not None
+
+
+def test_new_subplot_adopts_link_x():
+    f = m.LaFigure()
+    f.link_x_action.trigger()
+    f.add_new_subplot()
+    new = f.plots[-1]
+    assert _is_x_linked(new), "a subplot added while Link X is on must be X-linked"
+    f.link_x_action.trigger()
+    assert not any(_is_x_linked(p) for p in f.plots)
+    f.close()
+
+
+def test_link_x_survives_deleting_the_reference_subplot():
+    f = m.LaFigure()
+    f.link_x_action.trigger()
+    old_reference = f.plots[0]
+    f.delete_subplot(old_reference)
+    reference = f.plots[0]
+    assert not _is_x_linked(reference)
+    for p in f.plots[1:]:
+        assert p.getViewBox().linkedView(pg.ViewBox.XAxis) is reference.getViewBox(), \
+            "followers must re-link to the new plots[0], not the deleted one"
+    f.close()
+
+
+def test_new_subplot_adopts_brushing():
+    f = m.LaFigure()
+    f.brush_action.trigger()
+    f.add_new_subplot()
+    new = f.plots[-1]
+    assert f._brushers[new].brushing_enabled, "a subplot added while Brush is on must brush"
+    f.close()
+
+
+def test_brush_off_does_not_reenable_pan_in_select_mode():
+    f = m.LaFigure()
+    f.hand_action.trigger()
+    f.brush_action.trigger()
+    assert all(p.getViewBox().state['mouseEnabled'] == [False, False] for p in f.plots), \
+        "brushing must disable pan even in Hand mode"
+    f.select_action.trigger()
+    f.brush_action.trigger()
+    assert all(p.getViewBox().state['mouseEnabled'] == [False, False] for p in f.plots), \
+        "Brush off must not re-enable pan while Select mode forbids it"
+    f.hand_action.trigger()
+    assert all(p.getViewBox().state['mouseEnabled'] == [True, True] for p in f.plots)
+    f.close()
+
+
+def test_add_subplot_is_the_only_subplot_construction_site():
+    """add_subplot is where new subplots adopt the figure-wide toggles; a
+    second addPlot() call would silently bypass that."""
+    import inspect
+    import lafigure.figure
+    src = inspect.getsource(lafigure.figure)
+    assert src.count('.addPlot(') == 1, "a new addPlot() call site bypasses add_subplot"
+    assert 'def add_subplot' in src  # control: the scan is reading the right file
+
+
+for _test in (
+    test_new_subplot_adopts_link_x,
+    test_link_x_survives_deleting_the_reference_subplot,
+    test_new_subplot_adopts_brushing,
+    test_brush_off_does_not_reenable_pan_in_select_mode,
+    test_add_subplot_is_the_only_subplot_construction_site,
+):
+    _test()
+    app.processEvents()
+
 print("ALL OK")

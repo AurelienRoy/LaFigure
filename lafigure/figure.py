@@ -87,6 +87,7 @@ class LaFigure(QtWidgets.QMainWindow):
         # own; only updated when the mouse is actually over a subplot.
         self._hover_plot = None
         self.linked_x = False
+        self.brushing = False
 
         self.max_history = 20
         self.undo_stack = []     # list of (undo_fn, redo_fn)
@@ -325,17 +326,17 @@ class LaFigure(QtWidgets.QMainWindow):
         vb.sigRangeChanged.connect(
             lambda *_, p=plot_item: self._refresh_annotation_chrome(p)
         )
-        # A freshly created ViewBox defaults to pyqtgraph's own pan-enabled
-        # mode regardless of the figure's current interaction_mode -- match
-        # it here, or a subplot added/pasted while in Select mode would stay
-        # pannable even though Select is supposed to disable that (only
-        # set_interaction_mode's own loop over self.plots was applying it,
-        # which never sees a plot created afterwards).
+        # A new subplot must adopt every figure-wide toggle (mode, brush,
+        # Link X) here: the toggles' own loops over self.plots never see a
+        # plot created afterwards. Guarded by test_new_subplot_adopts_*.
         vb.setMouseMode(pg.ViewBox.RectMode if self.interaction_mode == 'zoom' else pg.ViewBox.PanMode)
-        vb.setMouseEnabled(x=(self.interaction_mode != 'select'), y=(self.interaction_mode != 'select'))
+        self._apply_mouse_enabled(vb)
         vb.setCursor(self._cursor_for_mode(self.interaction_mode))
-        self._brushers[plot_item] = RectBrush(plot_item, on_finished=self._on_rect_brush_finished)
+        brusher = RectBrush(plot_item, on_finished=self._on_rect_brush_finished)
+        brusher.set_brushing(self.brushing)
+        self._brushers[plot_item] = brusher
         self.plots.append(plot_item)
+        self._apply_link_x()
         self._reset_grid_stretch()
         self.registry.notify_subplots_changed(self)
         return plot_item
@@ -575,6 +576,7 @@ class LaFigure(QtWidgets.QMainWindow):
             self._hover_plot = None
         for c in [c for c in self.selected_curves if self._curve_plot(c) is None]:
             self._forget_curve_selection(c)
+        self._apply_link_x()
 
     def add_new_subplot(self):
         """Toolbar 'Add Subplot': always creates a new, empty, dedicated
@@ -1283,7 +1285,7 @@ class LaFigure(QtWidgets.QMainWindow):
         for p in self.plots:
             vb = p.getViewBox()
             vb.setMouseMode(vb_mode)
-            vb.setMouseEnabled(x=(mode != 'select'), y=(mode != 'select'))
+            self._apply_mouse_enabled(vb)
             vb.setCursor(cursor)
         if mode != 'select':
             self._deselect_curve()
@@ -1416,20 +1418,35 @@ class LaFigure(QtWidgets.QMainWindow):
 
         self._push_history(undo_fn, redo_fn)
 
-    def toggle_link_x(self, checked):
-        self.linked_x = checked
+    def _apply_mouse_enabled(self, vb):
+        """The only writer of a ViewBox's mouse-enabled state: Select mode
+        and brushing both disable pan, so neither may re-enable it alone."""
+        enabled = self.interaction_mode != 'select' and not self.brushing
+        vb.setMouseEnabled(x=enabled, y=enabled)
+
+    def _apply_link_x(self):
+        """Link every subplot's X to plots[0], or unlink all. Re-run on any
+        add/remove, since plots[0] -- the reference -- can change."""
         if not self.plots:
             return
         reference = self.plots[0]
+        reference.setXLink(None)
         for p in self.plots[1:]:
-            p.setXLink(reference if checked else None)
+            p.setXLink(reference if self.linked_x else None)
+
+    def toggle_link_x(self, checked):
+        self.linked_x = checked
+        self._apply_link_x()
 
     def toggle_brush(self, checked):
+        self.brushing = checked
         for scatter in (getattr(self, 'scatter1', None), getattr(self, 'scatter2', None)):
             if scatter is not None:
                 scatter.set_brushing(checked)
         for brusher in self._brushers.values():
             brusher.set_brushing(checked)
+        for p in self.plots:
+            self._apply_mouse_enabled(p.getViewBox())
         if not checked:
             self.selection_model.clear()
 
