@@ -188,8 +188,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         # Offset from parent subplot's top-left, in scene px; only used for anchor=='border'.
         self.anchor_offset = QtCore.QPointF(0, 0)
 
-        self._drag_start = None
-        self._drag_origin = None
+        self._group_drag = None            # [(annotation, origin_pos, start_pt)] while dragging
+        self._collapse_on_release = False
         self._end_drag_start_local = None
         self._start_drag_origin_pos = None
         self._start_drag_origin_p1 = None
@@ -388,28 +388,49 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         return parent.mapFromScene(scene_pt) if parent is not None else scene_pt
 
     def mousePressEvent(self, ev):
+        """LibreOffice Draw / MATLAB style: Shift toggles this annotation in
+        or out of the selection; a plain press on an already-selected one
+        keeps the group so it can be dragged together, and collapses to
+        just this one on release if nothing moved."""
         if ev.button() != QtCore.Qt.LeftButton:
             ev.ignore()
             return
-        self.figure._select_annotation(self)
-        self._drag_origin = self.pos()
-        self._drag_start = self._parent_point(ev.scenePos())
+        fig = self.figure
+        additive = bool(ev.modifiers() & QtCore.Qt.ShiftModifier)
+        self._collapse_on_release = False
+        if additive:
+            fig._select_annotation(self, additive=True)
+        elif self in fig.selected_annotations:
+            self._collapse_on_release = True
+        else:
+            fig._select_annotation(self)
         ev.accept()
+        if self not in fig.selected_annotations:
+            self._group_drag = None  # Shift just toggled it off: no drag
+            return
+        # Each member's own parent coordinates: members may sit in
+        # different subplots (data units) or the figure (pixels).
+        self._group_drag = [(a, a.pos(), a._parent_point(ev.scenePos()))
+                            for a in fig.selected_annotations]
 
     def mouseMoveEvent(self, ev):
-        if self._drag_start is None:
+        if self._group_drag is None:
             return
-        cur = self._parent_point(ev.scenePos())
-        self.setPos(self._drag_origin + (cur - self._drag_start))
+        for a, origin, start in self._group_drag:
+            a.setPos(origin + (a._parent_point(ev.scenePos()) - start))
         ev.accept()
 
     def mouseReleaseEvent(self, ev):
-        if self._drag_start is None:
+        if self._group_drag is None:
             return
-        self._drag_start = None
-        origin, moved_to = self._drag_origin, self.pos()
-        if moved_to != origin:
-            self._push_move_history(origin, moved_to)
+        group, self._group_drag = self._group_drag, None
+        moved = False
+        for a, origin, _ in group:
+            if a.pos() != origin:
+                moved = True
+                a._push_move_history(origin, a.pos())
+        if not moved and self._collapse_on_release:
+            self.figure._select_annotation(self)
         ev.accept()
 
     def mouseDoubleClickEvent(self, ev):
@@ -622,7 +643,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
 
     # -- context menu (native override -- see CLAUDE.md) -------------------
     def contextMenuEvent(self, ev):
-        self.figure._select_annotation(self)
+        if self not in self.figure.selected_annotations:  # right-click inside the selection keeps it
+            self.figure._select_annotation(self)
         menu = QtWidgets.QMenu()
         menu.addAction("Properties...").triggered.connect(lambda: self.figure._edit_annotation_properties(self))
         if self.figure._relink_source is self:

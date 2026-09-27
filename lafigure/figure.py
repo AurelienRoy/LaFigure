@@ -112,7 +112,8 @@ class LaFigure(QtWidgets.QMainWindow):
 
         # -- annotations ---------------------------------------------
         self.annotations = []       # every AnnotationItem in this figure
-        self.active_annotation = None
+        self.selected_annotations = []
+        self.active_annotation = None   # most recently selected of selected_annotations
         # Set by "Annotate > <shape>": next scene click(s) place it instead of selecting.
         self._placing_kind = None
         self._placing_state = None  # {'anchor','parent_plot','p0'} between a two-click shape's clicks
@@ -283,7 +284,8 @@ class LaFigure(QtWidgets.QMainWindow):
         QtGui.QShortcut(QtGui.QKeySequence.Undo, self, activated=self.undo)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Y"), self, activated=self.redo)
         QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Escape), self,
-                         activated=lambda: (self._cancel_placing(), self._cancel_relink()))
+                         activated=lambda: (self._cancel_placing(), self._cancel_relink(),
+                                            self._deselect_all()))
 
     def _build_demo_subplots(self):
         t = np.linspace(0, 10, 200_000)
@@ -367,7 +369,7 @@ class LaFigure(QtWidgets.QMainWindow):
         menu.addSeparator()
 
         def bound(fn):
-            return lambda: (self._on_plot_clicked(plot_item), fn())
+            return lambda: (self._on_plot_context(plot_item), fn())
 
         menu.addAction("Paste Curve").triggered.connect(bound(self.paste_curve))
         menu.addAction("Copy Subplot").triggered.connect(bound(self.copy_subplot))
@@ -411,7 +413,7 @@ class LaFigure(QtWidgets.QMainWindow):
                     lambda checked=False, c=curve: self._rename_curve(plot_item, c)
                 )
 
-        menu.aboutToShow.connect(lambda: (self._on_plot_clicked(plot_item), rebuild_curve_menus()))
+        menu.aboutToShow.connect(lambda: (self._on_plot_context(plot_item), rebuild_curve_menus()))
 
     def _apply_curve_rename(self, plot_item, curve, new_name):
         old_name = curve.name() or ""
@@ -658,11 +660,12 @@ class LaFigure(QtWidgets.QMainWindow):
             return
 
         if hit_plot is not None:
-            self._on_plot_clicked(hit_plot, additive=additive)
+            # Accepted = a curve (or legend sample) already handled this
+            # click; selecting the subplot too would undo its exclusivity.
             if not ev.isAccepted():
-                self._deselect_curve()
-                self._deselect_annotation()
-        elif not ev.isAccepted():
+                self._on_plot_clicked(hit_plot, additive=additive)
+        elif not ev.isAccepted() and not additive:
+            # Shift+click on empty space does nothing (LibreOffice/MATLAB).
             # Single click landed outside every subplot, and nothing
             # clickable (e.g. a figure/border-anchored annotation) consumed
             # it -- that's genuinely empty space.
@@ -681,13 +684,37 @@ class LaFigure(QtWidgets.QMainWindow):
         menu.exec_(QtGui.QCursor.pos())
 
     def _on_plot_clicked(self, plot_item, additive=False):
+        """additive = Shift: toggle this subplot in/out of the selection,
+        as in LibreOffice Draw and MATLAB. active_plot keeps tracking the
+        clicked subplot either way -- it is the toolbar target."""
         self.active_plot = plot_item
         if additive:
-            if plot_item not in self.selected_plots:
+            if plot_item in self.selected_plots:
+                self.selected_plots.remove(plot_item)
+            else:
                 self.selected_plots.append(plot_item)
             self._mark_active(plot_item, keep_selection=True)
         else:
             self._mark_active(plot_item)
+
+    def _on_plot_context(self, plot_item):
+        """Right-click: keep a selection that already involves this subplot
+        (so menu actions see the whole Shift-built set), else select the
+        subplot like a plain click."""
+        involved = plot_item in self.selected_plots or any(
+            self._curve_plot(c) is plot_item for c in self.selected_curves)
+        if involved:
+            self.active_plot = plot_item
+            self._mark_active(plot_item, keep_selection=True)
+        else:
+            self._on_plot_clicked(plot_item)
+
+    def _select_plots(self, plots):
+        """Exclusively select `plots` (e.g. just-pasted subplots)."""
+        self._clear_selection()
+        self.active_plot = plots[-1]
+        self.selected_plots = list(plots)
+        self._mark_active(self.active_plot, keep_selection=True)
 
     def _on_scene_hovered(self, pos):
         """sigMouseMoved gives scene coords directly (unlike sigMouseClicked's
@@ -700,13 +727,19 @@ class LaFigure(QtWidgets.QMainWindow):
     def _deselect_all(self):
         """Double-click a subplot, or a single click that lands outside
         every subplot: clear the selected curve AND the active subplot."""
-        self._deselect_curve()
-        self._deselect_annotation()
+        self._clear_selection()
         self.active_plot = None
-        self.selected_plots = []
         for p in self.plots:
             p.getViewBox().setBorder(None)
         self._hide_handles()
+
+    def _clear_selection(self):
+        """Deselect every kind -- subplots, curves, annotation. Any selection
+        without Shift starts here: selections are exclusive across kinds.
+        active_plot is left alone; it is the toolbar target, not a selection."""
+        self._deselect_curve()
+        self._deselect_annotation()
+        self.selected_plots = []
 
     def _mark_active(self, active, keep_selection=False):
         # The red border / move+resize handles only ever show in Select
@@ -720,6 +753,7 @@ class LaFigure(QtWidgets.QMainWindow):
         # plot already known to be selected changes (see _on_plot_clicked,
         # _forget_removed_plot).
         if not keep_selection:
+            self._clear_selection()
             self.selected_plots = [active] if active is not None else []
         show = self.interaction_mode == 'select'
         for p in self.plots:
@@ -763,7 +797,9 @@ class LaFigure(QtWidgets.QMainWindow):
     def _position_handles(self):
         self._reposition_annotations()
         active = self.active_plot
-        if active is None or self.interaction_mode != 'select':
+        # active_plot outlives its selection (e.g. a curve click deselects
+        # its subplot but keeps it as toolbar target) -- no handles then.
+        if active is None or active not in self.selected_plots or self.interaction_mode != 'select':
             self._hide_handles()
             return
         rect = active.sceneBoundingRect()
@@ -1099,9 +1135,15 @@ class LaFigure(QtWidgets.QMainWindow):
                 return
             ev = args[-1] if args else None
             additive = bool(ev.modifiers() & QtCore.Qt.ShiftModifier) if ev is not None else False
-            self._on_plot_clicked(plot_item, additive=additive)
-            if self.interaction_mode == 'select':
-                self._select_curve(curve, additive=additive)
+            if self.interaction_mode != 'select':
+                self._on_plot_clicked(plot_item, additive=additive)
+                return
+            if (ev is not None and ev.button() == QtCore.Qt.RightButton
+                    and curve in self.selected_curves):
+                return  # right-click inside the selection keeps it
+            self._select_curve(curve, additive=additive)
+            self.active_plot = plot_item
+            self._mark_active(plot_item, keep_selection=True)
 
         curve.curve.sigClicked.connect(handler)
 
@@ -1112,26 +1154,30 @@ class LaFigure(QtWidgets.QMainWindow):
         curve.setPen(pg.mkPen(color=base.color(), width=base.width() + 3))
 
     def _select_curve(self, curve, additive=False):
+        """additive = Shift: toggle this curve in/out of the selection."""
         if additive:
             if curve in self.selected_curves:
-                self.active_curve = curve
+                self._unhighlight_curve_pen(curve)
+                self._forget_curve_selection(curve)
                 return
             self._highlight_curve_pen(curve)
             self.selected_curves.append(curve)
             self.active_curve = curve
             return
-        if self.active_curve is curve and self.selected_curves == [curve]:
-            return
-        self._deselect_curve()
+        self._clear_selection()
         self._highlight_curve_pen(curve)
         self.selected_curves = [curve]
         self.active_curve = curve
 
+    @staticmethod
+    def _unhighlight_curve_pen(curve):
+        orig_pen = curve.opts.get('_orig_pen')
+        if orig_pen is not None:
+            curve.setPen(orig_pen)
+
     def _deselect_curve(self):
         for c in self.selected_curves:
-            orig_pen = c.opts.get('_orig_pen')
-            if orig_pen is not None:
-                c.setPen(orig_pen)
+            self._unhighlight_curve_pen(c)
         self.selected_curves = []
         self.active_curve = None
 
@@ -1189,20 +1235,24 @@ class LaFigure(QtWidgets.QMainWindow):
 
     # -- delete (curve or subplot) ---------------------------------------
     def delete_selection(self):
-        """Del key / toolbar Delete: remove the selected annotation if one
-        is active, else every selected curve (Shift+click to select more
-        than one), else every selected subplot. Each deletion pushes its
-        own undo entry (so undoing a multi-delete undoes one item at a
-        time), matching how delete_curve/delete_subplot already work."""
-        if self.active_annotation is not None:
-            self.delete_annotation(self.active_annotation)
-        elif self.selected_curves:
-            for curve in list(self.selected_curves):
-                if self._curve_plot(curve) is not None:
-                    self.delete_curve(curve)
-        elif self.selected_plots:
-            for plot_item in list(self.selected_plots):
-                self.delete_subplot(plot_item)
+        """Del key / toolbar Delete: remove everything selected, whatever
+        its kind. Each deletion pushes its own undo entry (so undoing a
+        multi-delete undoes one item at a time), matching how
+        delete_curve/delete_subplot already work.
+
+        Curves and subplot-owned annotations on a subplot that is itself
+        being deleted are skipped: the subplot's own undo restores them,
+        while their separate undo entries would target the dead PlotItem."""
+        doomed_plots = list(self.selected_plots)
+        for ann in list(self.selected_annotations):
+            if ann.anchor == 'figure' or ann.parent_plot not in doomed_plots:
+                self.delete_annotation(ann)
+        for curve in list(self.selected_curves):
+            plot_item = self._curve_plot(curve)
+            if plot_item is not None and plot_item not in doomed_plots:
+                self.delete_curve(curve)
+        for plot_item in doomed_plots:
+            self.delete_subplot(plot_item)
 
     def delete_curve(self, curve):
         plot_item = self._curve_plot(curve)
@@ -1290,7 +1340,7 @@ class LaFigure(QtWidgets.QMainWindow):
         if mode != 'select':
             self._deselect_curve()
         if self.active_plot is not None:
-            self._mark_active(self.active_plot)
+            self._mark_active(self.active_plot, keep_selection=True)
         else:
             self._hide_handles()
 
@@ -1771,9 +1821,7 @@ class LaFigure(QtWidgets.QMainWindow):
             return new_plots
 
         holder = {'plots': build()}
-        self.active_plot = holder['plots'][-1]
-        self.selected_plots = list(holder['plots'])
-        self._mark_active(self.active_plot, keep_selection=True)
+        self._select_plots(holder['plots'])
 
         def undo_fn():
             for p in holder.get('plots', []):
@@ -1782,9 +1830,7 @@ class LaFigure(QtWidgets.QMainWindow):
 
         def redo_fn():
             holder['plots'] = build()
-            self.active_plot = holder['plots'][-1]
-            self.selected_plots = list(holder['plots'])
-            self._mark_active(self.active_plot, keep_selection=True)
+            self._select_plots(holder['plots'])
 
         self._push_history(undo_fn, redo_fn)
 
@@ -2009,8 +2055,9 @@ class LaFigure(QtWidgets.QMainWindow):
         """Remove `ann` for good without pushing its own undo entry --
         used when a whole subplot that owns it is itself being deleted/
         recreated as one undo step (see _remove_subplot)."""
-        if ann is self.active_annotation:
-            self._deselect_annotation()
+        if ann in self.selected_annotations:
+            ann.set_selected(False)
+            self._forget_annotation_selection(ann)
         self._detach_annotation(ann)
         if ann in self.annotations:
             self.annotations.remove(ann)
@@ -2034,25 +2081,39 @@ class LaFigure(QtWidgets.QMainWindow):
 
         self._push_history(undo_fn, redo_fn)
 
-    def _select_annotation(self, ann):
-        if self.active_annotation is ann:
+    def _select_annotation(self, ann, additive=False):
+        """additive = Shift: toggle `ann` in/out of the selection, keeping
+        everything else selected. Otherwise select only `ann`."""
+        if not additive:
+            self._clear_selection()
+            self._mark_active(self.active_plot, keep_selection=True)
+        elif ann in self.selected_annotations:
+            ann.set_selected(False)
+            self._forget_annotation_selection(ann)
             return
-        self._deselect_curve()
-        if self.active_annotation is not None:
-            self.active_annotation.set_selected(False)
+        self.selected_annotations.append(ann)
         self.active_annotation = ann
         ann.set_selected(True)
 
     def _deselect_annotation(self):
-        if self.active_annotation is None:
-            return
-        self.active_annotation.set_selected(False)
+        for a in self.selected_annotations:
+            a.set_selected(False)
+        self.selected_annotations = []
         self.active_annotation = None
+
+    def _forget_annotation_selection(self, ann):
+        if ann in self.selected_annotations:
+            self.selected_annotations.remove(ann)
+        if ann is self.active_annotation:
+            self.active_annotation = self.selected_annotations[-1] if self.selected_annotations else None
 
     def _edit_annotation_properties(self, ann):
         """Right-click 'Properties...': line color/width, and for
         rect/ellipse an optional fill color -- the CLAUDE.md-specified
-        'right-click properties menu (line/fill/color)'."""
+        'right-click properties menu (line/fill/color)'. Applies to every
+        selected annotation if `ann` is one of them; dialogs are seeded
+        from `ann`, and the fill only touches rect/ellipse targets."""
+        targets = list(self.selected_annotations) if ann in self.selected_annotations else [ann]
         color = QtWidgets.QColorDialog.getColor(ann.pen.color(), None, "Line color")
         if not color.isValid():
             return
@@ -2063,8 +2124,8 @@ class LaFigure(QtWidgets.QMainWindow):
             return
         new_pen = pg.mkPen(color=color, width=width)
         new_pen.setCosmetic(True)
-        new_brush = ann.brush
-        if ann.kind in ('rect', 'ellipse'):
+        new_fill = None
+        if any(t.kind in ('rect', 'ellipse') for t in targets):
             answer = QtWidgets.QMessageBox.question(
                 None, "Fill", "Set a fill color? (No keeps the current fill, if any)",
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
@@ -2075,22 +2136,23 @@ class LaFigure(QtWidgets.QMainWindow):
                     default, None, "Fill color", QtWidgets.QColorDialog.ShowAlphaChannel
                 )
                 if fill_color.isValid():
-                    new_brush = pg.mkBrush(fill_color)
+                    new_fill = pg.mkBrush(fill_color)
 
-        old_pen, old_brush = ann.pen, ann.brush
+        def apply(target, pen, brush):
+            target.pen = pen
+            target.brush = brush
+            if target._text_item is not None:
+                target._text_item.setDefaultTextColor(pen.color())
+            target.update()
 
-        def apply(pen, brush):
-            ann.pen = pen
-            ann.brush = brush
-            if ann._text_item is not None:
-                ann._text_item.setDefaultTextColor(pen.color())
-            ann.update()
-
-        apply(new_pen, new_brush)
-        self._push_history(
-            undo_fn=lambda: apply(old_pen, old_brush),
-            redo_fn=lambda: apply(new_pen, new_brush),
-        )
+        for t in targets:
+            old_pen, old_brush = t.pen, t.brush
+            new_brush = new_fill if (new_fill is not None and t.kind in ('rect', 'ellipse')) else old_brush
+            apply(t, new_pen, new_brush)
+            self._push_history(
+                undo_fn=lambda t=t, p=old_pen, b=old_brush: apply(t, p, b),
+                redo_fn=lambda t=t, p=new_pen, b=new_brush: apply(t, p, b),
+            )
 
     # -- reparenting ("filiation"): right-click an annotation -> Link to...
     # -> click its new parent (a subplot, or empty space for free-floating)

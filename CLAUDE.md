@@ -205,7 +205,11 @@ the actual code — this list is a summary, not a substitute for checking.
       All / Mouse Mode / Plot Options) with: Paste Curve, Copy/Paste
       Subplot, Toggle Legend, Remove Average, FFT → Subplot Below, the
       four brushed-selection actions above, Delete Curve submenu, Rename
-      Curve submenu. Right-clicking also selects that subplot. Right-
+      Curve submenu. Right-clicking a subplot selects it, unless the
+      subplot (or a selected curve on it) is already part of the selection,
+      which is then kept whole so menu actions see the entire Shift-built
+      set (`_on_plot_context`); the same rule applies to right-clicking a
+      curve or an annotation. Right-
       clicking **empty space outside every subplot** instead opens a
       minimal menu with just Paste Subplot (`_show_empty_space_menu`,
       dispatched from `_on_scene_clicked` since there's no `ViewBox` there
@@ -215,14 +219,23 @@ the actual code — this list is a summary, not a substitute for checking.
 - [x] Clicking a curve selects/highlights it (thicker pen), and that
       selection — not just "the first curve" — is what FFT and Remove
       Average act on (those two stay single-target deliberately, see below)
-- [x] **Multi-select via Shift+click** (`self.selected_plots`/
-      `self.selected_curves`, a superset of `active_plot`/`active_curve`):
-      Shift+clicking a subplot or curve adds it to the selection (a union,
-      never a toggle-off) instead of replacing it; visually, every
-      selected subplot gets the same red border. Only some actions read
-      the multi-select — **Copy/Paste (curve and subplot), Delete, the
-      X/Y-axis-label toolbar buttons, Toggle Legend, and Rename Curve**
-      all act on the whole set. FFT, Remove Average, and everything else
+- [x] **Multi-select via Shift+click, LibreOffice Draw / MATLAB style**
+      (`self.selected_plots`/`self.selected_curves`/
+      `self.selected_annotations`, each a superset of `active_plot`/
+      `active_curve`/`active_annotation`, the most recently selected one):
+      Shift+click **toggles** a subplot, curve or annotation in or out of
+      the selection, leaving every other selected item, of any kind,
+      selected. Visually, every selected subplot gets the same red border
+      and every selected annotation its dashed outline and handles.
+      Only some actions read the multi-select — **Copy/Paste (curve and
+      subplot), Delete, the X/Y-axis-label toolbar buttons, Toggle
+      Legend, Rename Curve, annotation Properties… (color/width/fill, the
+      fill only on rect/ellipse) and annotation drag** all act on the
+      whole set. Dragging any selected annotation moves every selected
+      annotation by the same on-screen offset, even across subplots; a
+      plain press on a selected annotation keeps the group for that drag
+      and collapses to just that annotation if released without moving.
+      Link to… stays single-target. FFT, Remove Average, and everything else
       deliberately keep targeting only the single most-recently-clicked
       `active_plot`/`active_curve`, unaffected by any wider selection —
       this split was an explicit product decision, not an oversight; don't
@@ -230,16 +243,33 @@ the actual code — this list is a summary, not a substitute for checking.
       checking first. Deleting/removing an item also drops it from these
       lists (`_forget_curve_selection`, and the plot-side cleanup in
       `_forget_removed_plot`) so a stale reference never lingers in them.
-- [x] Deselection: double-clicking a subplot (or a curve, or empty space),
-      or a single click that lands outside every subplot, clears the
-      selected curve/subplot *and* the multi-select
-- [x] Del key: deletes every selected curve if any are selected, else
-      every selected subplot, each through its own existing single-item
-      `delete_curve`/`delete_subplot` call and its own undo entry — a
-      multi-delete of N items takes N presses of Undo to fully revert,
-      since there's no batched-undo-entry concept anywhere else in this
-      codebase either. Deliberate, not an oversight; don't add one without
-      checking first, since it'd be the first of its kind here.
+- [x] **Selection is exclusive across kinds unless Shift is held.** A
+      plain click on a subplot, a curve or an annotation deselects every
+      other selected item of *every* kind. Clicking a curve deselects the
+      selected subplot, including the curve's own subplot, which loses its
+      red border and handles but stays `active_plot` as the toolbar target.
+      Every non-Shift selection, including programmatic ones (Add Subplot,
+      FFT, paste, undo), goes through `_clear_selection` first, and
+      move/resize handles only show on a subplot in `selected_plots`.
+      Guarded by the `test_*click*` / `test_*selection*` functions in
+      `smoke_test.py`.
+- [x] Deselection: **Esc**, double-clicking a subplot (or a curve, or
+      empty space), or a plain single click that lands outside every
+      subplot clears every selection of every kind. One Esc press also
+      cancels an in-progress annotation placement or Link to…. A
+      **Shift**+click on empty space does nothing.
+- [x] Del key: deletes **everything selected, whatever its kind** —
+      annotations, then curves, then subplots — each through its own
+      existing single-item `delete_annotation`/`delete_curve`/
+      `delete_subplot` call and its own undo entry. Curves and
+      subplot-owned annotations whose subplot is also being deleted are
+      skipped: the subplot's own undo restores them, while separate
+      entries would target the dead `PlotItem`. A multi-delete, a group
+      drag, or a multi-annotation Properties… edit of N items takes N
+      presses of Undo to fully revert, since there's no batched-undo-entry
+      concept anywhere in this codebase (LibreOffice/MATLAB would make
+      each one gesture = one Undo). Deliberate, not an oversight; don't
+      add one without checking first, since it'd be the first of its kind.
 - [x] Ctrl+Z / Ctrl+Y: undo/redo for the last N actions (bounded history,
       `max_history = 20`), covering delete/rename/paste a curve, remove
       average, add/delete a subplot, FFT insert, and axis-label edits. The

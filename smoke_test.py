@@ -28,7 +28,7 @@
 import numpy as np
 import pyqtgraph as pg
 pg.setConfigOptions(useOpenGL=False)  # test-only; the shipped app keeps useOpenGL=True
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import lafigure as m
 # figure.py sets useOpenGL=True as a module-level side effect on import
 # (correct for the shipped app), which stomps the line above. Offscreen
@@ -554,7 +554,7 @@ win._deselect_annotation()
 win._on_plot_clicked(p1)
 win._select_curve(c1)
 n_curves_before = len(p1.listDataItems())
-win.delete_selection()  # no active_annotation -> falls back to the selected curve
+win.delete_selection()  # only the curve is selected, so only the curve goes
 assert len(p1.listDataItems()) == n_curves_before - 1
 win.undo()
 assert len(p1.listDataItems()) == n_curves_before
@@ -676,7 +676,354 @@ def test_undoing_fft_drops_its_brusher():
     f.close()
 
 
+# Selection exclusivity: a click selects one thing and deselects every other
+# kind (subplot / curve / annotation) unless Shift is held. Clicks are driven
+# through the real handlers in Qt's order: a curve's sigClicked fires first
+# and accepts the event, then the scene handler runs.
+
+SHIFT = QtCore.Qt.ShiftModifier
+
+
+class FakePressEvent:
+    """Duck-types the QGraphicsSceneMouseEvent AnnotationItem.mousePressEvent reads."""
+
+    def __init__(self, pos, modifiers=QtCore.Qt.NoModifier):
+        self._pos = pos
+        self._modifiers = modifiers
+
+    def button(self):
+        return QtCore.Qt.LeftButton
+
+    def modifiers(self):
+        return self._modifiers
+
+    def scenePos(self):
+        return self._pos
+
+    def accept(self):
+        pass
+
+
+def _vb_center(plot_item):
+    return plot_item.getViewBox().sceneBoundingRect().center()
+
+
+def _click_subplot(f, plot_item, modifiers=QtCore.Qt.NoModifier):
+    f._on_scene_clicked(FakeClickEvent(_vb_center(plot_item), modifiers=modifiers))
+
+
+def _click_curve(f, plot_item, curve, modifiers=QtCore.Qt.NoModifier):
+    curve.curve.sigClicked.emit(curve.curve, FakeClickEvent(_vb_center(plot_item), modifiers=modifiers))
+    f._on_scene_clicked(FakeClickEvent(_vb_center(plot_item), accepted=True, modifiers=modifiers))
+
+
+def _click_annotation(f, ann, modifiers=QtCore.Qt.NoModifier):
+    ann.mousePressEvent(FakePressEvent(ann.scenePos(), modifiers=modifiers))
+
+
+def _selection_figure():
+    """A fresh figure in Select mode with one rect annotation on plots[1],
+    and nothing selected."""
+    f = m.LaFigure()
+    f.show()
+    app.processEvents()
+    plot = f.plots[1]
+    f.start_placing_annotation('rect')
+    scene = f.layout_widget.scene()
+    f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMousePress, _vb_center(plot)))
+    f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMouseRelease,
+                                        _vb_center(plot) + QtCore.QPointF(40, 30)))
+    f._deselect_all()
+    ann = f.annotations[-1]
+    curve = f.plots[0].listDataItems()[0]
+    return f, curve, ann
+
+
+def _selected(f):
+    return list(f.selected_plots), list(f.selected_curves), f.active_annotation
+
+
+def test_curve_click_deselects_the_selected_subplot():
+    f, curve, ann = _selection_figure()
+    p0, p1 = f.plots[0], f.plots[1]
+    _click_subplot(f, p1)
+    assert _selected(f) == ([p1], [], None)
+    _click_curve(f, p0, curve)
+    assert _selected(f) == ([], [curve], None), _selected(f)
+    assert not has_border(p1) and not has_border(p0), "no subplot is selected, so no border"
+    assert not f.move_handle.isVisible(), "handles belong to a selected subplot"
+    assert f.active_plot is p0, "the curve's subplot stays the toolbar target"
+    f.close()
+
+
+def test_subplot_click_deselects_curve_and_annotation():
+    f, curve, ann = _selection_figure()
+    _click_curve(f, f.plots[0], curve)
+    _click_subplot(f, f.plots[1])
+    assert _selected(f) == ([f.plots[1]], [], None)
+    _click_annotation(f, ann)
+    _click_subplot(f, f.plots[0])
+    assert _selected(f) == ([f.plots[0]], [], None), "a subplot click must deselect the annotation"
+    f.close()
+
+
+def test_annotation_click_deselects_curve_and_subplot():
+    f, curve, ann = _selection_figure()
+    _click_subplot(f, f.plots[1])
+    _click_curve(f, f.plots[0], curve, modifiers=SHIFT)
+    _click_annotation(f, ann)
+    assert _selected(f) == ([], [], ann), _selected(f)
+    assert not any(has_border(p) for p in f.plots)
+    f.close()
+
+
+def test_curve_click_deselects_the_annotation():
+    f, curve, ann = _selection_figure()
+    _click_annotation(f, ann)
+    _click_curve(f, f.plots[0], curve)
+    assert _selected(f) == ([], [curve], None), _selected(f)
+    f.close()
+
+
+def test_shift_click_keeps_every_kind_selected():
+    f, curve, ann = _selection_figure()
+    p0, p1 = f.plots[0], f.plots[1]
+    _click_subplot(f, p1)
+    _click_curve(f, p0, curve, modifiers=SHIFT)
+    _click_annotation(f, ann, modifiers=SHIFT)
+    _click_subplot(f, p0, modifiers=SHIFT)
+    assert _selected(f) == ([p1, p0], [curve], ann), _selected(f)
+    f.close()
+
+
+def test_right_click_inside_the_selection_keeps_it():
+    f, curve, ann = _selection_figure()
+    p0, p1 = f.plots[0], f.plots[1]
+    _click_subplot(f, p0)
+    _click_subplot(f, p1, modifiers=SHIFT)
+    f._on_plot_context(p0)
+    assert _selected(f) == ([p0, p1], [], None), "right-click must not collapse a multi-select"
+    f._on_plot_context(f.plots[2])
+    assert _selected(f) == ([f.plots[2]], [], None), "right-click outside the selection selects"
+    f.close()
+
+
+def test_programmatic_selection_is_exclusive_too():
+    f, curve, ann = _selection_figure()
+    _click_curve(f, f.plots[0], curve)
+    f.add_new_subplot()
+    assert _selected(f) == ([f.plots[-1]], [], None), "a new subplot's selection is exclusive"
+    _click_curve(f, f.plots[0], curve)
+    f.copy_subplot()  # nothing but a curve selected -> copies its subplot
+    f.paste_subplot()
+    assert _selected(f)[1:] == ([], None), "pasted subplots' selection is exclusive"
+    f.close()
+
+
+# LibreOffice Draw / MATLAB conventions: Shift+click toggles any item,
+# Shift+click on empty space is a no-op, Esc deselects everything, a group
+# of annotations drags together, and Del removes everything selected.
+
+def _place(f, kind, plot_item, offset=QtCore.QPointF(0, 0)):
+    scene = f.layout_widget.scene()
+    start = _vb_center(plot_item) + offset
+    f.start_placing_annotation(kind)
+    f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMousePress, start))
+    f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMouseRelease,
+                                        start + QtCore.QPointF(40, 30)))
+    return f.annotations[-1]
+
+
+def _two_annotation_figure():
+    """rect on plots[1], ellipse on plots[0] -- two subplots, so two
+    different data-unit coordinate systems. Nothing selected."""
+    f, curve, rect = _selection_figure()
+    ellipse = _place(f, 'ellipse', f.plots[0], QtCore.QPointF(-60, -40))
+    f._deselect_all()
+    return f, curve, rect, ellipse
+
+
+def _empty_scene_point(f):
+    pt = QtCore.QPointF(2, 2)
+    assert not any(p.getViewBox().sceneBoundingRect().contains(pt) for p in f.plots), \
+        "control: the 'empty' point must really be outside every subplot"
+    return pt
+
+
+def _press_escape(f):
+    esc = [s for s in f.findChildren(QtGui.QShortcut)
+           if s.key() == QtGui.QKeySequence(QtCore.Qt.Key_Escape)]
+    assert len(esc) == 1, "control: exactly one Esc shortcut is bound"
+    esc[0].activated.emit()
+
+
+def _scene_pos(ann):
+    return ann.parentItem().mapToScene(ann.pos()) if ann.parentItem() else ann.pos()
+
+
+def test_shift_click_on_empty_space_changes_nothing():
+    f, curve, ann = _selection_figure()
+    _click_subplot(f, f.plots[1])
+    _click_curve(f, f.plots[0], curve, modifiers=SHIFT)
+    _click_annotation(f, ann, modifiers=SHIFT)
+    before = _selected(f)
+    f._on_scene_clicked(FakeClickEvent(_empty_scene_point(f), modifiers=SHIFT))
+    assert _selected(f) == before, "Shift+click on empty space must do nothing"
+    f._on_scene_clicked(FakeClickEvent(_empty_scene_point(f)))
+    assert _selected(f) == ([], [], None), "a plain click on empty space still deselects all"
+    f.close()
+
+
+def test_escape_deselects_everything():
+    f, curve, ann = _selection_figure()
+    _click_subplot(f, f.plots[1])
+    _click_curve(f, f.plots[0], curve, modifiers=SHIFT)
+    _click_annotation(f, ann, modifiers=SHIFT)
+    _press_escape(f)
+    assert _selected(f) == ([], [], None) and f.selected_annotations == []
+    assert not any(has_border(p) for p in f.plots) and not f.move_handle.isVisible()
+    f.close()
+
+
+def test_escape_cancels_relink_and_deselects_in_one_press():
+    # Re-link, not placement: starting a placement already deselects all.
+    f, curve, ann = _selection_figure()
+    _click_annotation(f, ann)
+    f._start_relink(ann)
+    assert f.selected_annotations == [ann], "control: re-linking keeps the selection"
+    _press_escape(f)
+    assert f._relink_source is None
+    assert _selected(f) == ([], [], None)
+    f.close()
+
+
+def test_shift_click_toggles_every_kind():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    p0, p1 = f.plots[0], f.plots[1]
+    unselected_width = curve.opts['pen'].width()
+    _click_subplot(f, p1)
+    _click_subplot(f, p0, modifiers=SHIFT)
+    _click_curve(f, p0, curve, modifiers=SHIFT)
+    _click_annotation(f, rect, modifiers=SHIFT)
+    _click_annotation(f, ellipse, modifiers=SHIFT)
+    assert f.selected_annotations == [rect, ellipse]
+    assert rect._selected and ellipse._selected
+    _click_subplot(f, p1, modifiers=SHIFT)
+    _click_curve(f, p0, curve, modifiers=SHIFT)
+    _click_annotation(f, rect, modifiers=SHIFT)
+    assert f.selected_plots == [p0] and f.selected_curves == []
+    assert f.selected_annotations == [ellipse] and not rect._selected
+    assert f.active_annotation is ellipse
+    assert curve.opts['pen'].width() == unselected_width, "Shift-toggling a curve off must restore its pen"
+    f.close()
+
+
+def test_plain_click_on_a_grouped_annotation_collapses_to_it():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    _click_annotation(f, rect)
+    _click_annotation(f, ellipse, modifiers=SHIFT)
+    press = FakePressEvent(rect.scenePos())
+    rect.mousePressEvent(press)
+    assert f.selected_annotations == [rect, ellipse], "the press keeps the group (drag-ready)"
+    rect.mouseReleaseEvent(press)
+    assert f.selected_annotations == [rect] and not ellipse._selected
+    f.close()
+
+
+def test_dragging_a_selected_annotation_moves_the_whole_group():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    _click_annotation(f, rect)
+    _click_annotation(f, ellipse, modifiers=SHIFT)
+    rect_before, ellipse_before = _scene_pos(rect), _scene_pos(ellipse)
+    start = rect.scenePos()
+    delta = QtCore.QPointF(30, 20)
+    rect.mousePressEvent(FakePressEvent(start))
+    rect.mouseMoveEvent(FakePressEvent(start + delta))
+    rect.mouseReleaseEvent(FakePressEvent(start + delta))
+    for name, before, ann in (('rect', rect_before, rect), ('ellipse', ellipse_before, ellipse)):
+        moved = _scene_pos(ann) - before
+        assert abs(moved.x() - 30) < 0.5 and abs(moved.y() - 20) < 0.5, (name, moved)
+    assert f.selected_annotations == [rect, ellipse], "a real drag keeps the group selected"
+    f.undo()
+    f.undo()
+    assert (_scene_pos(rect) - rect_before).manhattanLength() < 0.5
+    assert (_scene_pos(ellipse) - ellipse_before).manhattanLength() < 0.5
+    f.close()
+
+
+def test_delete_removes_every_selected_kind():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    p0, p2 = f.plots[0], f.plots[2]
+    n_plots, n_curves, n_ann = len(f.plots), len(p0.listDataItems()), len(f.annotations)
+    _click_annotation(f, rect)
+    _click_curve(f, p0, curve, modifiers=SHIFT)
+    _click_subplot(f, p2, modifiers=SHIFT)
+    f.delete_selection()
+    assert rect not in f.annotations and len(f.annotations) == n_ann - 1
+    assert len(p0.listDataItems()) == n_curves - 1
+    assert p2 not in f.plots and len(f.plots) == n_plots - 1
+    f.close()
+
+
+def test_delete_leaves_a_deleted_subplots_own_items_to_its_undo():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    p0 = f.plots[0]
+    n_curves, n_ann, n_undo = len(p0.listDataItems()), len(f.annotations), len(f.undo_stack)
+    _click_subplot(f, p0)
+    _click_curve(f, p0, curve, modifiers=SHIFT)
+    _click_annotation(f, ellipse, modifiers=SHIFT)  # ellipse is on p0
+    f.delete_selection()
+    assert len(f.undo_stack) == n_undo + 1, "only the subplot's own undo entry"
+    f.undo()
+    restored = f.annotations[-1].parent_plot
+    assert len(f.annotations) == n_ann
+    assert len(restored.listDataItems()) == n_curves, "undo must bring back the subplot's curves"
+    f.close()
+
+
+def test_properties_apply_to_every_selected_annotation():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    line = _place(f, 'line', f.plots[2])
+    old_line_brush = line.brush
+    _click_annotation(f, rect)
+    _click_annotation(f, ellipse, modifiers=SHIFT)
+    _click_annotation(f, line, modifiers=SHIFT)
+    red, fill = QtGui.QColor(255, 0, 0), QtGui.QColor(0, 0, 255, 60)
+    colors = iter([red, fill])
+    saved = (QtWidgets.QColorDialog.getColor, QtWidgets.QInputDialog.getDouble,
+             QtWidgets.QMessageBox.question)
+    QtWidgets.QColorDialog.getColor = staticmethod(lambda *a, **k: next(colors))
+    QtWidgets.QInputDialog.getDouble = staticmethod(lambda *a, **k: (4.0, True))
+    QtWidgets.QMessageBox.question = staticmethod(lambda *a, **k: QtWidgets.QMessageBox.Yes)
+    try:
+        f._edit_annotation_properties(rect)
+    finally:
+        (QtWidgets.QColorDialog.getColor, QtWidgets.QInputDialog.getDouble,
+         QtWidgets.QMessageBox.question) = saved
+    for a in (rect, ellipse, line):
+        assert a.pen.color() == red and a.pen.widthF() == 4.0, a.kind
+    assert rect.brush.color() == fill and ellipse.brush.color() == fill
+    assert line.brush is old_line_brush, "fill only applies to rect/ellipse"
+    f.close()
+
+
 for _test in (
+    test_shift_click_on_empty_space_changes_nothing,
+    test_escape_deselects_everything,
+    test_escape_cancels_relink_and_deselects_in_one_press,
+    test_shift_click_toggles_every_kind,
+    test_plain_click_on_a_grouped_annotation_collapses_to_it,
+    test_dragging_a_selected_annotation_moves_the_whole_group,
+    test_delete_removes_every_selected_kind,
+    test_delete_leaves_a_deleted_subplots_own_items_to_its_undo,
+    test_properties_apply_to_every_selected_annotation,
+    test_curve_click_deselects_the_selected_subplot,
+    test_subplot_click_deselects_curve_and_annotation,
+    test_annotation_click_deselects_curve_and_subplot,
+    test_curve_click_deselects_the_annotation,
+    test_shift_click_keeps_every_kind_selected,
+    test_right_click_inside_the_selection_keeps_it,
+    test_programmatic_selection_is_exclusive_too,
     test_undoing_fft_drops_its_brusher,
     test_new_subplot_adopts_link_x,
     test_link_x_survives_deleting_the_reference_subplot,
