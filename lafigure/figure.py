@@ -57,6 +57,10 @@ ICON_DIR = os.path.join(
 
 
 class LaFigure(QtWidgets.QMainWindow):
+    NUDGE_PX = 1        # arrow key: move selected annotations 1 screen pixel
+    NUDGE_BIG_PX = 10   # Shift+arrow
+    BAND_MIN_DRAG_PX = 3  # below this a press+release on empty space is a click
+
     def __init__(self, empty=False):
         super().__init__()
         self.setWindowTitle("MATLAB-like Figure")
@@ -94,6 +98,11 @@ class LaFigure(QtWidgets.QMainWindow):
         self.undo_stack = []     # list of (undo_fn, redo_fn)
         self.redo_stack = []
         self._undo_group = None  # list of steps while an undo_group() block is open
+        # Rubber-band selection (drag on empty space): {'origin', 'additive', 'item'}.
+        self._band = None
+        # A finished band drag reaches pyqtgraph as a plain click (it never
+        # saw the consumed moves); this swallows that one click.
+        self._suppress_click = False
 
         # Row/col stretch factors; resizing a border adjusts them so the grid
         # layout reflows the rest of the grid for free.
@@ -288,6 +297,17 @@ class LaFigure(QtWidgets.QMainWindow):
         QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Escape), self,
                          activated=lambda: (self._cancel_placing(), self._cancel_relink(),
                                             self._deselect_all()))
+        for key, dx, dy in ((QtCore.Qt.Key_Left, -1, 0), (QtCore.Qt.Key_Right, 1, 0),
+                            (QtCore.Qt.Key_Up, 0, -1), (QtCore.Qt.Key_Down, 0, 1)):
+            for mod, step in ((0, self.NUDGE_PX), (QtCore.Qt.SHIFT, self.NUDGE_BIG_PX)):
+                QtGui.QShortcut(QtGui.QKeySequence(int(mod) | int(key)), self,
+                                activated=lambda dx=dx, dy=dy, s=step: self.nudge_selection(dx * s, dy * s))
+        QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Tab), self,
+                        activated=lambda: self.cycle_selection(1))
+        # "Shift+Tab", not Key_Backtab: a real Shift+Tab arrives as Backtab
+        # *with* Shift held, which Qt's shortcut map matches as Shift+Tab.
+        QtGui.QShortcut(QtGui.QKeySequence("Shift+Tab"), self,
+                        activated=lambda: self.cycle_selection(-1))
 
     def _build_demo_subplots(self):
         t = np.linspace(0, 10, 200_000)
@@ -625,6 +645,9 @@ class LaFigure(QtWidgets.QMainWindow):
         deselects everything instead of selecting. pyqtgraph's own
         MouseClickEvent already distinguishes double clicks via .double(),
         the same event object this signal carries."""
+        if self._suppress_click:
+            self._suppress_click = False
+            return
         pos = ev.scenePos()
         additive = bool(ev.modifiers() & QtCore.Qt.ShiftModifier)
 
@@ -2007,7 +2030,161 @@ class LaFigure(QtWidgets.QMainWindow):
                 self._create_annotation(kind, anchor, parent_plot, p0, p1_local, text)
                 self._cancel_placing()
                 return True
+        if obj is self.layout_widget.scene():
+            if self._band_event(event):
+                return True
         return super().eventFilter(obj, event)
+
+    # -- rubber-band selection (LibreOffice Draw / MATLAB) ------------------
+    def _can_start_band_at(self, scene_pos):
+        """Nothing selectable under the cursor, as in LibreOffice: not on an
+        annotation or its handles, a subplot resize/move handle, a curve or
+        a legend (pyqtgraph would hand those the release as a click). Then
+        either outside every subplot, or inside a subplot's data area --
+        which Select mode otherwise leaves idle (the gutters between
+        subplots are only a few pixels wide) -- unless brushing claims that
+        drag. Axes and titles never start one."""
+        in_plot = [p for p in self.plots if p.sceneBoundingRect().contains(scene_pos)]
+        if in_plot and (self.brushing or not any(
+                p.getViewBox().sceneBoundingRect().contains(scene_pos) for p in in_plot)):
+            return False
+        for p in in_plot:
+            for c in p.listDataItems():
+                if (isinstance(c, pg.PlotDataItem) and getattr(c.curve, 'clickable', False)
+                        and c.curve.mouseShape().contains(c.curve.mapFromScene(scene_pos))):
+                    return False
+        for item in self.layout_widget.scene().items(scene_pos):
+            if isinstance(item, (ResizeHandle, MoveHandle)) and item.isVisible():
+                return False
+            while item is not None:
+                if isinstance(item, (AnnotationItem, pg.LegendItem)):
+                    return False
+                item = item.parentItem()
+        return True
+
+    def _band_event(self, event):
+        """A left press where _can_start_band_at arms the band; it only appears once the
+        drag passes BAND_MIN_DRAG_PX, so a plain click still deselects.
+        Press and release are never consumed (pyqtgraph must still see
+        them); the moves are, once the band is showing."""
+        etype = event.type()
+        if etype == QtCore.QEvent.GraphicsSceneMousePress:
+            self._band = None
+            self._suppress_click = False
+            if (event.button() == QtCore.Qt.LeftButton and self.interaction_mode == 'select'
+                    and self._placing_kind is None and self._relink_source is None
+                    and self._can_start_band_at(event.scenePos())):
+                self._band = {
+                    'origin': QtCore.QPointF(event.scenePos()),
+                    'additive': bool(event.modifiers() & QtCore.Qt.ShiftModifier),
+                    'item': None,
+                }
+            return False
+        if self._band is None:
+            return False
+        if etype == QtCore.QEvent.GraphicsSceneMouseMove:
+            rect = QtCore.QRectF(self._band['origin'], event.scenePos()).normalized()
+            if self._band['item'] is None:
+                if max(rect.width(), rect.height()) < self.BAND_MIN_DRAG_PX:
+                    return False
+                item = QtWidgets.QGraphicsRectItem()
+                pen = pg.mkPen((40, 90, 200), width=1, style=QtCore.Qt.DashLine)
+                pen.setCosmetic(True)
+                item.setPen(pen)
+                item.setBrush(pg.mkBrush(40, 90, 200, 30))
+                item.setZValue(1e6)
+                self.layout_widget.scene().addItem(item)
+                self._band['item'] = item
+            self._band['item'].setRect(rect)
+            return True
+        if etype == QtCore.QEvent.GraphicsSceneMouseRelease:
+            band, self._band = self._band, None
+            if band['item'] is not None:
+                rect = QtCore.QRectF(band['origin'], event.scenePos()).normalized()
+                self.layout_widget.scene().removeItem(band['item'])
+                self._select_in_rect(rect, band['additive'])
+                self._suppress_click = True
+            return False
+        return False
+
+    def _select_in_rect(self, rect, additive=False):
+        """Select every subplot (its data area) and annotation (its shape,
+        without handle padding) lying fully inside the scene rect `rect`.
+        Shift adds to the selection; otherwise the band replaces it."""
+        plots = [p for p in self.plots if rect.contains(p.getViewBox().sceneBoundingRect())]
+        anns = [a for a in self.annotations if rect.contains(a.shape_scene_rect())]
+        if not additive:
+            self._clear_selection()
+        for p in plots:
+            if p not in self.selected_plots:
+                self.selected_plots.append(p)
+        if plots:
+            self.active_plot = plots[-1]
+        for a in anns:
+            if a not in self.selected_annotations:
+                self._select_annotation(a, additive=True)
+        self._mark_active(self.active_plot, keep_selection=True)
+
+    # -- keyboard: arrow-key nudge, Tab cycling ------------------------------
+    def nudge_selection(self, dx_px, dy_px):
+        """Move every selected annotation by (dx_px, dy_px) screen pixels,
+        as one undo entry. Subplots are grid cells and curves are data, so
+        neither moves."""
+        if self.interaction_mode != 'select' or not self.selected_annotations:
+            return
+        delta = QtCore.QPointF(dx_px, dy_px)
+        with self.undo_group():
+            for a in self.selected_annotations:
+                parent = a.parentItem()
+                origin = a.pos()
+                if parent is None:
+                    target = origin + delta
+                else:
+                    target = parent.mapFromScene(parent.mapToScene(origin) + delta)
+                a.setPos(target)
+                a._push_move_history(origin, target)
+
+    def _tab_order(self):
+        """Every selectable item in reading order: subplots top-to-bottom,
+        left-to-right, each followed by its clickable curves and its own
+        annotations; free-floating (figure) annotations last."""
+        def reading_key(rect):
+            return (round(rect.top()), round(rect.left()))
+
+        order = []
+        for p in sorted(self.plots, key=lambda p: reading_key(p.sceneBoundingRect())):
+            order.append(p)
+            order.extend(c for c in p.listDataItems()
+                         if isinstance(c, pg.PlotDataItem) and getattr(c.curve, 'clickable', False))
+            order.extend(sorted((a for a in self.annotations if a.parent_plot is p),
+                                key=lambda a: reading_key(a.shape_scene_rect())))
+        order.extend(sorted((a for a in self.annotations if a.parent_plot is None),
+                            key=lambda a: reading_key(a.shape_scene_rect())))
+        return order
+
+    def cycle_selection(self, step):
+        """Tab / Shift+Tab: select the next / previous item of _tab_order,
+        exclusively. Starts from the one selected item, or from either end
+        when zero or several items are selected."""
+        if self.interaction_mode != 'select':
+            return
+        order = self._tab_order()
+        if not order:
+            return
+        selected = self.selected_plots + self.selected_curves + self.selected_annotations
+        if len(selected) == 1 and selected[0] in order:
+            idx = (order.index(selected[0]) + step) % len(order)
+        else:
+            idx = 0 if step > 0 else len(order) - 1
+        target = order[idx]
+        if isinstance(target, AnnotationItem):
+            self._select_annotation(target)
+        elif isinstance(target, pg.PlotDataItem):
+            self._select_curve(target)
+            self.active_plot = self._curve_plot(target)
+            self._mark_active(self.active_plot, keep_selection=True)
+        else:
+            self._on_plot_clicked(target)
 
     def _create_annotation(self, kind, anchor, parent_plot, p0, p1_local, text=''):
         pen = pg.mkPen('k', width=2)

@@ -265,6 +265,34 @@ the actual code — this list is a summary, not a substitute for checking.
       subplot is also being deleted are skipped: the subplot's own undo
       restores them, while separate steps would target the dead
       `PlotItem`.
+- [x] **Rubber-band selection** (Select mode, LibreOffice Draw style):
+      dragging from a point with nothing selectable under it — the figure
+      margin, or a subplot's data area clear of curves, legends,
+      annotations and handles — draws a dashed rectangle; on release,
+      every subplot (by its data area) and annotation (by its shape, not
+      its handle padding, `AnnotationItem.shape_scene_rect`) lying
+      **fully** inside is selected, replacing the selection, or added to
+      it with Shift. Curves are never band-selected. The data area is
+      allowed as a start point because the gutters between subplots are
+      only a few pixels wide; brushing, when on, keeps that drag instead.
+      Mechanism (`_band_event`, from the scene `eventFilter`): press and
+      release pass through to pyqtgraph, the moves are consumed once the
+      band shows, so pyqtgraph ends the gesture with one plain click at
+      the press point, which `_suppress_click` swallows. That is also why
+      a band never starts on a curve or legend: pyqtgraph would deliver
+      that click to it. Tested with real `QMouseEvent`s to the viewport.
+- [x] **Keyboard** (Select mode): arrow keys nudge every selected
+      annotation 1 screen pixel, Shift+arrow 10 (`NUDGE_PX`/
+      `NUDGE_BIG_PX`), one undo entry per press, whatever each one's
+      parent coordinates; subplots and curves don't move. Tab / Shift+Tab
+      select the next / previous item exclusively, in reading order
+      (`_tab_order`: subplots top-left first, each followed by its
+      clickable curves and its annotations; free-floating annotations
+      last), wrapping around; from zero or several selected items it
+      starts at either end. Shift+Tab is bound as `"Shift+Tab"`, not
+      `Key_Backtab`: a real keyboard sends Backtab *with* Shift, which Qt
+      matches as Shift+Tab — a bare Backtab binding never fires, and the
+      unhandled key then moves focus to the toolbar.
 - [x] **One gesture = one Undo**, as in LibreOffice Draw / MATLAB:
       `with self.undo_group():` folds every `_push_history` inside it into
       a single entry (undo runs the steps in reverse, redo in order —
@@ -285,9 +313,9 @@ the actual code — this list is a summary, not a substitute for checking.
 - [x] Three interaction modes, exclusive toolbar toggle (Select is default):
       - **Select** (mouse-pointer icon): click a subplot to select it;
         drag its border/corner handles to resize, its center handle to
-        move/swap. Dragging inside a subplot's data area does nothing in
-        this mode (freed up for the handles) — normal data pan/zoom is
-        disabled while Select is active.
+        move/swap. Normal data pan/zoom is disabled while Select is
+        active; dragging from a free point of a subplot's data area (or the
+        figure margin) draws a selection rubber band instead — see below.
       - **Hand**: plain pan/zoom on whichever subplot is under the cursor.
         No selection border/handles ever show, though the active subplot
         is still tracked silently so toolbar actions keep a sensible
@@ -383,9 +411,15 @@ cross it carelessly.
   `pg.setConfigOptions(useOpenGL=False)` (test-only — never disable OpenGL
   in the shipped app) gets you a running `QApplication` and real widget
   geometry; then call `win._begin_resize(...)`, `win.delete_curve(...)`,
-  etc. directly and assert on state. Simulating an actual drag through Qt's
-  synthetic event queue was tried implicitly and is not reliable headless —
-  don't bother.
+  etc. directly and assert on state. *Corrected 2026-09-27:* this said
+  simulating a real drag headlessly was unreliable, which is false with
+  PyQt5 offscreen — building `QtGui.QMouseEvent`s and `sendEvent`-ing them
+  to `layout_widget.viewport()` (press, moves with `LeftButton` held,
+  release), and `QtTest.QTest.keyClick` on an activated window for keys,
+  both work (`smoke_test.py`'s `_mouse`/`_key`). Use them whenever the
+  behavior depends on Qt's or pyqtgraph's own event routing — a direct
+  method call can't show it: the rubber band's leftover-click bug and
+  the dead Shift+Tab binding were both invisible to direct calls.
 - **A shared scene-level click event carries more than you'd think.**
   pyqtgraph's `MouseClickEvent` (delivered via `scene().sigMouseClicked`)
   exposes both `.double()` (single vs. double click) and `.isAccepted()`

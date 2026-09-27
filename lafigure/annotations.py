@@ -311,6 +311,12 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             rect = QtCore.QRectF(-pad, -pad, 2 * pad, 2 * pad)
         return rect.adjusted(-pad, -pad, pad, pad)
 
+    def shape_scene_rect(self):
+        """The shape's own extent in scene coordinates, without the
+        boundingRect's handle padding -- what a rubber band must enclose."""
+        pad = self._px_to_local(20)
+        return self.mapRectToScene(self.boundingRect().adjusted(pad, pad, -pad, -pad))
+
     def paint(self, painter, option, widget=None):
         painter.setPen(self.pen)
         p0 = QtCore.QPointF(0, 0)

@@ -840,6 +840,7 @@ def _two_annotation_figure():
     f, curve, rect = _selection_figure()
     ellipse = _place(f, 'ellipse', f.plots[0], QtCore.QPointF(-60, -40))
     f._deselect_all()
+    app.processEvents()  # let the ViewBoxes' lazy auto-range settle before positions are read
     return f, curve, rect, ellipse
 
 
@@ -1070,7 +1071,163 @@ def test_multi_properties_is_one_undo_entry():
     f.close()
 
 
+# Rubber band, arrow nudge, Tab cycling. These use REAL Qt mouse/key events
+# (QMouseEvent to the viewport, QTest.keyClick), not direct method calls:
+# the band relies on pyqtgraph emitting exactly one click after a drag whose
+# moves it never saw, and the keys on Qt's shortcut routing -- only the real
+# event path can show either works.
+from pyqtgraph.Qt import QtTest
+
+
+def _mouse(f, etype, scene_pt, buttons, button=QtCore.Qt.LeftButton, mods=QtCore.Qt.NoModifier):
+    view = f.layout_widget
+    ev = QtGui.QMouseEvent(etype, QtCore.QPointF(view.mapFromScene(scene_pt)), button, buttons, mods)
+    QtWidgets.QApplication.sendEvent(view.viewport(), ev)
+    app.processEvents()
+
+
+def _band_drag(f, a, b, mods=QtCore.Qt.NoModifier):
+    L = QtCore.Qt.LeftButton
+    _mouse(f, QtCore.QEvent.MouseButtonPress, a, L, mods=mods)
+    for t in (0.1, 0.5, 1.0):
+        _mouse(f, QtCore.QEvent.MouseMove, a + (b - a) * t, L, button=QtCore.Qt.NoButton, mods=mods)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, b, QtCore.Qt.NoButton, mods=mods)
+
+
+def _key(f, key, mods=QtCore.Qt.NoModifier):
+    f.activateWindow()
+    app.processEvents()
+    QtTest.QTest.keyClick(f, key, mods)
+    app.processEvents()
+
+
+def test_band_from_the_margin_selects_enclosed_subplots_only():
+    f, curve, ann = _selection_figure()
+    p0 = f.plots[0]
+    corner = QtCore.QPointF(2, 2)
+    assert f._can_start_band_at(corner), "control: the figure margin starts a band"
+    beyond = p0.getViewBox().sceneBoundingRect().bottomRight() + QtCore.QPointF(3, 3)
+    _band_drag(f, corner, beyond)
+    assert _selected(f) == ([p0], [], None), _selected(f)
+    assert f._band is None and not f._suppress_click
+    assert not any(isinstance(i, QtWidgets.QGraphicsRectItem) and i.zValue() == 1e6
+                   for i in f.layout_widget.scene().items()), "the band rectangle must be removed"
+    _mouse(f, QtCore.QEvent.MouseButtonPress, corner, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, corner, QtCore.Qt.NoButton)
+    assert _selected(f) == ([], [], None), "the next plain click must not be swallowed"
+    f.close()
+
+
+def _band_start_up_left_of(f, pt):
+    """A point up-left of `pt`, still inside the same data area, where a band
+    can start -- i.e. clear of curves, legends and annotation padding."""
+    for d in range(25, 120, 5):
+        for dx, dy in ((d, d), (d, 25), (25, d)):
+            cand = pt - QtCore.QPointF(dx, dy)
+            if f._can_start_band_at(cand):
+                return cand
+    raise AssertionError("control: no free point to start a band near %r" % pt)
+
+
+def test_band_does_not_start_on_a_curve():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    x, y = curve.xData[len(curve.xData) // 2], curve.yData[len(curve.yData) // 2]
+    on_curve = f.plots[0].getViewBox().mapViewToScene(QtCore.QPointF(x, y))
+    assert not f._can_start_band_at(on_curve), \
+        "a press on a curve belongs to the curve (pyqtgraph clicks it on release)"
+    f.close()
+
+
+def test_band_inside_a_data_area_selects_enclosed_annotations():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    r = rect.shape_scene_rect()
+    start = _band_start_up_left_of(f, r.topLeft())
+    _band_drag(f, start, r.bottomRight() + QtCore.QPointF(5, 5))
+    assert f.selected_annotations == [rect] and f.selected_plots == [], _selected(f)
+    f.close()
+
+
+def test_shift_band_adds_to_the_selection():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    _click_curve(f, f.plots[0], curve)
+    r = rect.shape_scene_rect()
+    _band_drag(f, _band_start_up_left_of(f, r.topLeft()), r.bottomRight() + QtCore.QPointF(5, 5),
+               mods=SHIFT)
+    assert f.selected_curves == [curve] and f.selected_annotations == [rect], _selected(f)
+    f.close()
+
+
+def test_band_never_starts_while_brushing_or_outside_select_mode():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    inside = _vb_center(f.plots[2])
+    f.brush_action.trigger()
+    assert not f._can_start_band_at(inside), "brushing owns drags in the data area"
+    f.brush_action.trigger()
+    f.hand_action.trigger()
+    _band_drag(f, QtCore.QPointF(2, 2), f.plots[0].getViewBox().sceneBoundingRect().bottomRight()
+               + QtCore.QPointF(3, 3))
+    assert f.selected_plots == [], "no band in Hand mode"
+    f.close()
+
+
+def test_arrow_keys_nudge_selected_annotations_one_undo_per_press():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    _click_annotation(f, rect)
+    _click_annotation(f, ellipse, modifiers=SHIFT)
+    before = {a: _scene_pos(a) for a in (rect, ellipse)}
+    n_undo = len(f.undo_stack)
+    _key(f, QtCore.Qt.Key_Right)
+    _key(f, QtCore.Qt.Key_Down, QtCore.Qt.ShiftModifier)
+    for a in (rect, ellipse):
+        moved = _scene_pos(a) - before[a]
+        assert abs(moved.x() - f.NUDGE_PX) < 0.5 and abs(moved.y() - f.NUDGE_BIG_PX) < 0.5, (a.kind, moved)
+    assert len(f.undo_stack) == n_undo + 2, "one undo entry per key press"
+    f.undo()
+    f.undo()
+    for a in (rect, ellipse):
+        assert (_scene_pos(a) - before[a]).manhattanLength() < 0.5
+    f.close()
+
+
+def test_arrow_keys_do_nothing_without_selected_annotations():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    _click_subplot(f, f.plots[0])
+    pos, n_undo = _scene_pos(rect), len(f.undo_stack)
+    _key(f, QtCore.Qt.Key_Left)
+    assert _scene_pos(rect) == pos and len(f.undo_stack) == n_undo
+    f.close()
+
+
+def test_tab_cycles_every_item_in_reading_order_and_wraps():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    order = f._tab_order()
+    assert order[0] is f.plots[0] and order[1] is curve, "top-left subplot first, then its curves"
+    assert ellipse in order and rect in order and order.index(rect) > order.index(f.plots[1])
+
+    def current():
+        sel = f.selected_plots + f.selected_curves + f.selected_annotations
+        assert len(sel) == 1, sel
+        return sel[0]
+
+    for expected in order + [order[0]]:
+        _key(f, QtCore.Qt.Key_Tab)
+        assert current() is expected, (expected, current())
+    _key(f, QtCore.Qt.Key_Backtab, QtCore.Qt.ShiftModifier)  # what a keyboard sends for Shift+Tab
+    assert current() is order[-1]
+    assert isinstance(QtWidgets.QApplication.focusWidget(), pg.GraphicsLayoutWidget), \
+        "Tab must not move keyboard focus to the toolbar"
+    f.close()
+
+
 for _test in (
+    test_band_from_the_margin_selects_enclosed_subplots_only,
+    test_band_does_not_start_on_a_curve,
+    test_band_inside_a_data_area_selects_enclosed_annotations,
+    test_shift_band_adds_to_the_selection,
+    test_band_never_starts_while_brushing_or_outside_select_mode,
+    test_arrow_keys_nudge_selected_annotations_one_undo_per_press,
+    test_arrow_keys_do_nothing_without_selected_annotations,
+    test_tab_cycles_every_item_in_reading_order_and_wraps,
     test_undo_group_nests_and_replays_in_order,
     test_multi_delete_is_one_undo_entry_and_round_trips,
     test_multi_properties_is_one_undo_entry,
