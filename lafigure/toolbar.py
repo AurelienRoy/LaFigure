@@ -139,6 +139,11 @@ class ToolbarMixin:
             tooltip="Brush: rectangular data brushing on any subplot -- right-click a "
                      "selection to delete/transform/fit/stat it",
         )
+        action("Hide Brushed Points", self.hide_brushed_points, icon=SP.SP_DialogDiscardButton,
+               tooltip="Hide Brushed Points: stop drawing the brushed points, in every "
+                       "subplot showing the same rows (the data stays intact)")
+        action("Show All Points", self.show_all_hidden_points, icon=SP.SP_DialogResetButton,
+               tooltip="Show All Points: draw every hidden point again")
 
         tb.addSeparator()
         mode_group = QtGui.QActionGroup(self)

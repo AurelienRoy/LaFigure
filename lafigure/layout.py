@@ -399,7 +399,8 @@ class LayoutMixin:
     def _insert_subplot_at(self, row, col, title, xlabel, ylabel, series_data, box=None):
         """Place a new subplot in cell (row, col) -- or exactly at `box`,
         when restoring a deleted one -- without shifting anything. Inverse
-        of _remove_subplot. series_data: Series.to_dict() outputs."""
+        of _remove_subplot. series_data: BrushingMixin._series_full_dict
+        outputs (Series.to_dict plus hidden/not-currently-drawn rows)."""
         new_plot = self.add_subplot(row=row, col=col, title=title)
         if box is not None:
             self.boxes[new_plot] = box
@@ -409,7 +410,7 @@ class LayoutMixin:
         if ylabel:
             new_plot.setLabel('left', ylabel)
         for d in series_data:
-            self._add_series_from_dict(new_plot, d)
+            self._add_series_restoring(new_plot, d)
         return new_plot
 
     def insert_subplot_below(self, reference_plot, title=""):
@@ -492,7 +493,7 @@ class LayoutMixin:
         title = plot_item.titleLabel.text
         xlabel = plot_item.getAxis('bottom').labelText
         ylabel = plot_item.getAxis('left').labelText
-        series_data = [s.to_dict() for s in self._series_on(plot_item)]
+        series_data = [self._series_full_dict(s) for s in self._series_on(plot_item)]
         # Snapshot annotations first: _remove_subplot purges them unconditionally.
         annotations_data = [a.to_dict() for a in self._annotations_on(plot_item)]
         box = self.boxes.get(plot_item)

@@ -61,128 +61,18 @@ brushed rows show as partial bars, np.bincount of their bins. Anything
 else (a kind whose get_xy isn't point-like, e.g. an image) brushes nothing,
 without error; a kind without 'brush' in `capabilities` is never asked.
 
-SelectionModel and LinkedScatter below are superseded by the above (the
-demo's two scatter subplots are now two series of one DataSource) and no
-longer used by LaFigure; they remain only because lafigure/__init__.py
-still exports them.
+This replaces the earlier SelectionModel/LinkedScatter mechanism (a
+bespoke point-id-based shared selection, wired onto two hardcoded demo
+scatter subplots): the demo's two scatter subplots are now two ordinary
+series of one shared DataSource, linked by construction like any other
+pair of series sharing a source. Removed 2026-09-28 (WP-J) once nothing
+referenced either class any more.
 """
 import numpy as np
 from pyqtgraph.Qt import QtCore, QtWidgets
 import pyqtgraph as pg
 
 from .series import Series, _SERIES_ATTR
-
-
-class SelectionModel(QtCore.QObject):
-    """Superseded by DataSource-row brushing -- see the module docstring."""
-    selectionChanged = QtCore.Signal(object)  # emits a boolean numpy mask
-
-    def __init__(self, n_points):
-        super().__init__()
-        self.mask = np.zeros(n_points, dtype=bool)
-
-    def set_selection(self, mask):
-        self.mask = mask
-        self.selectionChanged.emit(self.mask)
-
-    def clear(self):
-        self.set_selection(np.zeros_like(self.mask))
-
-
-class LinkedScatter:
-    """Superseded by DataSource-row brushing -- see the module docstring.
-
-    A subplot that participates in linked selection: it owns (x, y) data
-    plus a shared row-id space (so two subplots showing different
-    projections of the *same* rows can highlight the same rows). Selecting
-    via rectangular brush on this plot updates the shared SelectionModel;
-    every LinkedScatter bound to that same model redraws its highlight
-    overlay in response."""
-
-    def __init__(self, plot_item, x, y, selection_model, color=(80, 120, 220), figure=None):
-        self.plot_item = plot_item
-        self.x = np.asarray(x)
-        self.y = np.asarray(y)
-        self.selection_model = selection_model
-
-        self.base = pg.ScatterPlotItem(
-            x=self.x, y=self.y, size=4, pen=None, brush=pg.mkBrush(*color, 160)
-        )
-        self.highlight = pg.ScatterPlotItem(
-            x=[], y=[], size=7, pen=pg.mkPen('k', width=1), brush=pg.mkBrush(255, 60, 60, 220)
-        )
-        plot_item.addItem(self.base)
-        plot_item.addItem(self.highlight)
-        self.highlight.setZValue(10)
-
-        selection_model.selectionChanged.connect(self._on_selection_changed)
-
-        # add_subplot wires a generic RectBrush onto every new plot_item's
-        # ViewBox by default (so brushing works on any subplot, not just
-        # this row-linked pair). A LinkedScatter plot uses its own
-        # row-linked brushing instead -- drop that default brusher first so
-        # our own mouseDragEvent wrapper below isn't stacked on top of it.
-        if figure is not None:
-            brusher = figure._brushers.pop(plot_item, None)
-            if brusher is not None:
-                brusher.uninstall()
-        self.figure = figure
-
-        self.view_box = plot_item.getViewBox()
-        self._brush_origin = None
-        self._brush_rect_item = None
-        self.brushing_enabled = False
-
-        # Route mouse drags through our handler only while brushing mode is on.
-        self.view_box.mouseDragEvent = self._wrap_drag(self.view_box.mouseDragEvent)
-
-    def _on_selection_changed(self, mask):
-        self.highlight.setData(x=self.x[mask], y=self.y[mask])
-
-    def set_brushing(self, enabled):
-        # Pan-disabling is LaFigure._apply_mouse_enabled's job, not ours.
-        self.brushing_enabled = enabled
-
-    def _wrap_drag(self, original_drag):
-        def handler(ev, axis=None):
-            if not self.brushing_enabled:
-                return original_drag(ev, axis=axis)
-
-            ev.accept()
-            pos = self.view_box.mapToView(ev.pos())
-            if ev.isStart():
-                self._brush_origin = pos
-                self._brush_rect_item = QtWidgets.QGraphicsRectItem()
-                self._brush_rect_item.setPen(pg.mkPen('k', style=QtCore.Qt.DashLine))
-                self._brush_rect_item.setBrush(pg.mkBrush(120, 120, 255, 40))
-                self.view_box.addItem(self._brush_rect_item, ignoreBounds=True)
-
-            if self._brush_origin is not None:
-                x0, y0 = self._brush_origin.x(), self._brush_origin.y()
-                x1, y1 = pos.x(), pos.y()
-                rect = QtCore.QRectF(min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
-                self._brush_rect_item.setRect(rect)
-
-            if ev.isFinish():
-                x0, y0 = self._brush_origin.x(), self._brush_origin.y()
-                x1, y1 = pos.x(), pos.y()
-                xlo, xhi = sorted((x0, x1))
-                ylo, yhi = sorted((y0, y1))
-                mask = (self.x >= xlo) & (self.x <= xhi) & (self.y >= ylo) & (self.y <= yhi)
-                additive = bool(ev.modifiers() & QtCore.Qt.ShiftModifier)
-                if not additive:
-                    # Brushing is a figure-wide concept (see RectBrush) --
-                    # a fresh, non-additive brush anywhere unbrushes every
-                    # other subplot in this figure first.
-                    if self.figure is not None:
-                        self.figure._clear_all_brush_selection(except_plot=self.plot_item)
-                else:
-                    mask = self.selection_model.mask | mask
-                self.selection_model.set_selection(mask)
-                self.view_box.removeItem(self._brush_rect_item)
-                self._brush_rect_item = None
-                self._brush_origin = None
-        return handler
 
 
 # -- the brushing protocol (see the module docstring) ------------------------

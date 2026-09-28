@@ -313,3 +313,44 @@ def test_to_dict_from_dict_round_trip_preserves_fields():
     assert rebuilt.base_color == group.base_color
     assert list(rebuilt.members) == [s1, s2]
     f.close()
+
+
+# -- coordinator addition: the clip_ops.py copy/paste hook K1 reported but
+# could not apply itself (clip_ops.py is owned by J, wave 3, not K1) -------
+def test_copy_paste_subplot_carries_its_group_hierarchy():
+    f, p, s1, s2 = _two_curve_figure()
+    group = Group([s1, s2], common_label='Grp-', label_position='suffix', base_color=(30, 144, 255))
+    f.groups.append(group)
+    f._on_plot_clicked(p)
+    f.copy_subplot()
+
+    f2 = m.LaFigure(empty=True)
+    n_undo = len(f2.undo_stack)
+    f2.paste_subplot()
+    new_plot = f2.plots[-1]
+
+    assert len(f2.groups) == 1
+    pasted = f2.groups[0]
+    assert pasted.subplot is new_plot
+    assert pasted.common_label == 'Grp-' and pasted.label_position == 'suffix'
+    assert pasted.base_color == group.base_color
+    assert {s.name for s in pasted.members} == {'raw', 'filtered'}
+    assert len(f2.undo_stack) == n_undo + 1
+
+    f2.undo()
+    assert f2.groups == [], "undoing the paste must also remove the group it carried in"
+    f2.redo()
+    assert len(f2.groups) == 1 and f2.groups[0].subplot is f2.plots[-1]
+    f.close()
+    f2.close()
+
+
+def test_copy_paste_subplot_with_no_group_is_unaffected():
+    f, p, s1, s2 = _two_curve_figure()
+    f._on_plot_clicked(p)
+    f.copy_subplot()
+    f2 = m.LaFigure(empty=True)
+    f2.paste_subplot()
+    assert f2.groups == []
+    f.close()
+    f2.close()

@@ -34,6 +34,7 @@ stays linked to it (brushing, hidden rows).
 """
 from .annotations import AnnotationItem
 from .selection_ui import selection_op
+from .groups import groups_from_dict
 
 
 class ClipOpsMixin:
@@ -158,6 +159,7 @@ class ClipOpsMixin:
                 'ylabel': p.getAxis('left').labelText,
                 'series': [self._series_full_dict(s) for s in self._series_on(p)],
                 'annotations': [a.to_dict() for a in self._annotations_on(p)],
+                'groups': [g.to_dict() for g in self.groups if g.subplot is p],
             }
             for p in targets
         ]
@@ -177,6 +179,7 @@ class ClipOpsMixin:
 
         def build():
             new_plots = []
+            new_groups = []
             for i, data in enumerate(data_list):
                 new_plot = self._insert_subplot_at(
                     start_row + i, col, data['title'], data['xlabel'], data['ylabel'], []
@@ -185,19 +188,26 @@ class ClipOpsMixin:
                     self._add_series_restoring(new_plot, d)
                 for d in data.get('annotations', []):
                     AnnotationItem.from_dict(self, new_plot, d)
+                new_groups.extend(groups_from_dict(self, new_plot, data.get('groups', [])))
                 new_plots.append(new_plot)
-            return new_plots
+            self.groups.extend(new_groups)
+            return new_plots, new_groups
 
-        holder = {'plots': build()}
+        holder = {}
+        holder['plots'], holder['groups'] = build()
         self._select_plots(holder['plots'])
 
         def undo_fn():
+            for g in holder.get('groups', []):
+                if g in self.groups:
+                    self.groups.remove(g)
             for p in holder.get('plots', []):
                 self._remove_subplot(p)
             holder['plots'] = []
+            holder['groups'] = []
 
         def redo_fn():
-            holder['plots'] = build()
+            holder['plots'], holder['groups'] = build()
             self._select_plots(holder['plots'])
 
         self._push_history(undo_fn, redo_fn)

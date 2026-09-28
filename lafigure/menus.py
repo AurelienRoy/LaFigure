@@ -87,11 +87,17 @@ class MenusMixin:
         fit_menu.addAction("Polynomial...").triggered.connect(
             bound(lambda: self.fit_brushed_points(plot_item, degree=None))
         )
-        # These four act on the figure-wide brushed selection (see
+        hide_pts_action = menu.addAction("Hide Brushed Points")
+        hide_pts_action.triggered.connect(bound(self.hide_brushed_points))
+        # These five act on the figure-wide brushed selection (see
         # brushing.py) -- shown only while Brush mode is on, and disabled
         # (not hidden) when nothing is currently brushed, since both can
         # change after this menu was built.
-        brush_actions = [delete_pts_action, transform_action, stats_action, fit_menu.menuAction()]
+        brush_actions = [delete_pts_action, transform_action, stats_action, fit_menu.menuAction(),
+                         hide_pts_action]
+        # Always shown: hidden rows outlive Brush mode.
+        show_all_action = menu.addAction("Show All Points")
+        show_all_action.triggered.connect(bound(self.show_all_hidden_points))
 
         delete_menu = menu.addMenu("Delete Curve")
         rename_menu = menu.addMenu("Rename Curve")
@@ -115,6 +121,7 @@ class MenusMixin:
             for action in brush_actions:
                 action.setVisible(self.brushing)
                 action.setEnabled(self.brushing and has_selection)
+            show_all_action.setEnabled(self.has_hidden_points())
 
         def prune_pyqtgraph_export():
             actions = menu.actions()

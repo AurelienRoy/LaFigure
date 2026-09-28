@@ -276,6 +276,6 @@ class SeriesMixin:
 
     def _series_on(self, plot_item):
         """Every Series on plot_item, in drawing order, derived live from
-        its data items (a LinkedScatter's scatter items aren't series yet)."""
+        its data items."""
         found = (self._series_of(item) for item in plot_item.listDataItems())
         return [s for s in found if s is not None]

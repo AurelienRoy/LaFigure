@@ -208,9 +208,18 @@ def test_demo_scatters_brush_link_through_one_shared_source():
     src = s3.source
     assert s4.source is src and s3.rows is not None, "control: one explicit shared source"
     assert not hasattr(f, 'selection_model') and not hasattr(f, 'scatter1')
-    assert pg.mkPen(s3.item.opts['pen']).style() == QtCore.Qt.NoPen, "dots, no line through them"
+
+    def _no_visible_line(item):
+        # The scatter kind uses a fully-transparent pen, not a NoPen style,
+        # so its connecting line stays invisible without breaking click
+        # hit-testing (see kinds/scatter.py's own module docstring for
+        # why pen=None can't be used here) -- either style is "no line".
+        pen = pg.mkPen(item.opts['pen'])
+        return pen.style() == QtCore.Qt.NoPen or pen.color().alpha() == 0
+
+    assert _no_visible_line(s3.item), "dots, no line through them"
     f._select_curve(s3.item)  # a selected scatter outlines its dots, still no line
-    assert pg.mkPen(s3.item.opts['pen']).style() == QtCore.Qt.NoPen
+    assert _no_visible_line(s3.item)
     f._deselect_curve()
     p3.getViewBox().setRange(xRange=(-3, 3), yRange=(-3, 3), padding=0)
     app.processEvents()

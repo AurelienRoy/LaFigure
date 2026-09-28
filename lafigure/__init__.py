@@ -41,7 +41,6 @@ See CLAUDE.md for the design lessons behind this package's structure.
 """
 from .figure import LaFigure
 from .manager import FigureManager
-from .selection import SelectionModel, LinkedScatter
 from .registry import get_registry, FigureRegistry
 from .clipboard import get_clipboard, Clipboard
 from .annotations import AnnotationItem, SHAPE_KINDS
@@ -56,8 +55,6 @@ from .app import main
 __all__ = [
     "LaFigure",
     "FigureManager",
-    "SelectionModel",
-    "LinkedScatter",
     "get_registry",
     "FigureRegistry",
     "get_clipboard",

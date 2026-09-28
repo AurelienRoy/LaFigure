@@ -52,8 +52,8 @@ package-tree comment and bug #8/#9 for what it found along the way.
 | I1 | Kinds: scatter, stairs, area, hist | 3 | H | sonnet | merged (bf63d55) |
 | I2 | Kinds: bar, errorbar | 3 | H | sonnet | merged (de052cf); found+fixed a real ErrorBarItem shape-mismatch crash |
 | I3 | Kind: heatmap/imshow + colorbar | 3 | H | sonnet | merged (e2b84ec); found a real Series.name gap (fixed by coordinator, see series.py) |
-| J  | Brushing on every kind, hide/show brushed, derived columns (Phase 3) | 3 | H | opus | running (wp/J, agent af6cdd012baf74aac) |
-| K1 | Groups model: hierarchy, common label, HSL color offsets (Phase 2b) | 3 | H | sonnet | merged (cccf853); clip_ops.py copy/paste hook reported but not yet applied — deferred until J (also owns clip_ops.py) merges |
+| J  | Brushing on every kind, hide/show brushed, derived columns (Phase 3) | 3 | H | opus | merged (b638b99); coordinator applied its menus.py/toolbar.py/layout.py diffs, replaced the demo's line-drawn-as-dots workaround with real ax.scatter (I1's kind), deleted dead SelectionModel/LinkedScatter — see CLAUDE.md bug #14/#15 |
+| K1 | Groups model: hierarchy, common label, HSL color offsets (Phase 2b) | 3 | H | sonnet | merged (cccf853); clip_ops.py copy/paste hook applied by coordinator alongside J's merge (both owned clip_ops.py) — 2 new tests in test_groups.py confirm it round-trips through undo |
 | K2 | Curve browser tab + bottom property editor (Phase 2b) | 4 | D, K1 | sonnet | todo |
 | L  | Console panel + datatip + `src.filter` wiring (Phase 2) | 3 | H | sonnet | merged (00556a7) |
 | M  | HTML export via plotly + decimation popup (Phase 4) | 4 | E, I1, I2, I3 | sonnet | todo |

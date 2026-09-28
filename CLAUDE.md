@@ -65,7 +65,9 @@ LaFigure/
                                    # LaFigure attribute) so copy/paste of a
                                    # curve or a whole subplot works ACROSS
                                    # separate figure windows, not just within one
-    selection.py                    # SelectionModel, LinkedScatter
+    selection.py                    # brushing protocol (rows_in_rect/show_rows/
+                                     # brush_bins) + RectBrush -- SelectionModel/
+                                     # LinkedScatter deleted 2026-09-28 (WP-J)
     handles.py                       # DragHandle base + ResizeHandle, MoveHandle,
                                       # AnnotationHandle (child-parented resize/
                                       # rotate/endpoint grip for one AnnotationItem)
@@ -213,48 +215,45 @@ the actual code — this list is a summary, not a substitute for checking.
       writer, `_apply_mouse_enabled`: pan is off if Select mode **or**
       brushing is on. Before 2026-09-27, Brush and Link X only reached
       existing subplots, and turning Brush off re-enabled pan in Select mode.
-- [x] Data brushing, two layers:
-      - **Linked** (`LinkedScatter`, `selection.py`): rectangular drag-select
-        on a scatter subplot, broadcast through a shared `SelectionModel` to
-        highlight the same point ids on every other subplot that shares
-        them — **still limited to the two hardcoded demo scatter subplots**
-        (`self.scatter1`/`self.scatter2`), not generalized to any new
-        scatter subplot added later.
-      - **Generic** (`RectBrush`, `selection.py`): the same rectangular
-        drag-select, but wired onto *every* subplot's own ordinary
-        `PlotDataItem` curves by `add_subplot` (so it's automatic for any
-        subplot, including ones pasted/added/FFT'd in later), independent
-        of any shared selection model. `LaFigure._brushers` maps
-        `plot_item -> RectBrush`; a `LinkedScatter` plot has its default
-        one removed at construction (see `LinkedScatter.__init__`) so the
-        two layers never stack on the same `ViewBox.mouseDragEvent`.
+- [x] Data brushing, generalized to every kind by WP-J (2026-09-28,
+      superseding the two-hardcoded-scatter-subplots `LinkedScatter`/
+      `SelectionModel` mechanism this bullet used to describe — both
+      classes are deleted; see Phase 3 in the Roadmap below for the
+      current design). `RectBrush` (`selection.py`) wires rectangular
+      drag-select onto every subplot's `ViewBox`, only while Brush mode is
+      on; hit-testing goes through `rows_in_rect`/a kind's `get_xy`, never
+      the downsampled display. **The selection is rows of a `DataSource`**
+      (or point positions for a plain-array series), pooled figure-wide
+      via `LaFigure._brushers`/`_figure_brush_items` — so two series
+      sharing a source (e.g. the demo's two scatter subplots, now built
+      from one shared `DataSource`) link automatically, with no separate
+      "linked" mechanism needed.
 
         **Brushing is a figure-wide concept, not per-subplot**: a plain
         (non-Shift) brush drag on any subplot unbrushes every other
-        subplot's selection in the *same figure* first (including the
-        linked-scatter pair's shared `SelectionModel`), then selects just
-        what this drag caught — `LaFigure._on_rect_brush_finished` and
-        `_clear_all_brush_selection` are the coordinators; `LinkedScatter`
-        calls the latter directly since its own brushing is a separate code
-        path. **Shift-held drag adds** to whatever's already brushed
-        anywhere in the figure instead of clearing it (`RectBrush.
-        merge_selection`; modifier is read once, at drag-release, via
-        `ev.modifiers()` — mirroring how pyqtgraph's own `ViewBox` reads
-        Ctrl for its box-zoom). The four right-click actions below act on
-        the pooled figure-wide selection (`LaFigure._figure_brush_items`),
-        not just the subplot you right-clicked.
+        subplot's selection in the *same figure* first, then selects just
+        what this drag caught. **Shift-held drag adds** to whatever's
+        already brushed anywhere in the figure instead of clearing it
+        (modifier read once, at drag-release, via `ev.modifiers()` —
+        mirroring how pyqtgraph's own `ViewBox` reads Ctrl for its
+        box-zoom). The right-click actions below act on the pooled
+        figure-wide selection, not just the subplot you right-clicked.
 
-        Selecting points enables four right-click actions on that
-        selection: **Delete Selected Points**, **Transform Selected
+        Selecting points enables six right-click actions (menus.py) on
+        that selection: **Delete Selected Points**, **Transform Selected
         Points...** (an arbitrary `eval`'d numpy expression in `x`/`y`,
         restricted `__builtins__`), **Selection Stats...** (mean/std, per
-        curve and pooled), and **Fit Selected Points** (linear or degree-N
+        curve and pooled), **Fit Selected Points** (linear or degree-N
         polynomial, via `np.polyfit` on the pooled selection — overlays a
-        new fit curve, on whichever subplot's menu was used, + a
-        `pg.TextItem` with the equation/R²). All four go through undo/redo
-        like every other data-mutating action. Fit's overlay curve is a
-        fresh `PlotDataItem`, so it can itself be brushed/deleted/fit again
-        like any other curve.
+        new fit curve, + a `pg.TextItem` with the equation/R²), and (WP-J)
+        **Hide Brushed Points** / **Show All Points** (also on the toolbar)
+        — hides/restores the brushed rows on their `DataSource`, reaching
+        every series of that source in every open figure, dataset left
+        intact. All six go through undo/redo. On a `DataSource`-backed
+        series, Transform and Remove Average (below) write a **new derived
+        column** instead of overwriting; a plain-array series is still
+        edited in place. Fit's overlay curve is a fresh `'line'` series,
+        so it can itself be brushed/deleted/fit again like any other.
 - [x] Right-click context menu, extending pyqtgraph's default one (View
       All / Mouse Mode / Plot Options) with: Paste Curve, Copy/Paste
       Subplot, Toggle Legend, Remove Average, FFT → Subplot Below, the
@@ -519,9 +518,12 @@ package lands.
       isn't a plain `PlotDataItem`) and a `hasattr(item, 'curve')` guard
       on `_add_series`'s click-wiring (an item without `.curve`, e.g.
       `BarGraphItem`/`ImageItem`, is plotted but not yet click-selectable).
-      The `highlight`/`hit`/`rows_in_rect`/`show_rows`/`to_plotly` hooks
-      and true click-selection for non-`PlotDataItem` kinds are still
-      **not yet built** — that's WP-J (brushing-on-every-kind).
+      `rows_in_rect`/`show_rows` (+ `brush_bins` for histogram-style
+      linking) were built by WP-J, in `selection.py` rather than as
+      `SeriesKind` methods proper (J didn't own `series.py` either) — see
+      Phase 3 below. `to_plotly` and true click-selection for a
+      non-`PlotDataItem` kind are still **not yet built** (M and a future
+      package, respectively).
 - [x] `Axes` facade, `lafigure/axes.py` (WP-H): `fig.subplot(row, col,
       ...)` returns one (`add_subplot` itself is unchanged, still returns
       a raw `PlotItem`); `ax.plot(x, y)` / `ax.plot(source, x='col',
@@ -599,11 +601,11 @@ package lands.
       user recolored it individually in between. Presets: "raw/filtered"
       (same hue, light vs dark) and "sensor family" (small hue spread).
       Serialized (`Group.to_dict`/`from_dict`, `lafigure/groups.py`).
-      **Built by WP-K1** (2026-09-28) — data model + Ctrl+G/Ctrl+Shift+G
-      only; grouped-annotation move/select-together already existed
-      (multi-select) and needs no group-specific code. **Not yet wired**:
-      the `clip_ops.py` hook that carries a group through copy/paste
-      (K1 doesn't own that file; reported diff pending, see PLAN.md).
+      **Built by WP-K1** (2026-09-28) — data model + Ctrl+G/Ctrl+Shift+G;
+      grouped-annotation move/select-together already existed (multi-
+      select) and needs no group-specific code. Copy/paste of a subplot
+      now carries its groups too (`clip_ops.py`'s hook, applied by the
+      coordinator after WP-J — see Phase 3 above).
 - [ ] Group **common label**: `Group.display_name(member)` (prefix/suffix,
       built by WP-K1) exists and never mutates the underlying item's own
       name, but isn't wired into anything a user sees yet — that's part of
@@ -612,21 +614,57 @@ package lands.
       Delete the whole group, Edit common label — both live).
 
 ### Phase 3 — brushing/linking on every kind
-- [ ] Brushing works on any kind via `rows_in_rect`/`show_rows`; histogram
+**Built by WP-J** (2026-09-28, `lafigure/selection.py`, `brushing.py`).
+- [x] Brushing works on any kind via `rows_in_rect`/`show_rows`; histogram
       bars ↔ time-series points through a per-row bin index
-      (`np.digitize` once); brushed bars show a stacked partial bar.
-- [ ] **Near-zero overhead when off**: no masks, overlays or connections
-      until the Brush toggle is on; selection = one sorted int array per
-      DataSource; hit-test on full data, never the downsampled display.
-- [ ] Generalizes and replaces `SelectionModel`/`LinkedScatter` and the
-      hardcoded `scatter1`/`scatter2`.
-- [ ] **Dataset stays intact.** Figure menu action "Hide Brushed Points":
-      marks brushed rows in a hidden-rows column of the source; every
-      linked subplot stops drawing them. Undoable, plus "Show All".
-- [ ] Transform / Remove Average / FFT write a **new derived column**
-      (revertible), never overwrite source data.
-- [ ] Pasted series (incl. across figure windows) **stay linked** to their
-      source.
+      (`np.digitize` once); brushed bars show a stacked partial bar. The
+      protocol lives in `selection.py` (module-level functions, since J
+      couldn't edit `series.py`), with a default that covers any kind
+      whose `get_xy` returns two parallel 1-D arrays (line, scatter,
+      stairs, area, errorbar) for free; a kind opts into brushing via
+      `'brush' in capabilities` and, for histogram-style linking, a
+      `kind.brush_bins(item, series) -> (values, edges[, heights])`
+      method. **I1's `hist` kind doesn't define `brush_bins` yet** — its
+      bars brush nothing (harmlessly) until it does; a real TODO, not a
+      bug.
+- [x] **Near-zero overhead when off**: no masks, overlays or connections
+      until the Brush toggle is on (`RectBrush` only wraps the ViewBox
+      drag handler while Brush is on); selection = one sorted row array
+      per `DataSource` (or per item for a plain-array series); hit-test
+      on full data via `get_xy`, never the downsampled display. Verified
+      by a test that a million-row series with Brush off allocates/wraps/
+      connects nothing.
+- [x] Generalizes and replaces `SelectionModel`/`LinkedScatter` and the
+      hardcoded `scatter1`/`scatter2` — **both classes deleted** from
+      `selection.py` (nothing referenced them once the demo moved to a
+      shared `DataSource`); the demo's two scatter subplots are now two
+      ordinary `ax.scatter(source, x=, y=)` series of one `DataSource`,
+      linked by construction like any other pair sharing a source.
+- [x] **Dataset stays intact.** Figure menu/toolbar action **"Hide
+      Brushed Points"** (+ **"Show All Points"**): marks brushed rows on
+      the source via `DataSource.hide_rows`; every series of that source,
+      in every open figure, stops drawing them; a hidden series' full
+      data survives a value edit made while hidden. Undoable.
+- [x] Transform / Remove Average / FFT write a **new derived column**
+      (revertible), never overwrite source data — **only for a series
+      backed by a real (non-private) `DataSource`**; a plain-array series
+      is still edited in place (nothing else could read a private source
+      anyway). FFT's output rows don't line up with the input's (frequency
+      bins vs. time samples), so an FFT'd source-backed series gets its
+      own fresh `DataSource` instead of a derived column.
+- [x] Pasted series (incl. across figure windows) **stay linked** to their
+      source — confirmed true since WP-H; `clip_ops.py`'s copy/paste (and
+      delete/undo) now go through `_series_full_dict`/`_add_series_restoring`
+      (not bare `to_dict`/`_add_series_from_dict`) so a pasted or
+      undo-restored series also keeps its not-currently-drawn rows and
+      stays hidden if they were hidden.
+- [x] **Groups also carry through subplot copy/paste** (coordinator
+      addition, closing the gap WP-K1 reported and couldn't fix itself,
+      since `clip_ops.py` wasn't K1's to edit): `copy_subplot`/
+      `paste_subplot` now call `Group.to_dict`/`groups_from_dict`
+      (`groups.py`) right after rebuilding a subplot's series and
+      annotations, and the paste's own undo/redo removes/restores the
+      carried groups along with the subplot.
 
 ### Phase 4 — Save / export
 - [ ] Save button, **leftmost** in the toolbar (+ Ctrl+S): choose any of
@@ -1208,6 +1246,64 @@ predictable step of applying that specific kind of diff, not an
 occasional cleanup. A worker package can preempt it: if you know your
 mixin will likely need `figure.py` wiring later, say so plainly in your
 report next to the diff, so the coordinator expects this exact fix.
+
+### 14. A pyqtgraph drag reports `isStart()` on the first *move*, not the press
+
+**Symptom (found by WP-J, 2026-09-28):** a brush-select rectangle
+consistently caught fewer points than the drawn rectangle actually
+covered — about 12% fewer in one repeatable case — even though the
+rectangle was visually drawn correctly on screen.
+
+**Root cause:** the brush drag handler anchored the selection rectangle's
+origin at `ev.pos()` read on the event where `ev.isStart()` is `True`.
+pyqtgraph's `MouseDragEvent.isStart()` fires on the *first move* of the
+drag, not the press itself — by then the cursor has already moved away
+from the actual press point, so `ev.pos()` at that moment is not where the
+drag began. The existing test's tolerance (±0.2 data units) was loose
+enough to hide the resulting ~12% miss rate rather than fail outright.
+
+**Lesson:** this is the same family as bug #11 (a Qt/pyqtgraph object's
+field doesn't hold the value its name suggests) — don't assume an
+event's "start" flag lines up with the coordinate at the true gesture
+origin; use `ev.buttonDownPos()` (or the equivalent "where the button
+actually went down" accessor) for the anchor, and verify with a tight
+tolerance, not a loose one that can silently absorb a real miss.
+
+### 15. `setPen(None)` on a `PlotDataItem` does not mean "no line" — and a kind's own `create()` may not treat `pen=None` as "none" either
+
+**Symptom (found by WP-J, 2026-09-28):** the demo's scatter-style dots
+had a faint gray line connecting them in a real screenshot, though no
+test caught it (an invisible-line property was never asserted against a
+rendered pixel).
+
+**Root cause:** two compounding issues, both about what `pen=None` really
+means at different layers.
+1. `PlotDataItem.setPen(None)` stores a `NoPen`-styled `QPen` for the
+   *item's own* pen state — same family as bug #7/#8 (`setBorder(None)`,
+   `rbScaleBox`) — but was applied *after* the item had already been
+   built via `_add_series(..., 'line', ...)` with `pen=None` passed
+   through to `LineKind.create`, which (by design, see its own docstring)
+   reads a missing `pen` as "use the kind's own default pen", not "no
+   pen" — so a real, visible default-colored line was drawn first, and
+   the later `setPen(None)` call changed a *different* pen attribute than
+   the one actually painting that line.
+2. Separately (see WP-I1's own finding, folded in here since it's the
+   same root issue from the opposite direction): a fully click-selectable
+   "no visible line" scatter effect needs a fully-transparent pen
+   (alpha 0), not `pen=None` or a `NoPen`-styled pen — pyqtgraph's
+   `PlotDataItem.updateItems` skips building the underlying
+   `PlotCurveItem`'s hit-testable path data entirely when `opts['pen'] is
+   None`, which would make the item permanently unclickable.
+
+**Lesson:** "no line" is not one concept in pyqtgraph — a kind's own
+`create()` may interpret a missing/`None` pen as "use my default" rather
+than "draw nothing", and even when you deliberately want an invisible
+line, `None`/`NoPen` and "fully transparent" behave differently for
+downstream hit-testing. Read the specific class's own handling of a
+`None`/missing pen (don't assume it matches `QPen`'s or another
+pyqtgraph class's convention), and verify the *rendered* result (a real
+screenshot or a pixel/hit-test check), not just that a style-comparison
+assertion passes on the wrong object.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 

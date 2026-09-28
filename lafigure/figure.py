@@ -219,21 +219,12 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         source = DataSource({'a': a, 'b': a * 0.6 + rng.normal(scale=0.5, size=n)})
 
         p3 = self.add_subplot(row=1, col=0, title="Scatter view 1 (brush me)")
-        self._demo_scatter(p3, source, 'a', 'b', (80, 160, 90))
+        Axes(self, p3).scatter(source, x='a', y='b', name="b vs a", size=4,
+                               symbolBrush=pg.mkBrush(80, 160, 90, 160), symbolPen=None)
 
         p4 = self.add_subplot(row=1, col=1, title="Scatter view 2 (same rows)")
-        self._demo_scatter(p4, source, 'b', 'a', (160, 90, 160))
+        Axes(self, p4).scatter(source, x='b', y='a', name="a vs b", size=4,
+                               symbolBrush=pg.mkBrush(160, 90, 160, 160), symbolPen=None)
 
         self.focused_plot = p1
         self._mark_active(p1)
-
-    def _demo_scatter(self, plot_item, source, x, y, color):
-        """A line series drawn as dots. TODO: ax.scatter once a scatter kind
-        exists (this style isn't carried by the line kind's copy/paste)."""
-        item = self._add_series(plot_item, 'line', source[x], source[y],
-                                name=f"{y} vs {x}", source=source, columns=(x, y)).item
-        item.setPen(None)  # the line kind reads pen=None as "default pen"
-        item.setSymbol('o')
-        item.setSymbolSize(4)
-        item.setSymbolPen(None)
-        item.setSymbolBrush(pg.mkBrush(*color, 160))
