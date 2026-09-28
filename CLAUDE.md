@@ -25,13 +25,30 @@ LaFigure/
     __init__.py            # public API: LaFigure, FigureManager, ...
     __main__.py             # `python3 -m lafigure`
     app.py                   # main(): opens a FigureManager + a demo LaFigure
-    figure.py                 # LaFigure -- the core class (was the whole file)
+    figure.py                 # LaFigure -- __init__ + composing the mixins below
+                                # into class LaFigure(<mixins>, QMainWindow);
+                                # everything else moved out by WP-01 (2026-09-28)
+    toolbar.py                  # toolbar buttons/actions + global shortcuts
+    menus.py                     # subplot right-click menu, empty-space menu
+    layout.py                     # grid, resize/move/swap, floating subplots,
+                                   # handle positioning (kept together: bug #6's
+                                   # self.floating state ties them tightly)
+    selection_ui.py                # click dispatch, selection (subplot/curve/
+                                    # annotation), rubber band, Tab/nudge
+    history.py                      # undo/redo stack, undo_group()
+    brushing.py                      # RectBrush glue + the brushed-point actions
+    clip_ops.py                       # copy/paste curve & subplot, delete_*
+    annotation_ops.py                  # placement, relink, eventFilter
+    view_ops.py                         # Home/Fit, Link X, remove average, FFT,
+                                         # set_interaction_mode
+    naming.py                           # figure/subplot/curve renaming, axis labels
     manager.py                 # FigureManager: tree of open figures/subplots,
                                 # "New Figure" button (creates an empty figure)
     registry.py                 # FigureRegistry: process-wide list of open
                                  # LaFigure windows, with Qt signals
                                  # FigureManager listens to (figureOpened/
-                                 # figureClosed/subplotsChanged)
+                                 # figureClosed/subplotsChanged/selectionChanged/
+                                 # focusChanged/figureRenamed)
     clipboard.py                  # Clipboard: process-wide singleton (not a
                                    # LaFigure attribute) so copy/paste of a
                                    # curve or a whole subplot works ACROSS
@@ -44,11 +61,34 @@ LaFigure/
     annotations.py                     # AnnotationItem (all 8 shape kinds) + the
                                         # figure/border/axes filiation model
   icons/
-  smoke_test.py           # imports the package: `import lafigure as m`
+  tests/                   # helpers.py (Fake*Event, _mouse/_key, figure
+                            # factories) + one test_<mixin>.py per module above
+  run_tests.py             # plain runner (no pytest): `python run_tests.py`
+                            # imports every tests/test_*.py and runs its
+                            # test_* functions, prints ALL OK
 ```
 
 Run it with `python3 -m lafigure` (not `python3 lafigure.py`
 — that file no longer exists, replaced by the package above).
+
+**As of WP-01 (2026-09-28)**, `figure.py` is no longer one 2,478-line
+class — it's `LaFigure`'s `__init__`/lifecycle/demo, composed with the ten
+mixins listed above (moved verbatim, guarded by an AST-level diff against
+the pre-split file). `smoke_test.py` is gone, replaced by `tests/` +
+`run_tests.py` (`QT_QPA_PLATFORM=offscreen python run_tests.py`; takes
+optional name filters, e.g. `python run_tests.py layout`). This was
+Wave 0 of the roadmap below (see `PLAN.md`) — a behavior-preserving split,
+done first so parallel work packages could each own one module without
+colliding. It also froze the interfaces later packages build on:
+`focused_plot` (renamed from `active_plot`; a property whose setter is the
+one place `registry.focusChanged(fig, plot)` fires), `registry.
+selectionChanged(fig)` (once per outermost selection change), `registry.
+figureRenamed(fig)` with undoable `fig.rename_figure`/`rename_subplot`/
+`subplot_name`, and `add_subplot(..., rowspan=1, colspan=1,
+axes_type='cartesian')` (spans passed through; any other `axes_type`
+raises `NotImplementedError` for now). Running the never-before-executed
+Phase 0 tests during this split surfaced three real bugs, now fixed — see
+the dedicated lesson after bug #7 below.
 
 **Why the split happened before annotations**: annotations needed their
 own module and touch both LaFigure and the clipboard (an annotation's
@@ -118,7 +158,7 @@ the actual code — this list is a summary, not a substitute for checking.
       toolbar action's own connection inverts it
       (`lambda checked: self.toggle_overlap_resize(not checked)`), so
       `toggle_overlap_resize`'s own call sites/semantics (incl. in
-      `smoke_test.py`) didn't need to change:
+      `tests/`) didn't need to change:
       - **Reflow** (Grid Layout checked, default): the grid resizes live as
         you drag; neighbors shrink/grow to fit, never overlapping.
       - **Overlap** (Grid Layout unchecked): the dragged subplot detaches
@@ -156,7 +196,8 @@ the actual code — this list is a summary, not a substitute for checking.
 - [x] **Figure-wide toggles reach subplots created later.** Mode, Brush and
       Link X are all adopted in `add_subplot`, the only `addPlot()` call site
       (guarded by `test_add_subplot_is_the_only_subplot_construction_site`
-      in `smoke_test.py`). A ViewBox's mouse-enabled state has exactly one
+      in `tests/test_layout.py`, which scans every module in the package).
+      A ViewBox's mouse-enabled state has exactly one
       writer, `_apply_mouse_enabled`: pan is off if Select mode **or**
       brushing is on. Before 2026-09-27, Brush and Link X only reached
       existing subplots, and turning Brush off re-enabled pan in Select mode.
@@ -222,7 +263,7 @@ the actual code — this list is a summary, not a substitute for checking.
       Average act on (those two stay single-target deliberately, see below)
 - [x] **Multi-select via Shift+click, LibreOffice Draw / MATLAB style**
       (`self.selected_plots`/`self.selected_curves`/
-      `self.selected_annotations`, each a superset of `active_plot`/
+      `self.selected_annotations`, each a superset of `focused_plot`/
       `active_curve`/`active_annotation`, the most recently selected one):
       Shift+click **toggles** a subplot, curve or annotation in or out of
       the selection, leaving every other selected item, of any kind,
@@ -238,7 +279,7 @@ the actual code — this list is a summary, not a substitute for checking.
       and collapses to just that annotation if released without moving.
       Link to… stays single-target. FFT, Remove Average, and everything else
       deliberately keep targeting only the single most-recently-clicked
-      `active_plot`/`active_curve`, unaffected by any wider selection —
+      `focused_plot`/`active_curve`, unaffected by any wider selection —
       this split was an explicit product decision, not an oversight; don't
       "complete" it by wiring more actions to the multi-select without
       checking first. Deleting/removing an item also drops it from these
@@ -248,12 +289,12 @@ the actual code — this list is a summary, not a substitute for checking.
       plain click on a subplot, a curve or an annotation deselects every
       other selected item of *every* kind. Clicking a curve deselects the
       selected subplot, including the curve's own subplot, which loses its
-      red border and handles but stays `active_plot` as the toolbar target.
+      red border and handles but stays `focused_plot` as the toolbar target.
       Every non-Shift selection, including programmatic ones (Add Subplot,
       FFT, paste, undo), goes through `_clear_selection` first, and
       move/resize handles only show on a subplot in `selected_plots`.
       Guarded by the `test_*click*` / `test_*selection*` functions in
-      `smoke_test.py`.
+      `tests/test_selection_ui.py`.
 - [x] Deselection: **Esc**, double-clicking a subplot (or a curve, or
       empty space), or a plain single click that lands outside every
       subplot clears every selection of every kind. One Esc press also
@@ -374,15 +415,20 @@ Read it before starting any roadmap item; update its status table when a
 package lands.
 
 ### Phase 0 — small UI items
-- [~] Zoom Rect's drag rectangle is **light gray**, not pyqtgraph's yellow
-      (`add_subplot`, `vb.rbScaleBox`). Code written 2026-09-28, tests
-      written, **not yet run**.
-- [~] Toolbar after Zoom Rect: **Home** (reset view = autorange, was "Reset
+- [x] Zoom Rect's drag rectangle is **light gray**, not pyqtgraph's yellow
+      (`layout.py`, `vb.rbScaleBox`). Verified by WP-01 running the
+      never-before-executed test: it failed (pyqtgraph's
+      `setMouseMode(PanMode)` discards `rbScaleBox`, so styling it once at
+      creation never reached a real zoom drag — see the dedicated lesson
+      after bug #7). Fixed by restyling on every switch to Zoom Rect
+      (`view_ops._apply_view_mouse_mode`); `tests/test_view_ops.py`.
+- [x] Toolbar after Zoom Rect: **Home** (reset view = autorange, was "Reset
       View"), **Fit Vertical** (Y to the min/max of the data inside the
       current X range) and **Fit Horizontal** (X to the min/max of the data
-      inside the current Y range) — `reset_view`, `fit_view_vertical`,
-      `fit_view_horizontal`, `_fit_view`. Full data, never the downsampled
-      display; hidden items ignored. Same code/test status as above.
+      inside the current Y range) — `view_ops.reset_view`,
+      `fit_view_vertical`, `fit_view_horizontal`, `_fit_view`. Full data,
+      never the downsampled display; hidden items ignored. Verified by
+      WP-01; `tests/test_view_ops.py`.
 - [ ] **Subplot right-click menu slimmed down**: remove pyqtgraph's
       "Export..." (export becomes the figure-wide toolbar Save, Phase 4),
       "X axis", "Y axis" and "Mouse Mode"; add **"Export to CSV..."** (the
@@ -454,11 +500,12 @@ package lands.
       visible rows; histograms rebin.
 
 ### Phase 2b — Figure Manager renaming, curve browser, groups
-- [ ] **Glossary — "focused subplot"**: the subplot that is selected, or
-      else the one that received the last action (today's `active_plot`,
-      which already behaves this way; rename it `focused_plot` when this
-      lands). Toolbar actions and the curve browser target it. Distinct
-      from `_hover_plot` (Reset View only).
+- [x] **Glossary — "focused subplot"**: the subplot that is selected, or
+      else the one that received the last action. Renamed from `active_plot`
+      to `focused_plot` by WP-01 (2026-09-28); a property whose setter is
+      the only writer and the one place `registry.focusChanged(fig, plot)`
+      fires. Toolbar actions and the curve browser target it. Distinct
+      from `_hover_plot` (Home/Fit only).
 - [ ] The Figure Manager becomes **two tabs: "Figure browser" and "Curve
       browser"**.
 - [ ] Figure browser tree: **every node text-editable** (double-click / F2):
@@ -900,6 +947,47 @@ overlap-resize bug in particular reproduced instantly and consistently,
 but nothing about reading `_start_floating`'s code would have surfaced it
 without comparing a neighbor's real `sceneBoundingRect()` before and after.
 
+### 8. A pyqtgraph item you style once can be silently rebuilt later
+**Symptom (found by WP-01, 2026-09-28):** Zoom Rect's drag rectangle was
+restyled to light gray at subplot creation (`vb.rbScaleBox.setPen(...)`),
+and a test read `vb.rbScaleBox.pen()` right after and saw the new color —
+apparently fixed. But a real zoom drag still showed pyqtgraph's yellow.
+
+**Root cause:** pyqtgraph's `ViewBox.setMouseMode(PanMode)` — called right
+after the styling, as part of the same `add_subplot`, to set the default
+mode — discards the existing `rbScaleBox` and lets pyqtgraph build a fresh
+one, unstyled, the next time a rectangle is needed. The one-time styling
+survived only until the very next mode switch, and the original test
+happened to read the item before that switch ran, in the mode where a
+zoom drag never triggers it at all.
+
+**Lesson:** a library object exposed as a persistent attribute (`self.
+rbScaleBox`) isn't necessarily kept for the object's lifetime — it can be
+an internal cache the library is free to rebuild, and the docs/API give no
+signal either way. Two defenses, both needed here: apply styling at every
+call site that can plausibly trigger a rebuild (here: every switch into
+the mode that uses it), not just once at creation; and test the actual
+user-visible path (a real drag, in the mode the user would use it in), not
+whatever state happens to exist right after setup.
+
+### 9. Checking "did the flag get set" instead of "did the real state change"
+**Symptom (found by WP-01, 2026-09-28):** turning Grid Layout back on
+after floating a subplot recomputed the right stretch factors into
+`self.row_stretch`/`col_stretch`, but the grid visually snapped back to
+equal-sized cells instead of the floated size.
+
+**Root cause:** `toggle_overlap_resize(False)`'s reattach loop popped every
+entry out of `self.floating` as it went; the `if self.floating:` guard
+that then decided whether to apply the new stretch factors ran *after*
+that loop, so it always saw an empty dict and skipped applying them. The
+values were computed correctly and simply never reached the layout.
+
+**Lesson:** this is bug #2's lesson again in a new shape — a collection
+that a loop empties as a side effect can't be used afterward to ask "did
+that loop have anything to do". Snapshot whatever the check needs (here:
+`bool(self.floating)`, or just always apply) before the loop that consumes
+the collection runs, not after.
+
 ## Should you reuse the code?
 
 Only if you're extending *this exact app*. If you're building something
@@ -948,9 +1036,9 @@ repeating the same resume/merge/launch cycle every session. So:
   `PLAN.md`; the skill only saves re-explaining it every session.
 
 Still **not** Skills: the test recipe (one command:
-`QT_QPA_PLATFORM=offscreen python3 run_tests.py` once WP-01 lands,
-`smoke_test.py` until then) and design decisions (they belong in this
-file, which every session and agent already reads).
+`QT_QPA_PLATFORM=offscreen python run_tests.py`, since WP-01 landed
+2026-09-28) and design decisions (they belong in this file, which every
+session and agent already reads).
 
 ## License
 

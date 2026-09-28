@@ -29,10 +29,12 @@ You start with no other context — everything you need is in the repo.
 - If you need to change a file someone else owns, or an interface you
   were told to consume doesn't exist or doesn't fit: **stop and report**,
   don't work around it.
-- **Tests first**: write the tests for your package in your test file
-  (`tests/test_<id>.py` once WP-01 has landed; before that, new functions
-  in `smoke_test.py` registered in its runner list), see them fail, then
-  make them pass.
+- **Tests first**: write the tests for your package in
+  `tests/test_<id>.py` (`run_tests.py` collects every `test_*` function in
+  every `tests/test_*.py` automatically — nothing to register by hand; add
+  helper functions to `tests/helpers.py` freely, but don't modify or
+  remove an existing one there, since other packages' tests depend on it),
+  see them fail, then make them pass.
 - Behavior that depends on Qt's or pyqtgraph's event routing (clicks,
   drags, keys, menus) is tested with real `QMouseEvent`s sent to the
   viewport and `QTest.keyClick` (the `_mouse`/`_key` helpers), not only
@@ -41,8 +43,7 @@ You start with no other context — everything you need is in the repo.
 - Geometry changes: compare the neighbors' actual `sceneBoundingRect()`
   before and after, not just your own bookkeeping (bug #6).
 - Keep the **full suite green**, not just your tests:
-  `QT_QPA_PLATFORM=offscreen python run_tests.py` (or `smoke_test.py`
-  before WP-01). On Windows PowerShell:
+  `QT_QPA_PLATFORM=offscreen python run_tests.py`. On Windows PowerShell:
   `$env:QT_QPA_PLATFORM='offscreen'; python run_tests.py`.
   Test-only `useOpenGL=False`; never disable OpenGL in the shipped code.
 - Every new `.py` file carries the BSD 2-Clause header copied from an

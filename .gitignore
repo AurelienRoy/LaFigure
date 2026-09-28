@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
 
+# Per-agent git worktrees created for parallel PLAN.md work packages
+/.claude/worktrees/
+
 # Unrelated content living inside this working directory, not part of this project
 /engineering-method-with-claude/

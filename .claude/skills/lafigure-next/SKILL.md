@@ -29,8 +29,8 @@ ready to launch, blocked (and on what).
 Follow `PLAN.md` → "Merge protocol": one branch at a time, in table order;
 apply the worker report's diffs for coordinator-owned files; run the full
 suite after each merge
-(`$env:QT_QPA_PLATFORM='offscreen'; python run_tests.py`, or
-`smoke_test.py` before WP-01); a red suite is fixed before the next merge.
+(`$env:QT_QPA_PLATFORM='offscreen'; python run_tests.py`); a red suite is
+fixed before the next merge.
 Then tick the CLAUDE.md roadmap items, set the package to `merged`, record
 any lesson the worker reported in CLAUDE.md, and remove the worktree and
 branch.

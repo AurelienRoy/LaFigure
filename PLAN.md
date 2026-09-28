@@ -24,11 +24,13 @@ records it. This avoids merge conflicts on the shared docs.
 
 ## Why a wave 0 is needed before any parallelism
 
-`lafigure/figure.py` is one 2,200-line class and `smoke_test.py` is one
-1,300-line script. Almost every roadmap item edits both, so parallel agents
-would conflict on every merge. **Wave 0 splits them** along the same seams
-the roadmap uses, and freezes the interfaces the later waves code against.
-It is one sequential agent and it changes no behavior.
+`lafigure/figure.py` was one 2,478-line class and `smoke_test.py` one
+1,300-line script. Almost every roadmap item would have edited both, so
+parallel agents would have conflicted on every merge. **Wave 0 (WP-01,
+merged as `cda9273`/merge commit `git log --oneline -1`) split them**
+along the seams the roadmap uses, and froze the interfaces the later waves
+code against — see "WP-01" below for what actually landed, and CLAUDE.md's
+package-tree comment and bug #8/#9 for what it found along the way.
 
 ## Status
 
@@ -38,7 +40,7 @@ It is one sequential agent and it changes no behavior.
 | WP | Title | Wave | Depends on | Model | Status |
 |----|-------|------|-----------|-------|--------|
 | 00 | Commit current state (Phase 0 edits, docs) | 0 | — | coordinator | merged (0ba7284) |
-| 01 | Split figure.py into mixins; split tests; freeze interfaces | 0 | 00 | opus | todo |
+| 01 | Split figure.py into mixins; split tests; freeze interfaces | 0 | 00 | opus | merged (cda9273; 3 real bugs found & fixed, see CLAUDE.md bug #8/#9) |
 | A  | Free layout engine on fractional grid (Phase 1) | 1 | 01 | opus | todo |
 | B  | Context-menu cleanup + CSV export; verify Home/Fit/zoom color (Phase 0) | 1 | 01 | sonnet | todo |
 | C  | "?" help dialog | 1 | 01 | haiku | todo |
@@ -66,40 +68,69 @@ Model column: `opus` for the packages that redesign shared structure or
 touch Qt/GL edge cases (01, A, G, H, J, O); `sonnet` for well-bounded
 features; `haiku` only for the trivial one. The coordinator may override.
 
-## WP-01 — the split (defines the file ownership everything else relies on)
+## WP-01 — the split (done; defines the file ownership everything else relies on)
 
-Behavior-preserving refactor, verified by the existing test suite passing
-unchanged in substance (only moved).
+Landed 2026-09-28, `cda9273`, merged to master. Behavior-preserving
+refactor — the full suite (72 tests) passes on master after the merge.
 
-- `figure.py` → `LaFigure(QMainWindow)` composed of mixins, one module
-  each, split along existing section comments:
-  `toolbar.py` (toolbar + shortcuts), `menus.py` (subplot/empty-space
-  context menus), `layout.py` (grid, resize, move, swap, float, handles
-  positioning), `selection_ui.py` (click dispatch, selection, rubber band,
+- `figure.py` → `LaFigure(<9 mixins>, QMainWindow)`: `toolbar.py` (toolbar
+  + shortcuts), `menus.py` (subplot/empty-space context menus), `layout.py`
+  (grid, resize, move, swap, float, handles — kept as one module: the
+  `self.floating` state ties them too tightly to split further), `naming.py`
+  (figure/subplot/curve renaming, axis labels — added; not in the original
+  module list), `selection_ui.py` (click dispatch, selection, rubber band,
   Tab/nudge), `history.py` (undo stack, `undo_group`), `brushing.py`
   (RectBrush glue + the four brushed-point actions), `clip_ops.py`
-  (copy/paste curve & subplot), `annotation_ops.py` (placement, relink,
-  eventFilter glue), `view_ops.py` (Home, Fit, Link X, remove average, FFT).
-  `figure.py` keeps `__init__` and the mixin composition only.
-- `smoke_test.py` → `tests/` with `tests/helpers.py` (the Fake* events,
-  `_mouse`, `_key`, figure factories), one `tests/test_<area>.py` per mixin
-  module above, and `run_tests.py` that imports every `tests/test_*.py` and
-  runs each `test_*` function (plain runner, no pytest dependency). The
-  top-level script sections of `smoke_test.py` become named functions.
-  Delete `smoke_test.py`; update CLAUDE.md's references to it.
-- **Freeze interfaces** — write them as stub methods with docstrings (and
-  `NotImplementedError` where the feature doesn't exist yet), so parallel
-  packages code against real names:
+  (copy/paste curve & subplot, `delete_selection`/`delete_curve`),
+  `annotation_ops.py` (placement, relink, `eventFilter`), `view_ops.py`
+  (Home, Fit, Link X, remove average, FFT, `set_interaction_mode`).
+  `figure.py` keeps `__init__`, `closeEvent`, the demo, and the composition.
+- `smoke_test.py` → deleted; replaced by `tests/` (`tests/helpers.py` — the
+  Fake* events, `_mouse`, `_key`, figure factories — plus one
+  `tests/test_<area>.py` per mixin module, 11 files) and `run_tests.py` at
+  the repo root (plain runner, no pytest; takes optional name filters,
+  e.g. `python run_tests.py layout`). Every prior test moved (none
+  dropped); the never-before-run Phase 0 tests (gray zoom box, Home/Fit)
+  ran for the first time here.
+- **Interfaces frozen, exactly as later packages should assume:**
   - `registry.py` signals: existing `figureOpened/figureClosed/
-    subplotsChanged`, plus `selectionChanged(fig)`, `focusChanged(fig,
-    plot)`, `figureRenamed(fig)`, emitted from the one place each state
-    changes.
-  - `active_plot` renamed to `focused_plot` (CLAUDE.md glossary).
-  - Subplot construction stays single-site: `add_subplot(row, col,
-    rowspan=1, colspan=1, title='', axes_type='cartesian')`.
-  - `fig.subplot_name(plot)` / `fig.rename_subplot(plot, name)` and
-    `fig.rename_figure(name)` (undoable), for WP-D.
-- Record the resulting module → owner map in the ownership table below.
+    subplotsChanged`, plus `selectionChanged(fig)` (fires once per
+    outermost selection change, via a `@selection_op` decorator, only on a
+    real change), `focusChanged(fig, plot)`, `figureRenamed(fig)`.
+  - `active_plot` → `focused_plot`, now a **property**; its setter is the
+    only writer and the one emission site of `focusChanged` (a test
+    guards "no other writer"). `_hover_plot` is unchanged (Home/Fit only).
+  - `add_subplot(row, col, rowspan=1, colspan=1, title='',
+    axes_type='cartesian')` — spans pass through to the grid now; any
+    `axes_type` other than `'cartesian'` raises `NotImplementedError` (a
+    placeholder for Phase 6, not yet implemented). Still the single
+    construction site (`tests/test_layout.py` now scans every module in
+    the package for `addPlot(`, not just one file).
+  - `fig.subplot_name(plot)` / `fig.rename_subplot(plot, name)` /
+    `fig.rename_figure(name)`, all undoable, in `naming.py`.
+- **Three real bugs found by finally running long-dead/never-run code**,
+  fixed as part of this package — see CLAUDE.md bugs #8 and #9 for the
+  first two:
+  1. Zoom Rect's box was still yellow in a real drag (pyqtgraph rebuilds
+     `rbScaleBox` on `setMouseMode`, dropping the one-time styling).
+  2. Turning Grid Layout back on didn't apply the floated size (an
+     emptied-by-the-loop `self.floating` was checked after the loop).
+  3. Brushing crashed (`AttributeError`) in any figure without the demo's
+     `selection_model` (i.e. every `FigureManager` "New Figure").
+- **Known gaps, from the worker's own report** — pick these up in whichever
+  package touches the same area, don't assume they're handled:
+  - A subplot's explicit name (`rename_subplot`) isn't yet carried through
+    copy/paste or delete/undo as its own field — it survives only because
+    `rename_subplot` also sets the title, and copy/paste/delete already
+    carry the title. Relevant to **D** (Figure Manager renaming) and **K2**
+    (curve browser) — decide there whether "name" needs to be a first-class
+    serialized field once groups/browsers depend on it.
+  - Double-click title editing (`editable_text.py`) still doesn't update
+    the stored explicit name, so the two can drift apart after a rename.
+  - A few toolbar/menu tooltips still say "active subplot" (stale text,
+    not logic) and Delete's tooltip doesn't mention it now deletes every
+    selected kind, not just a curve/subplot — cosmetic, worth a pass
+    whenever **B** or **C** next touches that area.
 
 ## File ownership (valid after WP-01)
 
@@ -113,20 +144,26 @@ interface, which the coordinator adds on master first).
 | `layout.py`, `handles.py` | A → O |
 | `menus.py` | B → J → K1 |
 | `help.py` (new) + one toolbar line | C |
-| `manager.py`, `registry.py` (signal emission sites only) | D → K2 |
+| `manager.py`, `naming.py`, `registry.py` (signal emission sites only) | D → K2 |
 | `export.py` (new) | E → M |
 | `datasource.py` (new) | F → J |
 | `spikes/` (new) | G |
-| `series.py`, `axes.py` (new), `clip_ops.py`, `view_ops.py` | H → I*/J/K1 |
+| `figure.py`, `series.py`, `axes.py` (new), `clip_ops.py`, `view_ops.py` | H → I*/J/K1 |
 | `kinds/<name>.py` (new, one per kind) | I1, I2, I3, O |
-| `brushing.py`, `selection.py` | J |
+| `brushing.py`, `selection.py`, `selection_ui.py` | J |
 | `groups.py` (new) | K1 |
 | `console.py` (new) | L |
 | `controls.py` (new) | N |
+| `history.py`, `annotation_ops.py` | untouched by any package below wave 4; whichever package first needs to (e.g. layout-undo work in **A**, or group drag in **K1**) claims it there and reports the claim |
+| `tests/helpers.py` | shared read-only fixture module — any package may **add** a helper function to it but must not modify or remove an existing one (other packages' tests depend on it); if an existing helper must change, stop and report instead of editing |
 | `toolbar.py` | coordinator: packages that need a button send a one-line diff in their report |
 
 When two packages in the same wave would own the same file, they are
-**not** parallel — the table above already sequences them.
+**not** parallel — the table above already sequences them. `figure.py`
+(the thin composition root) is listed once, under H, because H is the
+first package likely to need a new mixin registered there; earlier
+packages (A/B/C/D/E/F/G) should not need to touch it — if one does,
+report it rather than editing.
 
 ## Worker agent brief (template the coordinator fills in)
 
@@ -168,9 +205,8 @@ Package note: see PLAN.md "Per-package notes" → <id> (plus anything new).
   `<curve name> y` per curve; unequal lengths padded with empty cells;
   full data (`xData`/`yData`), never the downsampled display. The
   brushed-point entries must be updated on `aboutToShow`, since brushing
-  state changes after the menu is built. Also **run** the Phase 0 Home/Fit/
-  zoom-color tests written but never executed (they currently live at
-  the end of `smoke_test.py`, moved by WP-01).
+  state changes after the menu is built. (The Phase 0 Home/Fit/zoom-color
+  tests were already run and fixed by WP-01 — nothing left to do there.)
 - **A**: all bug #1–#6 code paths disappear; rewrite those tests against
   the new model rather than deleting coverage. FFT "row under the time
   plot" = insert a grid row after the source's bottom edge, shifting only
