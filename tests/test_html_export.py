@@ -286,3 +286,26 @@ def test_datatip_callable_falls_back_to_generic_hover():
     assert 'time=' in trace.hovertemplate
     assert 'speed=' in trace.hovertemplate
     f.close()
+
+
+# -- coordinator addition: an actual file written to disk, end to end -------
+def test_export_html_writes_a_real_file_via_the_public_entry_point():
+    """export_html (registered as EXPORTERS['html'], what export.py's
+    _do_export actually calls) writes a real, non-empty HTML file
+    containing the plotly library reference and this figure's data --
+    not just a build_plotly_figure() object, the actual public path."""
+    if _skip_if_no_plotly():
+        return
+    f = _empty_figure()
+    ax = f.subplot(0, 0)
+    ax.plot([0.0, 1.0, 2.0], [0.0, 1.0, 4.0], name="parabola")
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "out.html")
+        html_export.export_html(f, path)
+        assert os.path.isfile(path)
+        with open(path, encoding='utf-8') as fh:
+            html = fh.read()
+        assert len(html) > 1000
+        assert 'plotly' in html.lower()
+        assert 'parabola' in html
+    f.close()

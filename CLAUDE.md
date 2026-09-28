@@ -44,6 +44,8 @@ LaFigure/
     naming.py                           # figure/subplot/curve renaming, axis labels
     help.py                              # the "?" toolbar dialog (controls/version/credits)
     export.py                             # Save dialog: PNG/JPG/SVG/PDF + header preview
+    html_export.py                         # HTML export via plotly (EXPORTERS['html']),
+                                            # decimation popup for too-large exports
     series.py                              # SeriesKind registry + Series wrapper --
                                             # _add_series is the one series-construction site
     axes.py                                 # Axes facade (fig.subplot() returns one),
@@ -669,20 +671,44 @@ package lands.
       carried groups along with the subplot.
 
 ### Phase 4 — Save / export
-- [ ] Save button, **leftmost** in the toolbar (+ Ctrl+S): choose any of
+- [x] Save button, **leftmost** in the toolbar (+ Ctrl+S): choose any of
       PNG / JPG / HTML (+ SVG / PDF); several formats at once, same base
-      name.
-- [ ] Header info text (source, date, user, custom `fig.info` keys) from a
+      name. **Built by WP-E** (2026-09-28, `lafigure/export.py`), with
+      `'html'` added by WP-M below.
+- [x] Header info text (source, date, user, custom `fig.info` keys) from a
       customizable format template (`{date:%Y-%m-%d}` …), remembered in
       `QSettings`. **Word-style print preview**: the user edits the text
-      and its placement on a preview, then exports when satisfied.
-- [ ] HTML via plotly (optional dependency): subplots placed by absolute
-      `domain` (exact for free layout/insets), WebGL traces, annotations as
-      shapes, source metadata in `customdata` so hover datatips work in
-      the browser, hidden rows excluded. Linked brushing in the HTML is a
-      later extra. Controls export as their current state only.
-- [ ] Too-large HTML: a **popup asks**: keep all / decimate 1:N (N
-      editable, default 10) / peak-preserving decimation (same look).
+      and its placement on a preview, then exports when satisfied. Built
+      by WP-E.
+- [x] HTML via plotly (optional dependency, lazily imported so `import
+      lafigure` never needs it): subplots placed by absolute `domain`
+      (exact for free layout/insets, via `grid.to_frac` — the same math
+      `layout.py` itself uses), WebGL (`Scattergl`) traces for point-cloud
+      kinds, annotations as plotly shapes/annotations (a rotated
+      rect/ellipse degrades to unrotated — plotly shapes don't support
+      arbitrary rotation; noted, not silent), source metadata in
+      `customdata` so hover datatips work in the browser (`ax.datatip`
+      format strings translate directly to a plotly `hovertemplate`; a
+      Python callable can't run in static HTML, so it falls back to a
+      generic x/y + every column hover), hidden rows excluded (recomputed
+      at export time from `source.visible_rows`, independent of whether
+      `console.watch_source` was ever armed). **Built by WP-M** (2026-09-28,
+      `lafigure/html_export.py`) — a small `{kind_name: converter}` dict
+      there (not a `SeriesKind.to_plotly` hook — `series.py` isn't M's to
+      edit), covering every built-in kind, with a generic `Scattergl`
+      fallback for an unrecognized future kind. Linked brushing in the
+      HTML is still a later extra, not attempted. Controls (WP-N) export
+      as their current state only — n/a today since nothing wires a
+      control panel into a figure yet.
+- [x] Too-large HTML: a **popup asks**: keep all / decimate 1:N (N
+      editable, default 10, a `QSpinBox`) / peak-preserving decimation
+      (same look — a plain-numpy per-bucket min/max, mirroring what
+      `setDownsampling(method='peak')` does for the live display).
+      Triggers per-series above `MAX_POINTS_PER_SERIES` (200,000, a named
+      constant); applies only to point-cloud-shaped kinds (`line`,
+      `scatter`, `area`, `bar`, `errorbar` — not `stairs`/`hist`, whose
+      edges/values arrays have a different-by-one length, or `imshow`, a
+      2D image).
 
 ### Phase 5 — interactive controls + reactive tables
 **Built by WP-N** (2026-09-28, `lafigure/controls.py`), fully standalone

@@ -98,23 +98,23 @@ def test_default_info_lazy_creates_info_via_show_save_dialog():
 def test_exporter_registry_shape():
     """png/jpg always work (QPixmap.save); svg/pdf are present, either a
     real callable or None (see UNAVAILABLE_REASONS) depending on what's
-    importable in this environment; html is a deliberate, always-None
-    placeholder WP-M fills in with `register_exporter('html', fn)`."""
+    importable in this environment; html is a real callable since WP-M
+    filled the placeholder in with `register_exporter('html', fn)`
+    (lafigure/html_export.py)."""
     assert set(export.EXPORTERS) == {'png', 'jpg', 'svg', 'pdf', 'html'}
     assert callable(export.EXPORTERS['png'])
     assert callable(export.EXPORTERS['jpg'])
-    assert export.EXPORTERS['html'] is None
+    assert callable(export.EXPORTERS['html'])
     for fmt in ('svg', 'pdf'):
         assert export.EXPORTERS[fmt] is None or callable(export.EXPORTERS[fmt])
 
 
-def test_html_checkbox_present_but_disabled():
+def test_html_checkbox_enabled_now_that_plotly_export_exists():
     with tempfile.TemporaryDirectory() as tmp:
         f = _demo_save_figure()
         dlg = export.SaveDialog(f, settings=_ini_settings(tmp))
         cb = dlg._format_checks['html']
-        assert not cb.isEnabled()
-        assert 'plotly' in cb.toolTip().lower()
+        assert cb.isEnabled()
         f.close()
 
 
