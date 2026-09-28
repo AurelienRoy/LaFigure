@@ -22,12 +22,17 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""SeriesKind implementations beyond 'line' (lafigure/series.py).
+"""Built-in SeriesKinds beyond 'line' (which lives in series.py itself).
 
-Each module here registers one (or a small family of related) kind(s) as
-an import side effect (register_series_kind(...) at module scope) -- that
-import is what makes ax.<kind name>(...) reachable (see axes.py's
-Axes._plot_kind/__getattr__). lafigure/__init__.py (coordinator-owned)
-imports every module in this package so a plain `import lafigure`
-self-registers all of them; importing lafigure.kinds itself does nothing
-beyond making this a package."""
+Each submodule here owns one SeriesKind and calls register_series_kind()
+at import time -- importing this subpackage is enough to make
+ax.scatter(...)/ax.stairs(...)/ax.area(...)/ax.hist(...)/ax.bar(...)/
+ax.errorbar(...)/ax.imshow(...) all reachable (see axes.py's
+__getattr__/_plot_kind, which routes any name found in SERIES_KINDS with
+no per-kind code there). lafigure's top-level __init__.py imports this
+package (`from . import kinds`) so a plain `import lafigure` registers
+all of them; a future kind package adds its module to the import list
+below, not to lafigure/__init__.py."""
+from . import scatter, stairs, area, hist, bar, errorbar, imshow
+
+__all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow"]

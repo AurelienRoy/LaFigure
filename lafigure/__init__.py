@@ -48,7 +48,7 @@ from .annotations import AnnotationItem, SHAPE_KINDS
 from .datasource import DataSource
 from .series import Series, SeriesKind, register_series_kind, SERIES_KINDS
 from .axes import Axes, gca, gcf
-from .kinds import bar, errorbar, imshow  # noqa: F401  (registers 'bar'/'errorbar'/'imshow')
+from . import kinds  # noqa: F401  (import registers every built-in SeriesKind beyond 'line')
 from .app import main
 
 __all__ = [
