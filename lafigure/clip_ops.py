@@ -1,0 +1,212 @@
+# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions are met:
+#
+# 1. Redistributions of source code must retain the above copyright notice,
+#    this list of conditions and the following disclaimer.
+#
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+# LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+
+"""Edit operations on curves and subplots: copy/paste (via the
+process-wide Clipboard, so they work across figure windows) and delete
+(Del key: everything selected, whatever its kind).
+"""
+import pyqtgraph as pg
+
+from .annotations import AnnotationItem
+from .selection_ui import selection_op
+
+
+class ClipOpsMixin:
+    # -- delete (curve or subplot) ---------------------------------------
+    @selection_op
+    def delete_selection(self):
+        """Del key / toolbar Delete: remove everything selected, whatever
+        its kind, as one undo entry.
+
+        Curves and subplot-owned annotations on a subplot that is itself
+        being deleted are skipped: the subplot's own undo restores them,
+        while their separate undo steps would target the dead PlotItem."""
+        doomed_plots = list(self.selected_plots)
+        with self.undo_group():
+            for ann in list(self.selected_annotations):
+                if ann.anchor == 'figure' or ann.parent_plot not in doomed_plots:
+                    self.delete_annotation(ann)
+            for curve in list(self.selected_curves):
+                plot_item = self._curve_plot(curve)
+                if plot_item is not None and plot_item not in doomed_plots:
+                    self.delete_curve(curve)
+            for plot_item in doomed_plots:
+                self.delete_subplot(plot_item)
+
+    def delete_curve(self, curve):
+        plot_item = self._curve_plot(curve)
+        if plot_item is None:
+            return
+        x, y = curve.xData.copy(), curve.yData.copy()
+        pen = curve.opts.get('_orig_pen', curve.opts.get('pen'))
+        name = curve.name()
+        plot_item.removeItem(curve)
+        self._forget_curve_selection(curve)
+        brusher = self._brushers.get(plot_item)
+        if brusher is not None:
+            brusher.forget_curve(curve)
+
+        holder = {}
+
+        def undo_fn():
+            new_curve = plot_item.plot(x, y, pen=pen, name=name)
+            self._wire_curve_clickable(plot_item, new_curve)
+            holder['curve'] = new_curve
+
+        def redo_fn():
+            c = holder.get('curve')
+            if c is not None:
+                plot_item.removeItem(c)
+                self._forget_curve_selection(c)
+
+        self._push_history(undo_fn, redo_fn)
+
+    # -- Ctrl+C / Ctrl+V: dispatch to curve or subplot copy/paste --------
+    def copy_selection(self):
+        """Ctrl+C: copy the selected curve(s) if any curve is selected
+        (Shift+click to select more than one), else the selected
+        subplot(s) -- without this, Ctrl+C always copied a curve even when
+        only a subplot had ever been selected, silently duplicating a
+        curve on paste instead of the subplot."""
+        if self.selected_curves:
+            self.copy_curve()
+        elif self.focused_plot is not None:
+            self.copy_subplot()
+
+    def paste_selection(self):
+        """Ctrl+V: mirrors copy_selection -- pastes whichever kind was
+        most recently copied, via Ctrl+C, Ctrl+Shift+C, or their menu
+        equivalents (see Clipboard.last_copied)."""
+        if self.clipboard.last_copied == 'subplot':
+            self.paste_subplot()
+        else:
+            self.paste_curve()
+
+    # -- copy / paste a curve between subplots ---------------------------
+    def copy_curve(self):
+        """Copies every selected curve (Shift+click to select more than
+        one); with none explicitly selected, falls back to the active
+        subplot's first curve, same as before multi-select existed."""
+        if self.selected_curves:
+            targets = list(self.selected_curves)
+        else:
+            p = self.focused_plot
+            c = self._active_curve_on(p) if p is not None else None
+            targets = [c] if c is not None else []
+        if not targets:
+            return
+        self.clipboard.curve = [
+            (c.xData.copy(), c.yData.copy(), c.opts.get('_orig_pen', c.opts.get('pen')), c.name())
+            for c in targets
+        ]
+        self.clipboard.last_copied = 'curve'
+
+    def paste_curve(self):
+        p = self.focused_plot
+        if p is None or not self.clipboard.curve:
+            return
+        curves_data = self.clipboard.curve
+
+        def build():
+            new_curves = []
+            for x, y, pen, name in curves_data:
+                nc = p.plot(x, y, pen=pen, name=name)
+                self._wire_curve_clickable(p, nc)
+                new_curves.append(nc)
+            return new_curves
+
+        holder = {'curves': build()}
+
+        def undo_fn():
+            for c in holder.get('curves', []):
+                p.removeItem(c)
+                self._forget_curve_selection(c)
+            holder['curves'] = []
+
+        def redo_fn():
+            holder['curves'] = build()
+
+        self._push_history(undo_fn, redo_fn)
+
+    # -- copy / paste a whole subplot, including across separate figure
+    # windows (via the process-wide Clipboard) ---------------------------
+    def copy_subplot(self):
+        """Copies every selected subplot (Shift+click to select more than
+        one); with none explicitly selected, falls back to the active one."""
+        targets = self.selected_plots if self.selected_plots else (
+            [self.focused_plot] if self.focused_plot is not None else []
+        )
+        if not targets:
+            return
+        self.clipboard.subplot = [
+            {
+                'title': p.titleLabel.text,
+                'xlabel': p.getAxis('bottom').labelText,
+                'ylabel': p.getAxis('left').labelText,
+                'curves': [
+                    (c.xData.copy(), c.yData.copy(), c.opts.get('_orig_pen', c.opts.get('pen')), c.name())
+                    for c in p.listDataItems() if isinstance(c, pg.PlotDataItem)
+                ],
+                'annotations': [a.to_dict() for a in self._annotations_on(p)],
+            }
+            for p in targets
+        ]
+        self.clipboard.last_copied = 'subplot'
+
+    def paste_subplot(self):
+        """Paste every copied subplot as new rows at the bottom of *this*
+        window -- which may be a different LaFigure instance than the
+        one it was copied from, since self.clipboard is shared
+        process-wide (see clipboard.py)."""
+        data_list = self.clipboard.subplot
+        if not data_list:
+            return
+        self._reattach_all_floating()
+        start_row = max((self._grid_position(p)[0] for p in self.plots), default=-1) + 1
+        col = 0
+
+        def build():
+            new_plots = []
+            for i, data in enumerate(data_list):
+                new_plot = self._insert_subplot_at(
+                    start_row + i, col, data['title'], data['xlabel'], data['ylabel'], data['curves']
+                )
+                for d in data.get('annotations', []):
+                    AnnotationItem.from_dict(self, new_plot, d)
+                new_plots.append(new_plot)
+            return new_plots
+
+        holder = {'plots': build()}
+        self._select_plots(holder['plots'])
+
+        def undo_fn():
+            for p in holder.get('plots', []):
+                self._remove_subplot(p)
+            holder['plots'] = []
+
+        def redo_fn():
+            holder['plots'] = build()
+            self._select_plots(holder['plots'])
+
+        self._push_history(undo_fn, redo_fn)

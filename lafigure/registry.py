@@ -36,9 +36,22 @@ _registry = None
 
 
 class FigureRegistry(QtCore.QObject):
+    """Each signal has exactly one emission site in LaFigure, noted below,
+    so a listener never misses a change made by some other code path."""
     figureOpened = QtCore.Signal(object)       # emits the LaFigure
     figureClosed = QtCore.Signal(object)
+    # Subplots added/removed/renamed (the tree's children and their labels).
     subplotsChanged = QtCore.Signal(object)    # emits the LaFigure whose subplots changed
+    # selected_plots/selected_curves/selected_annotations changed; emitted
+    # once per outermost selection change, only on a real change
+    # (selection_ui.selection_op / _notify_selection_changed).
+    selectionChanged = QtCore.Signal(object)   # emits the LaFigure
+    # focused_plot changed (its property setter in selection_ui.py);
+    # the new focused PlotItem may be None.
+    focusChanged = QtCore.Signal(object, object)  # emits (LaFigure, PlotItem or None)
+    # The figure's name (window title) changed (LaFigure.rename_figure,
+    # including its undo/redo).
+    figureRenamed = QtCore.Signal(object)      # emits the LaFigure
 
     def __init__(self):
         super().__init__()
@@ -55,6 +68,15 @@ class FigureRegistry(QtCore.QObject):
 
     def notify_subplots_changed(self, figure):
         self.subplotsChanged.emit(figure)
+
+    def notify_selection_changed(self, figure):
+        self.selectionChanged.emit(figure)
+
+    def notify_focus_changed(self, figure, plot_item):
+        self.focusChanged.emit(figure, plot_item)
+
+    def notify_figure_renamed(self, figure):
+        self.figureRenamed.emit(figure)
 
 
 def get_registry():
