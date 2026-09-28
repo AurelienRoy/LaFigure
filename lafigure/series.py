@@ -170,7 +170,10 @@ class Series:
 
     @property
     def name(self):
-        return self.item.name()
+        """The item's name, or None for a kind whose item has no .name()
+        (e.g. imshow's pg.ImageItem) -- found by WP-I3."""
+        get_name = getattr(self.item, 'name', None)
+        return get_name() if get_name is not None else None
 
     @property
     def x(self):
