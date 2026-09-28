@@ -33,6 +33,7 @@ LaFigure.subplot(), plus the module-level gcf()/gca().
 Adding a series from the API is construction, like add_subplot: it pushes
 no undo entry. Editing one afterwards (Series.set_data) does.
 """
+import functools
 import weakref
 
 import numpy as np
@@ -41,6 +42,7 @@ from pyqtgraph.Qt import QtWidgets
 
 from .datasource import DataSource
 from .registry import get_registry
+from .series import SERIES_KINDS
 
 # Default line colors for ax.plot without a pen, cycled per subplot.
 DEFAULT_COLORS = [(31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40),
@@ -79,22 +81,50 @@ class Axes:
         (clip_to_view, downsample). Returns the Series."""
         if pen is None:
             pen = pg.mkPen(DEFAULT_COLORS[len(self.series) % len(DEFAULT_COLORS)], width=1)
+        if not isinstance(x_or_source, DataSource) and y is None:
+            # plot(y): a single array is Y, X is its index -- specific to
+            # 'line' (a histogram's or image's single array means something
+            # else entirely), so this stays here, not in _plot_kind.
+            ys = np.asarray(x_or_source)
+            x_or_source, y = np.arange(len(ys)), ys
+        return self._plot_kind('line', x_or_source, y, x=x, pen=pen, name=name, rows=rows, **style)
+
+    def _plot_kind(self, kind_name, x_or_source, y=None, *, x=None, pen=None, name=None,
+                   rows=None, **style):
+        """Generic construction for any registered SeriesKind -- what
+        __getattr__ below exposes as ax.<kind name>(...). Either plain
+        arrays/a single array (kind-specific meaning) -- <kind>(x, y) or
+        <kind>(data) -- or <kind>(source, x='col'[, y='col'], rows=None) for
+        column(s) of a shared DataSource. This is the ONE place a new kind's
+        call convention is routed, so a new kind package (I1/I2/I3/...)
+        never needs to add its own method here -- register the kind (see
+        series.register_series_kind) and it's reachable as ax.<name>(...)."""
         if isinstance(x_or_source, DataSource):
             source = x_or_source
-            if not isinstance(x, str) or not isinstance(y, str):
-                raise TypeError("plot(source, x='column', y='column'): both column names are required")
+            if not isinstance(x, str):
+                raise TypeError(f"{kind_name}(source, x='column'[, y='column']): "
+                                 "at least the x column name is required")
             rows = np.arange(len(source)) if rows is None else np.asarray(rows, dtype=np.intp)
-            xs, ys = source[x][rows], source[y][rows]
-            return self.figure._add_series(self.plot_item, 'line', xs, ys, pen=pen, name=name,
-                                           source=source, rows=rows, columns=(x, y), **style)
+            xs = source[x][rows]
+            ys = source[y][rows] if isinstance(y, str) else None
+            columns = (x, y) if isinstance(y, str) else (x,)
+            return self.figure._add_series(self.plot_item, kind_name, xs, ys, pen=pen, name=name,
+                                           source=source, rows=rows, columns=columns, **style)
         if x is not None or rows is not None:
-            raise TypeError("x=/rows= are column/row selectors, only for plot(source, ...)")
-        if y is None:
-            ys = np.asarray(x_or_source)
-            xs = np.arange(len(ys))
-        else:
-            xs, ys = np.asarray(x_or_source), np.asarray(y)
-        return self.figure._add_series(self.plot_item, 'line', xs, ys, pen=pen, name=name, **style)
+            raise TypeError(f"x=/rows= are column/row selectors, only for {kind_name}(source, ...)")
+        xs = None if x_or_source is None else np.asarray(x_or_source)
+        ys = None if y is None else np.asarray(y)
+        return self.figure._add_series(self.plot_item, kind_name, xs, ys, pen=pen, name=name, **style)
+
+    def __getattr__(self, item):
+        """ax.<kind name>(...) for any kind registered via
+        register_series_kind, beyond 'line' (which has its own `plot`
+        above, with its extra single-array convenience). Only reached when
+        normal attribute lookup fails, so it can't shadow a real method or
+        attribute."""
+        if item != 'line' and item in SERIES_KINDS:
+            return functools.partial(self._plot_kind, item)
+        raise AttributeError(f"'Axes' object has no attribute {item!r}")
 
 
 # -- current figure / axes -------------------------------------------------

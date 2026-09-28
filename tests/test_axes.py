@@ -142,3 +142,104 @@ def test_gca_is_none_without_a_subplot():
     f = _shown_empty()
     assert gcf() is f and gca() is None
     f.close()
+
+
+# -- generic kind dispatch (coordinator addition, wave 3 prep) --------------
+# Verifies Axes.__getattr__/_plot_kind actually work end to end for a kind
+# other than 'line', so I1/I2/I3 can register a kind and get ax.<name>(...)
+# "for free" -- with no changes to axes.py/series.py, which is the whole
+# point (they'd otherwise all need to touch the same two files).
+from lafigure.series import SeriesKind, register_series_kind, SERIES_KINDS  # noqa: E402
+
+
+class _DoubleWidthKind(SeriesKind):
+    """A minimal non-'line' kind for the dispatch tests below: same
+    PlotDataItem plumbing as 'line', just a distinct name/capability set,
+    so it's clearly not going through Axes.plot's own code path."""
+    name = 'test_double_width'
+    capabilities = frozenset({'copy'})
+
+    def create(self, plot_item, x, y, pen=None, name=None, source=None, rows=None, **style):
+        kwargs = {'name': name}
+        if pen is not None:
+            kwargs['pen'] = pen
+        return plot_item.plot(x, y, **kwargs)
+
+    def to_dict(self, item):
+        return {'x': np.array(item.xData, copy=True), 'y': np.array(item.yData, copy=True),
+                'pen': item.opts.get('pen'), 'name': item.name(), 'style': {}}
+
+
+register_series_kind(_DoubleWidthKind())
+
+
+def test_a_newly_registered_kind_is_reachable_as_an_axes_method_with_no_axes_changes():
+    f = _shown_empty()
+    ax = f.subplot(0, 0)
+    s = ax.test_double_width([0.0, 1.0, 2.0], [0.0, 2.0, 4.0])
+    assert isinstance(s, Series) and s.kind == 'test_double_width'
+    assert list(s.x) == [0.0, 1.0, 2.0] and list(s.y) == [0.0, 2.0, 4.0]
+    assert s in ax.series
+    f.close()
+
+
+def test_a_registered_kind_accepts_a_shared_data_source_like_plot_does():
+    f = _shown_empty()
+    ax = f.subplot(0, 0)
+    src = DataSource({'a': [1.0, 2.0, 3.0], 'b': [4.0, 5.0, 6.0]})
+    s1 = ax.plot(src, x='a', y='b')
+    s2 = ax.test_double_width(src, x='a', y='b')
+    assert s2.source is s1.source is src
+    assert list(s2.x) == [1.0, 2.0, 3.0]
+    f.close()
+
+
+def test_unregistered_attribute_still_raises_attribute_error():
+    f = _shown_empty()
+    ax = f.subplot(0, 0)
+    try:
+        ax.not_a_real_kind_or_method
+        assert False, "should have raised AttributeError"
+    except AttributeError:
+        pass
+    f.close()
+
+
+def test_get_xy_set_xy_generalize_series_data_access_beyond_plotdataitem():
+    """A kind whose item ISN'T a plain PlotDataItem (e.g. a future scatter/
+    imshow kind) can still support Series.x/.y/.set_data by overriding
+    get_xy/set_xy -- proven here with a fake in-memory item, no real
+    pyqtgraph item involved, so this doesn't depend on any kind package's
+    own pyqtgraph item choice."""
+    class _FakeItem:
+        def __init__(self):
+            self._x, self._y = np.array([1.0]), np.array([2.0])
+        def name(self):
+            return 'fake'
+
+    class _FakeKind(SeriesKind):
+        name = 'test_fake_xy'
+        capabilities = frozenset()
+        def create(self, plot_item, x, y, **kw):
+            return _FakeItem()
+        def to_dict(self, item):
+            return {}
+        def get_xy(self, item):
+            return item._x, item._y
+        def set_xy(self, item, x, y):
+            item._x, item._y = np.asarray(x), np.asarray(y)
+
+    register_series_kind(_FakeKind())
+    f = _shown_empty()
+    ax = f.subplot(0, 0)
+    # Built directly (mirroring _add_series minus _wire_curve_clickable,
+    # which assumes a real PlotDataItem's .curve -- generalizing that for
+    # non-PlotDataItem kinds is WP-J's job, not this coordinator fix's).
+    item = _FakeKind().create(ax.plot_item, [1.0], [2.0])
+    s = Series(f, item, 'test_fake_xy')
+    assert list(s.x) == [1.0] and list(s.y) == [2.0]
+    s.set_data([3.0], [4.0])
+    assert list(s.x) == [3.0] and list(s.y) == [4.0]
+    f.undo()
+    assert list(s.x) == [1.0] and list(s.y) == [2.0]
+    f.close()

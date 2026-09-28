@@ -268,3 +268,36 @@ def test_paste_subplot_rebuilds_series_from_dicts():
     (s,) = f._series_on(f.plots[-1])
     assert np.array_equal(s.y, first_curve(p0).yData) and s.item.curve.clickable
     f.close()
+
+
+# -- coordinator addition (wave 3 prep): a kind whose item isn't a
+# PlotDataItem must not crash _add_series -- I2 (bar/errorbar) and I3
+# (heatmap) will build exactly this kind of item (BarGraphItem, ImageItem).
+class _NoClickableProtocolKind(SeriesKind):
+    """An item with no .curve at all -- like BarGraphItem/ImageItem, unlike
+    every kind so far, which stayed PlotDataItem-based."""
+    name = 'test_no_curve'
+    capabilities = frozenset()
+
+    def create(self, plot_item, x, y, pen=None, name=None, source=None, rows=None, **style):
+        item = pg.BarGraphItem(x=x, height=y, width=0.5)
+        plot_item.addItem(item)
+        return item
+
+    def to_dict(self, item):
+        return {'x': [], 'y': [], 'pen': None, 'name': None, 'style': {}}
+
+    def get_xy(self, item):
+        return np.asarray(item.opts.get('x', [])), np.asarray(item.opts.get('height', []))
+
+
+register_series_kind(_NoClickableProtocolKind())
+
+
+def test_add_series_does_not_crash_for_an_item_without_a_curve_attribute():
+    f = shown_figure()
+    p0 = f.plots[0]
+    s = f._add_series(p0, 'test_no_curve', [1, 2, 3], [4, 5, 6])
+    assert s.kind == 'test_no_curve'
+    assert list(s.x) == [1, 2, 3] and list(s.y) == [4, 5, 6]
+    f.close()

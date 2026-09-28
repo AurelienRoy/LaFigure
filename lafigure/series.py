@@ -74,13 +74,26 @@ class SeriesKind:
 
     def create(self, plot_item, x, y, pen=None, name=None, source=None, rows=None, **style):
         """Build the pyqtgraph item on plot_item and return it. source/rows
-        are the Series' business; a kind may ignore them."""
+        are the Series' business; a kind may ignore them. x/y's meaning is
+        the kind's own to define (e.g. a histogram kind treats x as the raw
+        samples to bin, y as unused) -- Axes._plot_kind only routes them."""
         raise NotImplementedError
 
     def to_dict(self, item):
         """Everything create() needs to rebuild `item`: 'x', 'y', 'pen',
         'name', 'style' (keyword arguments for create). Arrays are copies."""
         raise NotImplementedError
+
+    def get_xy(self, item):
+        """The item's current (x, y) data, for Series.x/.y -- override for
+        an item that isn't a plain pg.PlotDataItem (e.g. ScatterPlotItem,
+        ImageItem): return whatever numpy arrays best represent it."""
+        return item.xData, item.yData
+
+    def set_xy(self, item, x, y):
+        """Apply new (x, y) data to the item, for Series.set_data -- override
+        alongside get_xy for a non-PlotDataItem item."""
+        item.setData(x, y)
 
 
 class LineKind(SeriesKind):
@@ -161,12 +174,14 @@ class Series:
 
     @property
     def x(self):
-        """The item's current x data, read-only (a view, not a copy)."""
-        return _read_only(self.item.xData)
+        """The item's current x data, read-only (a view, not a copy). Goes
+        through the kind's get_xy, so this works for non-PlotDataItem kinds
+        too (see SeriesKind.get_xy)."""
+        return _read_only(self.kind_obj.get_xy(self.item)[0])
 
     @property
     def y(self):
-        return _read_only(self.item.yData)
+        return _read_only(self.kind_obj.get_xy(self.item)[1])
 
     @property
     def rows(self):
@@ -180,7 +195,7 @@ class Series:
         data the first time it's asked for (and again after the data changes)."""
         if self._source is not None:
             return self._source
-        x, y = self.item.xData, self.item.yData
+        x, y = self.kind_obj.get_xy(self.item)
         if self._private is None or self._private[0] is not x or self._private[1] is not y:
             empty = np.zeros(0)
             src = DataSource({'x': empty if x is None else x, 'y': empty if y is None else y})
@@ -188,7 +203,7 @@ class Series:
         return self._private[2]
 
     def _apply(self, x, y, source, rows):
-        self.item.setData(x, y)
+        self.kind_obj.set_xy(self.item, x, y)
         self._source, self._rows = source, rows
 
     def set_data(self, x, y):
@@ -198,7 +213,7 @@ class Series:
         x, y = np.array(x, copy=True), np.array(y, copy=True)
         if len(x) != len(y):
             raise ValueError(f"set_data: x has {len(x)} points, y has {len(y)}")
-        old = (self.item.xData, self.item.yData, self._source, self._rows)
+        old = (*self.kind_obj.get_xy(self.item), self._source, self._rows)
         keep = self._rows is not None and len(self._rows) == len(x)
         new = (x, y, self._source if keep else None, self._rows if keep else None)
         self._apply(*new)
@@ -221,16 +236,23 @@ class SeriesMixin:
     def _add_series(self, plot_item, kind_name, x, y, pen=None, name=None,
                     source=None, rows=None, columns=None, **style):
         """Build a series of kind `kind_name` on plot_item, make it
-        clickable, and return its Series. With an explicit `source`, `rows`
-        (default: every row) says which of its rows x/y show, and `columns`
-        which (x, y) columns they came from."""
+        clickable (if its item supports the same protocol as a plain
+        PlotDataItem's -- see the note below), and return its Series. With
+        an explicit `source`, `rows` (default: every row) says which of its
+        rows x/y show, and `columns` which (x, y) columns they came from."""
         kind = SERIES_KINDS[kind_name]
         if source is not None and rows is None:
             rows = np.arange(len(source))
         item = kind.create(plot_item, x, y, pen=pen, name=name, source=source, rows=rows, **style)
         series = Series(self, item, kind_name, source=source, rows=rows, columns=columns)
         setattr(item, _SERIES_ATTR, series)
-        self._wire_curve_clickable(plot_item, item)
+        # _wire_curve_clickable (selection_ui.py) assumes item.curve, which
+        # only a real pg.PlotDataItem has -- a kind whose item is genuinely
+        # different (e.g. BarGraphItem, ImageItem) isn't click-selectable
+        # yet; that's WP-J's job (generalizing selection/brushing across
+        # kinds), not this construction site's. Guard rather than crash.
+        if hasattr(item, 'curve'):
+            self._wire_curve_clickable(plot_item, item)
         return series
 
     def _add_series_from_dict(self, plot_item, d):
