@@ -24,12 +24,22 @@
 
 """FigureManager + registry: the tree tracks open figures/subplots, "New
 Figure" makes a truly empty one, and the shared Clipboard carries a whole
-subplot from one figure window to a separate one.
+subplot from one figure window to a separate one (all pre-existing
+coverage, kept). New in this pass (Phase 2b, "figure browser" half): the
+two-tab structure, editable figure/subplot nodes, live blue selection
+coloring, the three curve/annotation/controls checkboxes, and the node
+right-click actions.
+
+Right-click *menus* are modal when exec'd (see test_menus.py's own note),
+so -- like that file -- these drive the underlying dispatch methods
+(_node_copy/_node_paste/_node_delete) directly rather than actually
+popping up and clicking a QMenu.
 """
 import pyqtgraph as pg
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from tests.helpers import (
-    app, m, shown_figure,
+    app, m, shown_figure, _place,
 )
 
 
@@ -90,3 +100,229 @@ def test_figure_manager_tracks_figures_and_cross_window_paste():
     app.processEvents()
     assert empty_win not in mgr._figure_items
     win.close()
+    mgr.close()
+
+
+def test_central_widget_is_a_two_tab_widget():
+    mgr = m.FigureManager()
+    app.processEvents()
+    assert isinstance(mgr.centralWidget(), QtWidgets.QTabWidget)
+    assert mgr.tabs is mgr.centralWidget()
+    assert mgr.tabs.count() == 2
+    assert mgr.tabs.tabText(0) == "Figure Browser"
+    assert mgr.tabs.tabText(1) == "Curve Browser"
+    # The Curve Browser tab is a structural placeholder a later package
+    # (K2) can find and populate -- just assert the widgets exist.
+    assert isinstance(mgr.curve_tree, QtWidgets.QTreeWidget)
+    assert isinstance(mgr.curve_browser_label, QtWidgets.QLabel)
+    mgr.close()
+
+
+def test_renaming_a_subplot_row_is_undoable_in_that_figure():
+    win = shown_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    p1 = win.plots[0]
+    row = mgr._fig_plot_rows[win][p1]
+    old_name = win.subplot_name(p1)
+
+    # Simulate the in-place edit committing -- this is exactly the code
+    # path Qt's own item delegate takes (setData through EditRole), so it
+    # drives the same itemChanged signal a real double-click/F2 edit would.
+    row.setText(0, "Renamed Subplot")
+    app.processEvents()
+
+    assert win.subplot_name(p1) == "Renamed Subplot"
+    assert p1.titleLabel.text == "Renamed Subplot"
+    win.undo()
+    assert win.subplot_name(p1) == old_name
+    win.redo()
+    assert win.subplot_name(p1) == "Renamed Subplot"
+    win.close()
+    mgr.close()
+
+
+def test_renaming_a_figure_row_updates_the_window_title():
+    win = shown_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    item = mgr._figure_items[win]
+    old_title = win.windowTitle()
+
+    item.setText(0, "My Renamed Figure")
+    app.processEvents()
+
+    assert win.windowTitle() == "My Renamed Figure"
+    assert item.text(0) == "My Renamed Figure"
+    win.undo()
+    assert win.windowTitle() == old_title
+    win.close()
+    mgr.close()
+
+
+def test_editing_a_subplot_row_does_not_get_torn_down_mid_edit():
+    """Regression guard: rename_subplot's own undoable apply() fires
+    subplotsChanged synchronously, which rebuilds the tree from inside
+    this very itemChanged handler -- the row object must survive that
+    (reused, not recreated) so nothing crashes and the dict stays coherent."""
+    win = shown_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    p1 = win.plots[0]
+    row_before = mgr._fig_plot_rows[win][p1]
+    row_before.setText(0, "Still Here")
+    app.processEvents()
+    row_after = mgr._fig_plot_rows[win][p1]
+    assert row_after is row_before
+    assert row_after.text(0) == "Still Here"
+    win.close()
+    mgr.close()
+
+
+def test_selected_subplot_rows_turn_blue_and_clear():
+    win = shown_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    p1 = win.plots[0]
+    row = mgr._fig_plot_rows[win][p1]
+    # The demo figure pre-selects p1 on construction (see figure.py's
+    # _build_demo_subplots) -- start from a clean slate.
+    win._deselect_all()
+    app.processEvents()
+    assert row.background(0).style() == QtCore.Qt.NoBrush
+
+    win._on_plot_clicked(p1)  # the real selection path (selection_ui.py)
+    app.processEvents()
+    assert p1 in win.selected_plots
+    assert row.background(0).color() == mgr.SELECTED_BG
+
+    win._deselect_all()
+    app.processEvents()
+    assert row.background(0).style() == QtCore.Qt.NoBrush
+    win.close()
+    mgr.close()
+
+
+def test_checkboxes_toggle_curve_and_annotation_sublevels():
+    win = shown_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    p1 = win.plots[0]
+    row = mgr._fig_plot_rows[win][p1]
+    assert row.childCount() == 0  # unchecked by default
+
+    n_curves = len([c for c in p1.listDataItems() if isinstance(c, pg.PlotDataItem)])
+    mgr.show_curves_check.setChecked(True)
+    app.processEvents()
+    assert row.childCount() == n_curves
+    assert all(row.child(i).data(0, mgr.ROLE_KIND) == 'curve' for i in range(row.childCount()))
+
+    mgr.show_curves_check.setChecked(False)
+    app.processEvents()
+    assert row.childCount() == 0
+
+    ann = _place(win, 'rect', p1)
+    mgr.show_annotations_check.setChecked(True)
+    app.processEvents()
+    assert row.childCount() == 1
+    assert row.child(0).data(0, mgr.ROLE_KIND) == 'annotation'
+    assert row.child(0).data(0, mgr.ROLE_OBJ) is ann
+
+    mgr.show_annotations_check.setChecked(False)
+    app.processEvents()
+    assert row.childCount() == 0
+
+    # "Show GUI controls": nothing to add yet (Phase 5) -- must not crash.
+    mgr.show_controls_check.setChecked(True)
+    app.processEvents()
+    assert row.childCount() == 0
+    mgr.show_controls_check.setChecked(False)
+    app.processEvents()
+
+    win.close()
+    mgr.close()
+
+
+def test_node_delete_removes_a_subplot_and_is_undoable():
+    win = shown_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    p2 = win.plots[1]
+    n_before = len(win.plots)
+
+    mgr._node_delete(win, 'plot', p2)
+    app.processEvents()
+    assert len(win.plots) == n_before - 1
+    assert p2 not in win.plots
+
+    win.undo()
+    assert len(win.plots) == n_before
+    win.close()
+    mgr.close()
+
+
+def test_node_copy_and_paste_a_single_subplot_targets_only_that_node():
+    """Right-click Copy/Paste on one subplot row must target exactly that
+    subplot regardless of what is selected inside the figure's own window
+    (PLAN.md's package note) -- select a *different* plot first."""
+    win = shown_figure()
+    other_win = m.LaFigure(empty=True)
+    other_win.show()
+    app.processEvents()
+    mgr = m.FigureManager()
+    app.processEvents()
+
+    p0, p1 = win.plots[0], win.plots[1]
+    win._on_plot_clicked(p0)  # select a different subplot than the one we copy
+    assert win.selected_plots == [p0]
+
+    mgr._node_copy(win, 'plot', p1)
+    assert win.clipboard.last_copied == 'subplot'
+    assert len(win.clipboard.subplot) == 1
+    assert win.clipboard.subplot[0]['title'] == p1.titleLabel.text
+
+    mgr._node_paste(other_win, 'plot', None)
+    app.processEvents()
+    assert len(other_win.plots) == 1
+    assert other_win.plots[0].titleLabel.text == p1.titleLabel.text
+
+    win.close()
+    other_win.close()
+    mgr.close()
+
+
+def test_node_delete_on_a_figure_row_closes_that_figure():
+    win = shown_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    assert win in mgr._figure_items
+
+    mgr._node_delete(win, 'figure', None)
+    app.processEvents()
+    assert win not in mgr._figure_items
+    mgr.close()
+
+
+def test_node_delete_curve_and_annotation():
+    win = shown_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    p1 = win.plots[0]
+    curve = [c for c in p1.listDataItems() if isinstance(c, pg.PlotDataItem)][0]
+
+    mgr._node_delete(win, 'curve', curve)
+    app.processEvents()
+    assert curve not in p1.listDataItems()
+    win.undo()
+    assert any(c.name() == curve.name() for c in p1.listDataItems()
+               if isinstance(c, pg.PlotDataItem))
+
+    ann = _place(win, 'rect', p1)
+    mgr._node_delete(win, 'annotation', ann)
+    app.processEvents()
+    assert ann not in win.annotations
+    win.undo()
+    assert any(a.kind == 'rect' for a in win.annotations)
+
+    win.close()
+    mgr.close()
