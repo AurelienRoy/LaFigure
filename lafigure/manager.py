@@ -49,17 +49,27 @@ tabs:
         controls) that add/remove read-only sub-levels under each
         subplot row. "Show GUI controls" has nothing to add yet (no
         controls exist before Phase 5) but must not crash.
-  - "Curve Browser" (self.curve_tree / self.curve_browser_label): a
-    structural placeholder only. It tracks registry.focusChanged just
-    enough to show which subplot is focused; WP-K2 (Phase 2b) fills in
-    the actual per-subplot series/annotation tree and bottom property
-    editor once groups (WP-K1) exist.
+  - "Curve Browser" (self.curve_tree / self.curve_browser_label, plus
+    self.curve_editor below the tree): filled in by WP-K2 (Phase 2b).
+    Shows the focused subplot's Series/Group/AnnotationItem hierarchy of
+    the most recently active LaFigure window (its own small "most
+    recently used figure" tracker -- self._curve_recent/_curve_focus --
+    reimplementing the same idea as axes.py's gcf()/_touch locally,
+    since manager.py doesn't own axes.py), a tristate visibility
+    checkbox per row (view state, not undoable), a right-click Delete /
+    "Edit common label..." menu, two-way selection sync with the actual
+    figure, and a bottom property editor (name, Z order, color, line
+    width/style, marker, alpha, and -- for a Group row -- the common
+    label's prefix/suffix position). Kept in its own clearly-prefixed
+    (`_curve_*`) section below, deliberately independent of the Figure
+    Browser tab's own code above it, per PLAN.md's package note for K2.
 
 Only the figure and subplot rows are made editable here -- a curve or
 annotation row's own rename already has a dedicated, richer UI inside the
 figure itself (right-click "Rename Curve"; annotations have no rename at
 all yet), so this pass doesn't duplicate that in the tree.
 """
+import weakref
 from contextlib import contextmanager
 
 import pyqtgraph as pg
@@ -67,6 +77,9 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from .figure import LaFigure
 from .registry import get_registry
+from .annotations import AnnotationItem, SHAPE_LABELS
+from .series import Series
+from .groups import Group, _ungroup_one
 
 
 @contextmanager
@@ -132,7 +145,7 @@ class FigureManager(QtWidgets.QMainWindow):
         self.tree.customContextMenuRequested.connect(self._on_tree_context_menu)
         browser_layout.addWidget(self.tree)
 
-        # -- Curve Browser tab (structural placeholder for WP-K2) ---------
+        # -- Curve Browser tab (WP-K2) -------------------------------------
         curve_widget = QtWidgets.QWidget()
         curve_layout = QtWidgets.QVBoxLayout(curve_widget)
         curve_layout.setContentsMargins(4, 4, 4, 4)
@@ -140,7 +153,12 @@ class FigureManager(QtWidgets.QMainWindow):
         curve_layout.addWidget(self.curve_browser_label)
         self.curve_tree = QtWidgets.QTreeWidget()
         self.curve_tree.setHeaderLabels(["Curve / Annotation"])
+        self.curve_tree.itemChanged.connect(self._on_curve_item_changed)
+        self.curve_tree.itemClicked.connect(self._on_curve_tree_item_clicked)
+        self.curve_tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.curve_tree.customContextMenuRequested.connect(self._on_curve_tree_context_menu)
         curve_layout.addWidget(self.curve_tree)
+        curve_layout.addWidget(self._build_curve_editor())
 
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(browser_widget, "Figure Browser")
@@ -150,6 +168,16 @@ class FigureManager(QtWidgets.QMainWindow):
         self._figure_items = {}    # LaFigure -> top-level QTreeWidgetItem
         self._fig_plot_rows = {}   # LaFigure -> {PlotItem: QTreeWidgetItem}
         self._focused = (None, None)  # last (LaFigure, PlotItem) from focusChanged
+
+        # -- Curve Browser tab's own "most recently active figure" tracker
+        # (see module docstring): weak refs so a closed figure is never
+        # kept alive just because it was once looked at.
+        self._curve_recent = []      # [weakref(LaFigure)], most recent last
+        self._curve_focus = {}       # LaFigure -> PlotItem or None
+        self._curve_current_fig = None
+        self._curve_current_plot = None
+        self._curve_editor_target = (None, None)   # ('series'|'group'|'annotation', obj)
+        self._curve_editor_updating = False         # guard while populating editor widgets
 
         self.registry.figureOpened.connect(self._on_figure_opened)
         self.registry.figureClosed.connect(self._on_figure_closed)
@@ -163,6 +191,7 @@ class FigureManager(QtWidgets.QMainWindow):
         # weren't listening yet -- backfill them.
         for fig in list(self.registry.figures):
             self._add_figure_item(fig)
+        self._curve_show_editor(None, None)
 
     def new_figure(self):
         fig = LaFigure(empty=True)
@@ -279,30 +308,37 @@ class FigureManager(QtWidgets.QMainWindow):
                 self.tree.takeTopLevelItem(idx)
         if fig in self._owned_figures:
             self._owned_figures.remove(fig)
+        # Curve Browser tab: drop it from the recency tracker too, and
+        # re-target if it was the one currently shown.
+        self._curve_focus.pop(fig, None)
+        self._curve_recent[:] = [r for r in self._curve_recent if r() is not None and r() is not fig]
+        if self._curve_current_fig is fig:
+            self._curve_refresh_target()
 
     def _on_subplots_changed(self, fig):
         self._refresh_subplots(fig)
+        if fig is self._curve_current_fig:
+            self._curve_rebuild_tree()
 
     def _on_selection_changed(self, fig):
         self._apply_selection_colors(fig)
+        if fig is self._curve_current_fig:
+            self._curve_apply_selection_colors()
 
     def _on_figure_renamed(self, fig):
         item = self._figure_items.get(fig)
-        if item is None:
-            return
-        with _no_item_signals(self.tree):
-            item.setText(0, fig.windowTitle())
+        if item is not None:
+            with _no_item_signals(self.tree):
+                item.setText(0, fig.windowTitle())
+        if fig is self._curve_current_fig:
+            self._curve_update_label()
 
     def _on_focus_changed(self, fig, plot_item):
-        """Curve Browser placeholder: tracks the focused subplot of the
-        most recently active figure so WP-K2 can populate self.curve_tree
-        from it later; no content logic yet, just a visible sign of life."""
+        """Curve Browser tab: tracks the focused subplot of the most
+        recently active figure (see module docstring) and rebuilds
+        self.curve_tree from it."""
         self._focused = (fig, plot_item)
-        if plot_item is None:
-            self.curve_browser_label.setText("Select a subplot to see its curves")
-        else:
-            name = fig.subplot_name(plot_item) if fig is not None else ''
-            self.curve_browser_label.setText(f"Focused subplot: {name or '(untitled subplot)'}")
+        self._curve_touch(fig, plot_item)
 
     def _on_item_double_clicked(self, item, column):
         """Double-clicking any row (the figure itself or one of its
@@ -423,3 +459,624 @@ class FigureManager(QtWidgets.QMainWindow):
             if curve in p.listDataItems():
                 return p
         return None
+
+    # =====================================================================
+    # Curve Browser tab (WP-K2) -- kept deliberately separate from the
+    # Figure Browser tab's code above (PLAN.md's package note): every
+    # method/attribute here is prefixed `_curve_`/`curve_`, and none of the
+    # Figure Browser tab's own methods are touched.
+    #
+    # Rows: 'series' (a Series), 'group' (a Group, recursing into its own
+    # members) or 'annotation' (an AnnotationItem not already inside a
+    # group) -- see _curve_rebuild_tree. Reuses the module-level
+    # ROLE_KIND/ROLE_OBJ data roles (their numeric value only, not shared
+    # state -- self.curve_tree's items are unrelated Qt objects from
+    # self.tree's).
+    # =====================================================================
+
+    # -- "most recently active figure" tracking (see module docstring) ----
+    def _curve_touch(self, fig, plot_item):
+        if fig is not None:
+            self._curve_focus[fig] = plot_item
+            self._curve_recent[:] = [r for r in self._curve_recent
+                                     if r() is not None and r() is not fig]
+            self._curve_recent.append(weakref.ref(fig))
+        self._curve_refresh_target()
+
+    def _curve_refresh_target(self):
+        fig = None
+        for ref in reversed(self._curve_recent):
+            f = ref()
+            if f is not None and f in self.registry.figures:
+                fig = f
+                break
+        plot_item = self._curve_focus.get(fig) if fig is not None else None
+        if fig is None or plot_item not in fig.plots:
+            plot_item = None
+        self._curve_current_fig = fig
+        self._curve_current_plot = plot_item
+        self._curve_update_label()
+        self._curve_rebuild_tree()
+
+    def _curve_update_label(self):
+        fig, plot_item = self._curve_current_fig, self._curve_current_plot
+        if fig is None or plot_item is None:
+            self.curve_browser_label.setText("Select a subplot to see its curves")
+        else:
+            name = fig.subplot_name(plot_item) or "(untitled subplot)"
+            self.curve_browser_label.setText(f"{fig.windowTitle()} — {name}")
+
+    # -- tree construction --------------------------------------------------
+    def _curve_rebuild_tree(self):
+        fig, plot_item = self._curve_current_fig, self._curve_current_plot
+        with _no_item_signals(self.curve_tree):
+            self.curve_tree.clear()
+            if fig is not None and plot_item is not None and plot_item in fig.plots:
+                top_groups = [g for g in fig.groups if g.subplot is plot_item]
+                grouped = set()
+                for g in top_groups:
+                    grouped.update(g.leaf_members)
+                for s in fig._series_on(plot_item):
+                    if s not in grouped:
+                        self.curve_tree.addTopLevelItem(self._curve_series_row(s))
+                for g in top_groups:
+                    self.curve_tree.addTopLevelItem(self._curve_group_row(g))
+                for a in fig._annotations_on(plot_item):
+                    if a not in grouped:
+                        self.curve_tree.addTopLevelItem(self._curve_annotation_row(a))
+            self.curve_tree.expandAll()
+        self._curve_apply_selection_colors()
+        self._curve_validate_editor_target()
+
+    def _curve_series_row(self, series, group=None):
+        text = group.display_name(series) if group is not None else (series.name or "(curve)")
+        item = QtWidgets.QTreeWidgetItem([text])
+        item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+        item.setCheckState(0, QtCore.Qt.Checked if series.item.isVisible() else QtCore.Qt.Unchecked)
+        item.setData(0, self.ROLE_KIND, 'series')
+        item.setData(0, self.ROLE_OBJ, series)
+        return item
+
+    def _curve_annotation_row(self, ann, group=None):
+        own = ann.text or SHAPE_LABELS.get(ann.kind, ann.kind)
+        text = group.display_name(ann) if group is not None else own
+        item = QtWidgets.QTreeWidgetItem([text])
+        item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+        item.setCheckState(0, QtCore.Qt.Checked if ann.isVisible() else QtCore.Qt.Unchecked)
+        item.setData(0, self.ROLE_KIND, 'annotation')
+        item.setData(0, self.ROLE_OBJ, ann)
+        return item
+
+    def _curve_group_row(self, group):
+        item = QtWidgets.QTreeWidgetItem([group.common_label or "(group)"])
+        item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+        item.setCheckState(0, self._curve_group_check_state(group))
+        item.setData(0, self.ROLE_KIND, 'group')
+        item.setData(0, self.ROLE_OBJ, group)
+        for m in group.members:
+            if isinstance(m, Group):
+                child = self._curve_group_row(m)
+            elif isinstance(m, AnnotationItem):
+                child = self._curve_annotation_row(m, group=group)
+            else:
+                child = self._curve_series_row(m, group=group)
+            item.addChild(child)
+        return item
+
+    @staticmethod
+    def _curve_group_check_state(group):
+        v = group.visible
+        if v is True:
+            return QtCore.Qt.Checked
+        if v is False:
+            return QtCore.Qt.Unchecked
+        return QtCore.Qt.PartiallyChecked
+
+    # -- visibility checkboxes: view state, never undoable -------------------
+    def _on_curve_item_changed(self, item, column):
+        kind = item.data(0, self.ROLE_KIND)
+        obj = item.data(0, self.ROLE_OBJ)
+        if kind is None or obj is None:
+            return
+        if kind == 'group':
+            obj.set_visible(item.checkState(0) == QtCore.Qt.Checked)
+        elif kind == 'series':
+            obj.item.setVisible(item.checkState(0) == QtCore.Qt.Checked)
+        elif kind == 'annotation':
+            obj.setVisible(item.checkState(0) == QtCore.Qt.Checked)
+        self._curve_rebuild_tree()
+
+    # -- selection sync: tree click -> figure --------------------------------
+    def _on_curve_tree_item_clicked(self, item, column):
+        fig, plot_item = self._curve_current_fig, self._curve_current_plot
+        if fig is None or plot_item is None:
+            return
+        kind = item.data(0, self.ROLE_KIND)
+        obj = item.data(0, self.ROLE_OBJ)
+        curves, anns = [], []
+        if kind == 'series':
+            curves = [obj.item]
+        elif kind == 'annotation':
+            anns = [obj]
+        elif kind == 'group':
+            for leaf in obj.leaf_members:
+                (curves if isinstance(leaf, Series) else anns).append(
+                    leaf.item if isinstance(leaf, Series) else leaf)
+        targets = [('c', c) for c in curves] + [('a', a) for a in anns]
+        if not targets:
+            fig._clear_selection()
+        else:
+            first = True
+            for t_kind, t_obj in targets:
+                if t_kind == 'c':
+                    fig._select_curve(t_obj, additive=not first)
+                else:
+                    fig._select_annotation(t_obj, additive=not first)
+                first = False
+        fig.focused_plot = plot_item
+        fig._mark_active(plot_item, keep_selection=True)
+        self._curve_show_editor(kind, obj)
+
+    # -- selection sync: figure -> tree (background color, like WP-D's blue
+    # rows -- NOT the tree's own native selection, so this never feeds back
+    # into _on_curve_tree_item_clicked) -------------------------------------
+    def _curve_apply_selection_colors(self):
+        fig = self._curve_current_fig
+        if fig is None:
+            return
+        selected_curves = set(getattr(fig, 'selected_curves', []))
+        selected_anns = set(getattr(fig, 'selected_annotations', []))
+
+        def hit(kind, obj):
+            if kind == 'series':
+                return obj.item in selected_curves
+            if kind == 'annotation':
+                return obj in selected_anns
+            if kind == 'group':
+                return any((isinstance(leaf, Series) and leaf.item in selected_curves)
+                           or (not isinstance(leaf, Series) and leaf in selected_anns)
+                           for leaf in obj.leaf_members)
+            return False
+
+        def paint(item):
+            kind = item.data(0, self.ROLE_KIND)
+            obj = item.data(0, self.ROLE_OBJ)
+            brush = QtGui.QBrush(self.SELECTED_BG) if hit(kind, obj) else QtGui.QBrush()
+            item.setBackground(0, brush)
+            for i in range(item.childCount()):
+                paint(item.child(i))
+
+        with _no_item_signals(self.curve_tree):
+            for i in range(self.curve_tree.topLevelItemCount()):
+                paint(self.curve_tree.topLevelItem(i))
+
+    # -- right-click menu: Delete / Edit common label... ---------------------
+    def _on_curve_tree_context_menu(self, pos):
+        item = self.curve_tree.itemAt(pos)
+        fig = self._curve_current_fig
+        if item is None or fig is None:
+            return
+        kind = item.data(0, self.ROLE_KIND)
+        obj = item.data(0, self.ROLE_OBJ)
+
+        menu = QtWidgets.QMenu(self.curve_tree)
+        delete_action = menu.addAction("Delete")
+        label_action = menu.addAction("Edit common label...") if kind == 'group' else None
+
+        chosen = menu.exec_(self.curve_tree.viewport().mapToGlobal(pos))
+        if chosen is delete_action:
+            self._curve_delete_node(fig, kind, obj)
+        elif chosen is not None and chosen is label_action:
+            self._curve_edit_common_label(fig, obj)
+
+    def _curve_delete_node(self, fig, kind, obj):
+        if kind == 'series':
+            fig.delete_curve(obj.item)
+        elif kind == 'annotation':
+            fig.delete_annotation(obj)
+        elif kind == 'group':
+            self._curve_delete_group(fig, obj)
+        self._curve_rebuild_tree()
+
+    def _curve_delete_group(self, fig, group):
+        """Delete a whole group: every leaf member (curve/annotation), plus
+        the group entry itself, as one undo entry -- reuses groups.py's own
+        _ungroup_one (the same helper Ctrl+Shift+G uses) for the bookkeeping
+        half, targeting this specific group directly rather than whatever
+        happens to be selected."""
+        leaves = list(group.leaf_members)
+        with fig.undo_group():
+            for leaf in leaves:
+                if isinstance(leaf, Series):
+                    fig.delete_curve(leaf.item)
+                else:
+                    fig.delete_annotation(leaf)
+            _ungroup_one(fig, group)
+
+    def _curve_edit_common_label(self, fig, group):
+        text, ok = QtWidgets.QInputDialog.getText(
+            self, "Edit common label", "Label:", QtWidgets.QLineEdit.Normal, group.common_label)
+        if not ok:
+            return
+        old = group.common_label
+
+        def apply(label):
+            group.common_label = label
+
+        apply(text)
+        fig._push_history(lambda: apply(old), lambda: apply(text))
+        self._curve_rebuild_tree()
+
+    # -- bottom property editor ----------------------------------------------
+    def _build_curve_editor(self):
+        """Controls for whatever is selected in self.curve_tree -- rebuilt
+        (shown/hidden per row, not recreated) on every _curve_show_editor
+        call. Kept as one QGroupBox so FigureManager.__init__ can just
+        addWidget() it once."""
+        box = QtWidgets.QGroupBox("Properties")
+        form = QtWidgets.QFormLayout(box)
+
+        self.curve_name_edit = QtWidgets.QLineEdit()
+        self.curve_name_edit.editingFinished.connect(self._on_curve_name_edited)
+        form.addRow("Name", self.curve_name_edit)
+
+        self._curve_z_row = QtWidgets.QWidget()
+        z_layout = QtWidgets.QHBoxLayout(self._curve_z_row)
+        z_layout.setContentsMargins(0, 0, 0, 0)
+        self.curve_z_up = QtWidgets.QToolButton(text="Up")
+        self.curve_z_down = QtWidgets.QToolButton(text="Down")
+        self.curve_z_front = QtWidgets.QToolButton(text="Front")
+        self.curve_z_back = QtWidgets.QToolButton(text="Back")
+        for b in (self.curve_z_up, self.curve_z_down, self.curve_z_front, self.curve_z_back):
+            z_layout.addWidget(b)
+        self.curve_z_up.clicked.connect(lambda: self._curve_move_z(+1))
+        self.curve_z_down.clicked.connect(lambda: self._curve_move_z(-1))
+        self.curve_z_front.clicked.connect(lambda: self._curve_z_extreme(True))
+        self.curve_z_back.clicked.connect(lambda: self._curve_z_extreme(False))
+        form.addRow("Z order", self._curve_z_row)
+
+        self.curve_color_button = QtWidgets.QPushButton("Choose...")
+        self.curve_color_button.clicked.connect(self._on_curve_color_clicked)
+        form.addRow("Color", self.curve_color_button)
+
+        self.curve_width_spin = QtWidgets.QDoubleSpinBox()
+        self.curve_width_spin.setRange(0.5, 20.0)
+        self.curve_width_spin.setSingleStep(0.5)
+        self.curve_width_spin.editingFinished.connect(self._on_curve_width_edited)
+        form.addRow("Line width", self.curve_width_spin)
+
+        self.curve_style_combo = QtWidgets.QComboBox()
+        self.curve_style_combo.addItems(["Solid", "Dash", "Dot", "DashDot"])
+        self.curve_style_combo.currentIndexChanged.connect(self._on_curve_style_edited)
+        form.addRow("Line style", self.curve_style_combo)
+
+        self.curve_marker_combo = QtWidgets.QComboBox()
+        self.curve_marker_combo.addItems(["None", "o", "s", "t", "d", "+", "x"])
+        self.curve_marker_combo.currentIndexChanged.connect(self._on_curve_marker_edited)
+        form.addRow("Marker", self.curve_marker_combo)
+
+        self.curve_alpha_spin = QtWidgets.QSpinBox()
+        self.curve_alpha_spin.setRange(0, 255)
+        self.curve_alpha_spin.editingFinished.connect(self._on_curve_alpha_edited)
+        form.addRow("Alpha", self.curve_alpha_spin)
+
+        self.curve_label_pos_combo = QtWidgets.QComboBox()
+        self.curve_label_pos_combo.addItems(["Beginning", "End"])
+        self.curve_label_pos_combo.currentIndexChanged.connect(self._on_curve_label_pos_edited)
+        form.addRow("Common label position", self.curve_label_pos_combo)
+
+        self.curve_editor = box
+        return box
+
+    def _curve_editor_rows(self):
+        return (self.curve_name_edit, self._curve_z_row, self.curve_color_button,
+                self.curve_width_spin, self.curve_style_combo, self.curve_marker_combo,
+                self.curve_alpha_spin, self.curve_label_pos_combo)
+
+    def _curve_set_row_visible(self, widget, visible):
+        label = self.curve_editor.layout().labelForField(widget)
+        widget.setVisible(visible)
+        if label is not None:
+            label.setVisible(visible)
+
+    def _curve_validate_editor_target(self):
+        """After a rebuild (a delete, a focus change...), drop the editor's
+        target if it no longer exists -- e.g. it was just deleted."""
+        kind, obj = self._curve_editor_target
+        if kind is None:
+            return
+        fig, plot_item = self._curve_current_fig, self._curve_current_plot
+        valid = False
+        if fig is not None and plot_item is not None:
+            if kind == 'series':
+                valid = obj in fig._series_on(plot_item)
+            elif kind == 'annotation':
+                valid = obj in fig.annotations
+            elif kind == 'group':
+                valid = obj in fig.groups or any(obj in g.leaf_members for g in fig.groups)
+        if not valid:
+            self._curve_show_editor(None, None)
+
+    def _curve_show_editor(self, kind, obj):
+        """Populate the bottom editor for `obj` (a Series/Group/
+        AnnotationItem) of the given kind, hiding whatever control doesn't
+        apply -- e.g. no marker control for a plain 'line' series, no line
+        width for an annotation or a group."""
+        self._curve_editor_target = (kind, obj)
+        self._curve_editor_updating = True
+        try:
+            if kind is None:
+                for w in self._curve_editor_rows():
+                    self._curve_set_row_visible(w, False)
+                return
+
+            series = obj if kind == 'series' else None
+            opts = getattr(series.item, 'opts', None) if series is not None else None
+
+            self._curve_set_row_visible(self.curve_name_edit, kind == 'series')
+            if kind == 'series':
+                self.curve_name_edit.setText(series.name or '')
+
+            self._curve_set_row_visible(self._curve_z_row, kind == 'series')
+
+            has_color = kind == 'series' and opts is not None and (
+                opts.get('pen') is not None or opts.get('symbolBrush') is not None
+                or opts.get('symbolPen') is not None)
+            self._curve_set_row_visible(self.curve_color_button, has_color)
+            self._curve_set_row_visible(self.curve_alpha_spin, has_color)
+            if has_color:
+                self.curve_alpha_spin.setValue(self._curve_series_color(series).alpha())
+
+            is_line = kind == 'series' and series.kind == 'line' and opts is not None
+            self._curve_set_row_visible(self.curve_width_spin, is_line)
+            self._curve_set_row_visible(self.curve_style_combo, is_line)
+            if is_line:
+                pen = pg.mkPen(opts.get('pen')) if opts.get('pen') is not None else pg.mkPen('k')
+                self.curve_width_spin.setValue(pen.widthF() or 1.0)
+                style_index = {QtCore.Qt.SolidLine: 0, QtCore.Qt.DashLine: 1,
+                              QtCore.Qt.DotLine: 2, QtCore.Qt.DashDotLine: 3}.get(pen.style(), 0)
+                self.curve_style_combo.setCurrentIndex(style_index)
+
+            # PlotDataItem.opts always has a 'symbol' key (default None) even
+            # for a plain line -- gate on the kind itself (currently only
+            # 'scatter' is marker-capable), not key presence, or a line
+            # would wrongly get a marker control too.
+            supports_marker = kind == 'series' and series.kind == 'scatter'
+            self._curve_set_row_visible(self.curve_marker_combo, supports_marker)
+            if supports_marker:
+                sym = opts.get('symbol')
+                idx = self.curve_marker_combo.findText(sym) if sym else 0
+                self.curve_marker_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+            self._curve_set_row_visible(self.curve_label_pos_combo, kind == 'group')
+            if kind == 'group':
+                self.curve_label_pos_combo.setCurrentIndex(0 if obj.label_position == 'prefix' else 1)
+        finally:
+            self._curve_editor_updating = False
+
+    @staticmethod
+    def _curve_series_color(series):
+        """The series' own "real" color: its line pen if it actually draws
+        one (a plain line), else its symbol brush/pen (a scatter's own line
+        pen is fully transparent by construction -- see kinds/scatter.py)."""
+        opts = series.item.opts
+        pen = opts.get('pen')
+        if pen is not None:
+            c = pg.mkPen(pen).color()
+            if c.alpha() > 0:
+                return c
+        brush = opts.get('symbolBrush')
+        if brush is not None:
+            return pg.mkBrush(brush).color()
+        symbol_pen = opts.get('symbolPen')
+        if symbol_pen is not None:
+            return pg.mkPen(symbol_pen).color()
+        return QtGui.QColor('black')
+
+    @staticmethod
+    def _curve_snapshot_style(series):
+        opts = series.item.opts
+        return {k: opts.get(k) for k in ('pen', 'symbolBrush', 'symbolPen')}
+
+    @staticmethod
+    def _curve_restore_style(series, snapshot):
+        item = series.item
+        if snapshot.get('pen') is not None:
+            item.setPen(snapshot['pen'])
+        if snapshot.get('symbolBrush') is not None:
+            item.setSymbolBrush(snapshot['symbolBrush'])
+        if snapshot.get('symbolPen') is not None:
+            item.setSymbolPen(snapshot['symbolPen'])
+
+    def _curve_recolor(self, fig, series, rgba):
+        """Apply `rgba` to whichever of pen/symbolBrush/symbolPen the item
+        actually uses (see _curve_series_color), undoably. Shared by the
+        color picker and the alpha spinbox."""
+        item = series.item
+        opts = item.opts
+        old_snapshot = self._curve_snapshot_style(series)
+
+        def apply(rgba_):
+            if opts.get('pen') is not None and pg.mkPen(opts.get('pen')).color().alpha() > 0:
+                old_pen = pg.mkPen(opts.get('pen'))
+                item.setPen(pg.mkPen(color=rgba_, width=old_pen.widthF()))
+            if opts.get('symbolBrush') is not None:
+                item.setSymbolBrush(pg.mkBrush(rgba_))
+            if opts.get('symbolPen') is not None:
+                item.setSymbolPen(pg.mkPen(rgba_))
+
+        apply(rgba)
+        new_snapshot = self._curve_snapshot_style(series)
+        fig._push_history(lambda: self._curve_restore_style(series, old_snapshot),
+                          lambda: self._curve_restore_style(series, new_snapshot))
+
+    def _on_curve_name_edited(self):
+        if self._curve_editor_updating:
+            return
+        kind, obj = self._curve_editor_target
+        if kind != 'series':
+            return
+        fig, plot_item = self._curve_current_fig, self._curve_current_plot
+        new_name = self.curve_name_edit.text()
+        old_name = obj.name or ''
+        if new_name == old_name:
+            return
+
+        def apply(name):
+            fig._apply_curve_rename(plot_item, obj.item, name)
+
+        apply(new_name)
+        fig._push_history(lambda: apply(old_name), lambda: apply(new_name))
+        self._curve_rebuild_tree()
+
+    def _on_curve_color_clicked(self):
+        kind, obj = self._curve_editor_target
+        if kind != 'series':
+            return
+        fig = self._curve_current_fig
+        current = self._curve_series_color(obj)
+        color = QtWidgets.QColorDialog.getColor(current, self, "Choose color")
+        if not color.isValid():
+            return
+        self._curve_recolor(fig, obj, (color.red(), color.green(), color.blue(), color.alpha()))
+        self._curve_show_editor('series', obj)
+
+    def _on_curve_width_edited(self):
+        if self._curve_editor_updating:
+            return
+        kind, obj = self._curve_editor_target
+        if kind != 'series':
+            return
+        fig = self._curve_current_fig
+        item = obj.item
+        old_pen = pg.mkPen(item.opts.get('pen')) if item.opts.get('pen') is not None else pg.mkPen('k')
+        old_width = old_pen.widthF()
+        new_width = self.curve_width_spin.value()
+        if abs(new_width - old_width) < 1e-9:
+            return
+
+        def apply(width):
+            p = pg.mkPen(item.opts.get('pen')) if item.opts.get('pen') is not None else pg.mkPen('k')
+            item.setPen(pg.mkPen(color=p.color(), width=width))
+
+        apply(new_width)
+        fig._push_history(lambda: apply(old_width), lambda: apply(new_width))
+
+    def _on_curve_style_edited(self, index):
+        if self._curve_editor_updating:
+            return
+        kind, obj = self._curve_editor_target
+        if kind != 'series':
+            return
+        fig = self._curve_current_fig
+        item = obj.item
+        styles = [QtCore.Qt.SolidLine, QtCore.Qt.DashLine, QtCore.Qt.DotLine, QtCore.Qt.DashDotLine]
+        old_pen = pg.mkPen(item.opts.get('pen')) if item.opts.get('pen') is not None else pg.mkPen('k')
+        old_style = old_pen.style()
+        new_style = styles[index]
+        if old_style == new_style:
+            return
+
+        def apply(style):
+            p = pg.mkPen(item.opts.get('pen')) if item.opts.get('pen') is not None else pg.mkPen('k')
+            new_pen = pg.mkPen(color=p.color(), width=p.widthF())
+            new_pen.setStyle(style)
+            item.setPen(new_pen)
+
+        apply(new_style)
+        fig._push_history(lambda: apply(old_style), lambda: apply(new_style))
+
+    def _on_curve_marker_edited(self, index):
+        if self._curve_editor_updating:
+            return
+        kind, obj = self._curve_editor_target
+        if kind != 'series':
+            return
+        fig = self._curve_current_fig
+        item = obj.item
+        old_symbol = item.opts.get('symbol')
+        text = self.curve_marker_combo.currentText()
+        new_symbol = None if text == 'None' else text
+        if old_symbol == new_symbol:
+            return
+
+        def apply(symbol):
+            item.setSymbol(symbol)
+
+        apply(new_symbol)
+        fig._push_history(lambda: apply(old_symbol), lambda: apply(new_symbol))
+
+    def _on_curve_alpha_edited(self):
+        if self._curve_editor_updating:
+            return
+        kind, obj = self._curve_editor_target
+        if kind != 'series':
+            return
+        fig = self._curve_current_fig
+        current = self._curve_series_color(obj)
+        new_alpha = self.curve_alpha_spin.value()
+        if new_alpha == current.alpha():
+            return
+        self._curve_recolor(fig, obj, (current.red(), current.green(), current.blue(), new_alpha))
+
+    def _on_curve_label_pos_edited(self, index):
+        if self._curve_editor_updating:
+            return
+        kind, obj = self._curve_editor_target
+        if kind != 'group':
+            return
+        fig = self._curve_current_fig
+        old_pos = obj.label_position
+        new_pos = 'prefix' if index == 0 else 'suffix'
+        if old_pos == new_pos:
+            return
+
+        def apply(pos):
+            obj.label_position = pos
+
+        apply(new_pos)
+        fig._push_history(lambda: apply(old_pos), lambda: apply(new_pos))
+        self._curve_rebuild_tree()
+
+    # -- Z order (setZValue on the Series' own item -- confirmed live to
+    # reorder actual draw stacking, see this package's report) -------------
+    def _curve_ordered_series(self, plot_item):
+        fig = self._curve_current_fig
+        series_list = fig._series_on(plot_item)
+        return sorted(series_list, key=lambda s: (s.item.zValue(), series_list.index(s)))
+
+    def _curve_set_z(self, fig, series, old_z, new_z):
+        def apply(z):
+            series.item.setZValue(z)
+
+        apply(new_z)
+        fig._push_history(lambda: apply(old_z), lambda: apply(new_z))
+
+    def _curve_move_z(self, delta):
+        kind, obj = self._curve_editor_target
+        if kind != 'series':
+            return
+        fig, plot_item = self._curve_current_fig, self._curve_current_plot
+        ordered = self._curve_ordered_series(plot_item)
+        idx = ordered.index(obj)
+        new_idx = idx + delta
+        if new_idx < 0 or new_idx >= len(ordered):
+            return
+        other = ordered[new_idx]
+        z1, z2 = obj.item.zValue(), other.item.zValue()
+        if z1 == z2:
+            z2 = z1 + (1 if delta > 0 else -1)
+        with fig.undo_group():
+            self._curve_set_z(fig, obj, z1, z2)
+            self._curve_set_z(fig, other, z2, z1)
+
+    def _curve_z_extreme(self, front):
+        kind, obj = self._curve_editor_target
+        if kind != 'series':
+            return
+        fig, plot_item = self._curve_current_fig, self._curve_current_plot
+        ordered = self._curve_ordered_series(plot_item)
+        zs = [s.item.zValue() for s in ordered] or [0]
+        new_z = (max(zs) + 1) if front else (min(zs) - 1)
+        old_z = obj.item.zValue()
+        self._curve_set_z(fig, obj, old_z, new_z)
