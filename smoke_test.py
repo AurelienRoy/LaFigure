@@ -1219,7 +1219,64 @@ def test_tab_cycles_every_item_in_reading_order_and_wraps():
     f.close()
 
 
+def _ramp_figure():
+    """One subplot, y = x on x in [0, 100], hovered so the view actions target it."""
+    f = m.LaFigure(empty=True)
+    p = f.add_subplot(row=0, col=0)
+    x = np.linspace(0, 100, 1001)
+    p.plot(x, x)
+    f._hover_plot = p
+    return f, p.getViewBox()
+
+
+def test_fit_vertical_uses_only_the_data_inside_the_x_range():
+    f, vb = _ramp_figure()
+    vb.setRange(xRange=(20, 40), yRange=(-500, 500), padding=0)
+    f.fit_view_vertical()
+    (x0, x1), (y0, y1) = vb.viewRange()
+    assert abs(x0 - 20) < 1e-6 and abs(x1 - 40) < 1e-6, "X must not change"
+    assert 15 < y0 <= 20 and 40 <= y1 < 45, (y0, y1)
+    f.close()
+
+
+def test_fit_horizontal_uses_only_the_data_inside_the_y_range():
+    f, vb = _ramp_figure()
+    vb.setRange(xRange=(-500, 500), yRange=(60, 70), padding=0)
+    f.fit_view_horizontal()
+    (x0, x1), (y0, y1) = vb.viewRange()
+    assert abs(y0 - 60) < 1e-6 and abs(y1 - 70) < 1e-6, "Y must not change"
+    assert 55 < x0 <= 60 and 70 <= x1 < 75, (x0, x1)
+    f.close()
+
+
+def test_fit_ignores_a_hidden_curve_and_an_empty_window():
+    f, vb = _ramp_figure()
+    p = f.plots[0]
+    p.plot([30, 31], [1e6, -1e6]).setVisible(False)
+    vb.setRange(xRange=(20, 40), yRange=(0, 1), padding=0)
+    f.fit_view_vertical()
+    assert vb.viewRange()[1][1] < 45, "a hidden curve must not stretch the view"
+    vb.setRange(xRange=(500, 600), yRange=(0, 1), padding=0)
+    f.fit_view_vertical()
+    assert vb.viewRange()[1] == [0, 1], "no data in range leaves the view alone"
+    f.close()
+
+
+def test_home_and_fit_buttons_follow_zoom_and_zoom_box_is_gray():
+    f, vb = _ramp_figure()
+    labels = [a.text() for a in f.findChild(QtWidgets.QToolBar).actions()]
+    i = labels.index("Zoom Rect")
+    assert labels[i + 1:i + 4] == ["Home", "Fit Vertical", "Fit Horizontal"], labels
+    c = vb.rbScaleBox.pen().color()
+    assert c.red() == c.green() == c.blue(), "zoom rectangle must be gray, not yellow"
+    f.close()
+
+
 for _test in (
+    test_fit_vertical_uses_only_the_data_inside_the_x_range,
+    test_fit_horizontal_uses_only_the_data_inside_the_y_range,
+    test_fit_ignores_a_hidden_curve_and_an_empty_window,
+    test_home_and_fit_buttons_follow_zoom_and_zoom_box_is_gray,
     test_band_from_the_margin_selects_enclosed_subplots_only,
     test_band_does_not_start_on_a_curve,
     test_band_inside_a_data_area_selects_enclosed_annotations,

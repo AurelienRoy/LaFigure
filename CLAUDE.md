@@ -60,7 +60,8 @@ the feature list and "Annotations" design-debt section below.
 `HANDOFF.md` no longer exists — it was the previous, timestamped backlog
 doc from before the library refactor, superseded by this file once
 annotations (its "next planned piece") were implemented. **This file's
-feature list below is the source of truth.**
+feature list below is the source of truth**, together with the phased
+**Roadmap** section after it (the agreed next work).
 
 ## Full feature list (the durable backlog)
 
@@ -360,6 +361,192 @@ the actual code — this list is a summary, not a substitute for checking.
       described here; that description was corrected once a session could
       actually run Qt and catch the mismatch via a failing smoke-test
       assertion.
+
+## Roadmap (agreed with the user 2026-09-28) — live backlog
+
+Decided in one design conversation; every choice below is the user's, not
+a default. No backward compatibility with earlier versions of this
+library is required. Phases in order; tick items off as they land.
+
+**Execution plan:** the work packages, their order, which ones can run as
+parallel agents, file ownership and the merge protocol are in `PLAN.md`.
+Read it before starting any roadmap item; update its status table when a
+package lands.
+
+### Phase 0 — small UI items
+- [~] Zoom Rect's drag rectangle is **light gray**, not pyqtgraph's yellow
+      (`add_subplot`, `vb.rbScaleBox`). Code written 2026-09-28, tests
+      written, **not yet run**.
+- [~] Toolbar after Zoom Rect: **Home** (reset view = autorange, was "Reset
+      View"), **Fit Vertical** (Y to the min/max of the data inside the
+      current X range) and **Fit Horizontal** (X to the min/max of the data
+      inside the current Y range) — `reset_view`, `fit_view_vertical`,
+      `fit_view_horizontal`, `_fit_view`. Full data, never the downsampled
+      display; hidden items ignored. Same code/test status as above.
+- [ ] **Subplot right-click menu slimmed down**: remove pyqtgraph's
+      "Export..." (export becomes the figure-wide toolbar Save, Phase 4),
+      "X axis", "Y axis" and "Mouse Mode"; add **"Export to CSV..."** (the
+      subplot's curves, full data); the brushed-point actions (Delete /
+      Transform / Fit Selected Points, and Selection Stats with them) are
+      **shown only while Brush mode is on**, and **disabled when no point
+      is brushed**.
+
+### Phase 1 — free layout on a fractional grid (replaces QGraphicsGridLayout)
+- [ ] Drop `QGraphicsGridLayout` entirely. Subplots are positioned directly
+      (`setGeometry`), recomputed on window resize. This deletes the float/
+      placeholder/reattach code, stretch factors, the private
+      `GraphicsLayout.layout` access, and the bug #5 guard — and the
+      "one thing to internalize" section below then describes history.
+- [ ] Figure owns a **grid**: column and row boundaries as figure fractions.
+      Every subplot edge is a **fractional grid coordinate** (`left=1.5` =
+      halfway between column lines 1 and 2), mapped piecewise-linearly
+      through the boundaries. Spans = integer ranges > 1; free sizes and
+      insets = any fraction. Dragging a grid line therefore rescales every
+      edge referencing it, insets included.
+- [ ] Positions are the subplot's **outer box** (axes/labels included), not
+      MATLAB's inner data-area Position. "Align data areas" may come later.
+- [ ] Overlap allowed; per-subplot z-order (Bring to Front / Send to Back);
+      a subplot above another gets an opaque background (insets).
+- [ ] Select mode: drag a **gutter on a grid line** = move that row/column
+      line (all attached subplots follow); drag a selected subplot's
+      **border/corner handle** = resize that subplot only; drag its **move
+      handle** = move it; **Ctrl+drop onto another subplot = swap** (plain
+      drop just moves).
+- [ ] **Magnetic sub-grid shown only during a drag**: snaps to grid lines,
+      cell subdivisions (½/¼, configurable), other subplots' edges
+      (alignment guides) and figure margins; ~8 px threshold; **Alt**
+      disables snapping.
+- [ ] Mouse cursor changes on hover in Select mode: split cursors over
+      draggable gutters, resize cursors over handles, move cursor over the
+      move handle.
+- [ ] Gutter right-click: insert/delete row/column, equalize rows/columns.
+      Add Subplot fills the first empty cell, else appends a row. Delete
+      leaves a hole, never shifts (bug #1 lesson).
+- [ ] **FFT → subplot** adds a new grid row right under the time plot's row;
+      the result is an ordinary, freely movable subplot.
+- [ ] Layout changes (move/resize/swap/grid-line drag) **go through undo**
+      (a layout is a few numbers — snapshot it).
+- [ ] `'border'` annotation offset becomes a fraction of the subplot box
+      (fixes Annotations simplification #5).
+- [ ] **"?" toolbar button**: popup with explained controls (mouse/keys per
+      mode), version, and credits.
+
+### Phase 2 — data model: DataSource + Series kinds + console API
+- [ ] `DataSource`: shared columnar table (dict of numpy arrays, or from a
+      pandas DataFrame; pandas optional). **A point's ID is its row index**;
+      user IDs (database key, drone log, timestamp, …) are just columns.
+      Series sharing a source are linked.
+- [ ] `SeriesKind` registry (`register_series_kind`), each kind:
+      `create`, `to_dict`, `capabilities` (brush/fft/fit/…), `highlight`,
+      `hit`, `rows_in_rect`, `show_rows`, `to_plotly`. Replaces every
+      `(x, y, pen, name)` tuple and `isinstance(c, pg.PlotDataItem)` filter;
+      `_add_series` is the only series construction site (smoke-test guard,
+      like `add_subplot`'s).
+- [ ] `Axes` facade returned by `add_subplot(..., axes_type='cartesian')`:
+      `ax.plot/scatter/stairs/area/hist/bar/errorbar/imshow`, `ax.series`,
+      `s.x/s.y` (read-only arrays), `s.rows`, `s.source`, `s.set_data`
+      (undoable). Module-level `lafigure.gca()` / `gcf()` via the registry.
+- [ ] Embedded Python console panel (`pyqtgraph.console.ConsoleWidget`)
+      with `fig`, `gca`, `np` preloaded.
+- [ ] Datatip: format string (`"{log} @ {stamp:%H:%M:%S}"`, exportable to
+      plotly `hovertemplate`) or a Python callable of a row accessor.
+- [ ] `src.filter(mask | expr | None)`: every linked series re-derives its
+      visible rows; histograms rebin.
+
+### Phase 2b — Figure Manager renaming, curve browser, groups
+- [ ] **Glossary — "focused subplot"**: the subplot that is selected, or
+      else the one that received the last action (today's `active_plot`,
+      which already behaves this way; rename it `focused_plot` when this
+      lands). Toolbar actions and the curve browser target it. Distinct
+      from `_hover_plot` (Reset View only).
+- [ ] The Figure Manager becomes **two tabs: "Figure browser" and "Curve
+      browser"**.
+- [ ] Figure browser tree: **every node text-editable** (double-click / F2):
+      a figure node renames the figure (window title), a subplot node
+      renames the subplot (its title). Undoable in that figure.
+- [ ] Figure browser: rows of **selected subplots are colored blue**, synced
+      live with each figure's selection.
+- [ ] Figure browser: **right-click menu on every node: Copy / Paste /
+      Delete** (same actions and undo as in the figure itself).
+- [ ] Figure browser: **three checkboxes at the top — show curves, show
+      annotations, show GUI controls**. When checked, those items appear as
+      sub-levels under their subplot (groups as a further sub-level).
+- [ ] **Curve browser tab** (a toolbar icon in each figure opens the manager
+      on this tab): shows only the **focused subplot**'s series and
+      annotations as a tree, following focus live (the focused subplot of
+      the most recently active figure). Visibility checkbox per row
+      (tristate on groups) for quick inspection; right-click menu on every
+      node; selection synced both ways with the figure. Bottom editor acts
+      on the selected row(s): name, Z order (up/down/front/back; drag rows
+      to reorder), color, line width, line style, marker, alpha. Property
+      edits are undoable; visibility checkboxes are view state (not undo).
+- [ ] **Groups** (hierarchy for series and annotations, nestable; **a group
+      never spans subplots** — user decision): group / ungroup (Ctrl+G /
+      Ctrl+Shift+G), show/hide a whole group, a group **base color**: each
+      member stores its color as an HSL offset from the group base, so
+      changing the group tone preserves the members' small variations.
+      Presets: "raw/filtered" (same hue, light vs dark) and "sensor family"
+      (small hue spread). Grouped annotations move/select together
+      (LibreOffice Draw style). Serialized in `to_dict`, so copy/paste of a
+      group or subplot keeps the hierarchy.
+- [ ] Group **common label**: displayed member label = common label + own
+      name, or own name + common label. The **position (beginning / end)**
+      is an option in the Curve browser's bottom editor when the group row
+      is selected. Group node right-click (both tabs): Copy / Paste /
+      Delete the whole group, Edit common label.
+
+### Phase 3 — brushing/linking on every kind
+- [ ] Brushing works on any kind via `rows_in_rect`/`show_rows`; histogram
+      bars ↔ time-series points through a per-row bin index
+      (`np.digitize` once); brushed bars show a stacked partial bar.
+- [ ] **Near-zero overhead when off**: no masks, overlays or connections
+      until the Brush toggle is on; selection = one sorted int array per
+      DataSource; hit-test on full data, never the downsampled display.
+- [ ] Generalizes and replaces `SelectionModel`/`LinkedScatter` and the
+      hardcoded `scatter1`/`scatter2`.
+- [ ] **Dataset stays intact.** Figure menu action "Hide Brushed Points":
+      marks brushed rows in a hidden-rows column of the source; every
+      linked subplot stops drawing them. Undoable, plus "Show All".
+- [ ] Transform / Remove Average / FFT write a **new derived column**
+      (revertible), never overwrite source data.
+- [ ] Pasted series (incl. across figure windows) **stay linked** to their
+      source.
+
+### Phase 4 — Save / export
+- [ ] Save button, **leftmost** in the toolbar (+ Ctrl+S): choose any of
+      PNG / JPG / HTML (+ SVG / PDF); several formats at once, same base
+      name.
+- [ ] Header info text (source, date, user, custom `fig.info` keys) from a
+      customizable format template (`{date:%Y-%m-%d}` …), remembered in
+      `QSettings`. **Word-style print preview**: the user edits the text
+      and its placement on a preview, then exports when satisfied.
+- [ ] HTML via plotly (optional dependency): subplots placed by absolute
+      `domain` (exact for free layout/insets), WebGL traces, annotations as
+      shapes, source metadata in `customdata` so hover datatips work in
+      the browser, hidden rows excluded. Linked brushing in the HTML is a
+      later extra. Controls export as their current state only.
+- [ ] Too-large HTML: a **popup asks**: keep all / decimate 1:N (N
+      editable, default 10) / peak-preserving decimation (same look).
+
+### Phase 5 — interactive controls + reactive tables
+- [ ] Buttons, sliders, dropdowns, checkboxes with user Python callbacks
+      (e.g. drive `src.filter`), and editable tables (e.g. live stats of
+      brushed points: `table(fn, depends_on=[src])` recomputes on selection
+      / filter / hidden changes).
+- [ ] Controls live **in grid cells** (a cell kind like a subplot, same
+      move/resize/snap) **or in a separate figure window** — a generic
+      container class usable for both.
+- [ ] Slider callbacks debounced (~50 ms); a failing callback shows its
+      traceback in the status bar, never crashes; control-driven filter
+      changes are view state (not undo entries).
+
+### Phase 6 — 3D
+- [ ] **Option A**: a 3D cell is a normal grid item that renders an
+      offscreen GL view to an image each frame and forwards mouse input to
+      its camera — keeps move/resize/select/copy/annotations working.
+      Prototype the readback speed live before committing.
+- [ ] `axes_type='3d'`: `scatter3d`, `line3d`, `surface`; brushing via
+      camera-matrix projection in numpy → rows (links with 2D plots).
 
 ## The one thing to internalize before touching this kind of code
 
@@ -737,14 +924,32 @@ necessarily the right call in a codebase you can actually test:
 
 ## Does this need a Skill?
 
-**No.** This is a small POC with one clear, short testing recipe
-(`QT_QPA_PLATFORM=offscreen python3 smoke_test.py`, documented in
-`smoke_test.py` itself). A Skill earns its keep when a procedure is used repeatedly
-across many sessions/files or is complex enough to be worth packaging and
-reusing verbatim. Here, the whole recipe fits in a few lines of this file —
-turning it into a Skill would be overhead without benefit. If this project
-ever grows into a multi-file app with a recurring, elaborate test-and-verify
-loop, revisit that answer then, not now.
+**Revisited 2026-09-28: partly yes.** The earlier answer was "no" for a
+small POC with one short test recipe, with the note to revisit it if the
+project grew a recurring, elaborate loop. The roadmap and `PLAN.md` created
+exactly that: many work packages, run as parallel worker agents across
+several sessions, each following the same rules, and a coordinator
+repeating the same resume/merge/launch cycle every session. So:
+
+- **Worker agent definition — `.claude/agents/lafigure-worker.md`
+  (planned, not created yet).** A custom subagent type rather than a
+  Skill: it holds the standing rules every worker repeats — read CLAUDE.md
+  and PLAN.md, edit only the package's owned files, tests first, run the
+  offscreen suite, BSD header on new files, commit on `wp/<id>`, the fixed
+  final-report format — plus its tools and default model. Each launch
+  prompt then carries only the package-specific part (goal, owned files,
+  interfaces). The brief template in `PLAN.md` is its source; keep the two
+  in sync, or move the template there when the file is created.
+- **Coordinator Skill — `/lafigure-next` (planned, not created yet).** A
+  thin trigger for `PLAN.md`'s "How to resume" and "Merge protocol":
+  status table, branches and worktrees, merge finished packages, run the
+  suite, update the docs, launch the next wave. The logic stays in
+  `PLAN.md`; the skill only saves re-explaining it every session.
+
+Still **not** Skills: the test recipe (one command:
+`QT_QPA_PLATFORM=offscreen python3 run_tests.py` once WP-01 lands,
+`smoke_test.py` until then) and design decisions (they belong in this
+file, which every session and agent already reads).
 
 ## License
 

@@ -56,6 +56,24 @@ ICON_DIR = os.path.join(
 )
 
 
+def _fit_icon(vertical):
+    """Fit Vertical / Fit Horizontal toolbar icon, drawn here since icons/
+    has none: a double arrow between two end bars."""
+    pix = QtGui.QPixmap(18, 18)
+    pix.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pix)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing)
+    painter.setPen(QtGui.QPen(QtGui.QColor(40, 40, 40), 1.6))
+    lines = [(2, 2, 16, 2), (2, 16, 16, 16), (9, 4, 9, 14),
+             (9, 4, 6, 7), (9, 4, 12, 7), (9, 14, 6, 11), (9, 14, 12, 11)]
+    for x0, y0, x1, y1 in lines:
+        if not vertical:
+            x0, y0, x1, y1 = y0, x0, y1, x1
+        painter.drawLine(QtCore.QPointF(x0, y0), QtCore.QPointF(x1, y1))
+    painter.end()
+    return QtGui.QIcon(pix)
+
+
 class LaFigure(QtWidgets.QMainWindow):
     NUDGE_PX = 1        # arrow key: move selected annotations 1 screen pixel
     NUDGE_BIG_PX = 10   # Shift+arrow
@@ -260,8 +278,6 @@ class LaFigure(QtWidgets.QMainWindow):
                     "handles to resize, drag its center handle to move/swap it. "
                     "(default)",
         )
-        action("Reset View", self.reset_view, icon=SP.SP_DirHomeIcon,
-               tooltip="Reset View: reset the active subplot's view (autorange)")
         self.hand_action = action(
             "Hand", lambda checked: self.set_interaction_mode('hand'), checkable=True,
             icon='tool_hand.png',
@@ -276,6 +292,16 @@ class LaFigure(QtWidgets.QMainWindow):
         mode_group.addAction(self.hand_action)
         mode_group.addAction(self.zoom_action)
         self.select_action.setChecked(True)
+        action("Home", self.reset_view, icon='ico_breadcrumb_home_on.png',
+               tooltip="Home: reset the subplot's view to show all its data (autorange)")
+        fit_y = action("Fit Vertical", self.fit_view_vertical,
+                       tooltip="Fit Vertical: stretch the Y range to the min/max of the "
+                               "curves inside the current X range")
+        fit_y.setIcon(_fit_icon(vertical=True))
+        fit_x = action("Fit Horizontal", self.fit_view_horizontal,
+                       tooltip="Fit Horizontal: stretch the X range to the min/max of the "
+                               "curves inside the current Y range")
+        fit_x.setIcon(_fit_icon(vertical=False))
 
         tb.addSeparator()
         self.link_x_action = action(
@@ -353,6 +379,9 @@ class LaFigure(QtWidgets.QMainWindow):
         # A new subplot must adopt every figure-wide toggle (mode, brush,
         # Link X) here: the toggles' own loops over self.plots never see a
         # plot created afterwards. Guarded by test_new_subplot_adopts_*.
+        # Zoom Rect's drag rectangle: light gray instead of pyqtgraph's yellow.
+        vb.rbScaleBox.setPen(pg.mkPen((140, 140, 140), width=1))
+        vb.rbScaleBox.setBrush(pg.mkBrush(200, 200, 200, 90))
         vb.setMouseMode(pg.ViewBox.RectMode if self.interaction_mode == 'zoom' else pg.ViewBox.PanMode)
         self._apply_mouse_enabled(vb)
         vb.setCursor(self._cursor_for_mode(self.interaction_mode))
@@ -1403,6 +1432,49 @@ class LaFigure(QtWidgets.QMainWindow):
         if p is None:
             return
         p.getViewBox().autoRange()
+
+    def fit_view_vertical(self):
+        """Stretch Y to the min/max of the data whose x lies in the current
+        X range -- the curves as currently shown, not their full extent."""
+        self._fit_view(axis=1)
+
+    def fit_view_horizontal(self):
+        """Stretch X to the min/max of the data whose y lies in the current
+        Y range."""
+        self._fit_view(axis=0)
+
+    def _fit_view(self, axis):
+        """Same target subplot as reset_view. Reads each item's full data
+        (xData/yData), never the downsampled, clipped-to-view display."""
+        p = self._hover_plot or self.active_plot
+        if p is None:
+            return
+        vb = p.getViewBox()
+        (x0, x1), (y0, y1) = vb.viewRange()
+        lo, hi = np.inf, -np.inf
+        for item in p.listDataItems():
+            if not item.isVisible():
+                continue
+            if isinstance(item, pg.PlotDataItem):
+                x, y = item.xData, item.yData
+            else:
+                x, y = item.getData()
+            if x is None or y is None or len(x) == 0:
+                continue
+            x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+            if axis == 1:
+                values = y[(x >= x0) & (x <= x1)]
+            else:
+                values = x[(y >= y0) & (y <= y1)]
+            values = values[np.isfinite(values)]
+            if values.size:
+                lo, hi = min(lo, values.min()), max(hi, values.max())
+        if not np.isfinite(lo):
+            return
+        if axis == 1:
+            vb.setYRange(lo, hi)
+        else:
+            vb.setXRange(lo, hi)
 
     def set_axis_label(self, axis_name):
         """Toolbar 'X Label' / 'Y Label': same effect as double-clicking the
