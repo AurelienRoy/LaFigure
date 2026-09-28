@@ -45,6 +45,10 @@ behavior lives in one mixin per concern:
     naming.py          figure/subplot/curve names and axis labels
     help.py            the "?" controls/version/credits dialog
     export.py          Save dialog: PNG/JPG/SVG/PDF + header preview
+    series.py          series kinds, the Series wrapper, _add_series
+
+The library-facing API sits on top: fig.subplot() returns an Axes
+(axes.py), whose plot() goes through _add_series.
 
 See CLAUDE.md for the design lessons behind this structure -- in
 particular, why "plain add/delete a subplot" and "FFT's whole-row
@@ -69,13 +73,15 @@ from .view_ops import ViewOpsMixin
 from .naming import NamingMixin
 from .help import HelpMixin
 from .export import SaveMixin
+from .series import SeriesMixin
+from .axes import Axes
 
 pg.setConfigOptions(antialias=False, useOpenGL=True, background='w', foreground='k')
 
 
 class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryMixin,
                BrushingMixin, ClipOpsMixin, AnnotationOpsMixin, ViewOpsMixin, NamingMixin,
-               HelpMixin, SaveMixin, QtWidgets.QMainWindow):
+               HelpMixin, SaveMixin, SeriesMixin, QtWidgets.QMainWindow):
     # The mixins come before QMainWindow so their Qt event overrides
     # (eventFilter, resizeEvent) win, and their super() calls still reach Qt.
     # No mixin defines __init__: all state is created here.
@@ -179,6 +185,12 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         # alone (used above) can't do this.
         self.layout_widget.scene().installEventFilter(self)
 
+    def subplot(self, row, col, rowspan=1, colspan=1, title='', axes_type='cartesian'):
+        """The library entry point: add_subplot, wrapped in an Axes
+        (ax.plot, ax.series; ax.plot_item is the raw PlotItem)."""
+        return Axes(self, self.add_subplot(row, col, rowspan=rowspan, colspan=colspan,
+                                           title=title, axes_type=axes_type))
+
     def closeEvent(self, ev):
         self.registry.unregister(self)
         super().closeEvent(ev)
@@ -188,17 +200,14 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         y1 = np.sin(2 * np.pi * 1.0 * t) + 0.05 * np.random.randn(t.size) + 2.0
         y2 = np.sin(2 * np.pi * 2.5 * t) * np.exp(-0.1 * t)
 
+        # clip_to_view + peak downsampling: the millions-of-points settings.
         p1 = self.add_subplot(row=0, col=0, title="Signal A")
-        c1 = p1.plot(t, y1, pen=pg.mkPen((80, 120, 220), width=1), name="signal A")
-        c1.setClipToView(True)
-        c1.setDownsampling(auto=True, method='peak')
-        self._wire_curve_clickable(p1, c1)
+        self._add_series(p1, 'line', t, y1, pen=pg.mkPen((80, 120, 220), width=1), name="signal A",
+                         clip_to_view=True, downsample='peak')
 
         p2 = self.add_subplot(row=0, col=1, title="Signal B")
-        c2 = p2.plot(t, y2, pen=pg.mkPen((220, 100, 80), width=1), name="signal B")
-        c2.setClipToView(True)
-        c2.setDownsampling(auto=True, method='peak')
-        self._wire_curve_clickable(p2, c2)
+        self._add_series(p2, 'line', t, y2, pen=pg.mkPen((220, 100, 80), width=1), name="signal B",
+                         clip_to_view=True, downsample='peak')
 
         rng = np.random.default_rng(0)
         n = 20_000

@@ -26,8 +26,6 @@
 process-wide Clipboard, so they work across figure windows) and delete
 (Del key: everything selected, whatever its kind).
 """
-import pyqtgraph as pg
-
 from .annotations import AnnotationItem
 from .selection_ui import selection_op
 
@@ -58,9 +56,7 @@ class ClipOpsMixin:
         plot_item = self._curve_plot(curve)
         if plot_item is None:
             return
-        x, y = curve.xData.copy(), curve.yData.copy()
-        pen = curve.opts.get('_orig_pen', curve.opts.get('pen'))
-        name = curve.name()
+        data = self._series_of(curve).to_dict()
         plot_item.removeItem(curve)
         self._forget_curve_selection(curve)
         brusher = self._brushers.get(plot_item)
@@ -70,9 +66,7 @@ class ClipOpsMixin:
         holder = {}
 
         def undo_fn():
-            new_curve = plot_item.plot(x, y, pen=pen, name=name)
-            self._wire_curve_clickable(plot_item, new_curve)
-            holder['curve'] = new_curve
+            holder['curve'] = self._add_series_from_dict(plot_item, data).item
 
         def redo_fn():
             c = holder.get('curve')
@@ -116,25 +110,17 @@ class ClipOpsMixin:
             targets = [c] if c is not None else []
         if not targets:
             return
-        self.clipboard.curve = [
-            (c.xData.copy(), c.yData.copy(), c.opts.get('_orig_pen', c.opts.get('pen')), c.name())
-            for c in targets
-        ]
+        self.clipboard.curve = [self._series_of(c).to_dict() for c in targets]
         self.clipboard.last_copied = 'curve'
 
     def paste_curve(self):
         p = self.focused_plot
         if p is None or not self.clipboard.curve:
             return
-        curves_data = self.clipboard.curve
+        series_data = self.clipboard.curve
 
         def build():
-            new_curves = []
-            for x, y, pen, name in curves_data:
-                nc = p.plot(x, y, pen=pen, name=name)
-                self._wire_curve_clickable(p, nc)
-                new_curves.append(nc)
-            return new_curves
+            return [self._add_series_from_dict(p, d).item for d in series_data]
 
         holder = {'curves': build()}
 
@@ -164,10 +150,7 @@ class ClipOpsMixin:
                 'title': p.titleLabel.text,
                 'xlabel': p.getAxis('bottom').labelText,
                 'ylabel': p.getAxis('left').labelText,
-                'curves': [
-                    (c.xData.copy(), c.yData.copy(), c.opts.get('_orig_pen', c.opts.get('pen')), c.name())
-                    for c in p.listDataItems() if isinstance(c, pg.PlotDataItem)
-                ],
+                'series': [s.to_dict() for s in self._series_on(p)],
                 'annotations': [a.to_dict() for a in self._annotations_on(p)],
             }
             for p in targets
@@ -190,8 +173,10 @@ class ClipOpsMixin:
             new_plots = []
             for i, data in enumerate(data_list):
                 new_plot = self._insert_subplot_at(
-                    start_row + i, col, data['title'], data['xlabel'], data['ylabel'], data['curves']
+                    start_row + i, col, data['title'], data['xlabel'], data['ylabel'], []
                 )
+                for d in data['series']:
+                    self._add_series_from_dict(new_plot, d)
                 for d in data.get('annotations', []):
                     AnnotationItem.from_dict(self, new_plot, d)
                 new_plots.append(new_plot)

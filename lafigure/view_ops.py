@@ -153,27 +153,13 @@ class ViewOpsMixin:
         p = self.focused_plot
         if p is None:
             return
-        affected = []
-        for curve in p.listDataItems():
-            if not isinstance(curve, pg.PlotDataItem):
-                continue
-            y = curve.yData
-            if y is None or y.size == 0:
-                continue
-            affected.append((curve, y.copy()))
-            curve.setData(curve.xData, y - np.mean(y))
-        if not affected:
-            return
-
-        def undo_fn():
-            for curve, y in affected:
-                curve.setData(curve.xData, y)
-
-        def redo_fn():
-            for curve, y in affected:
-                curve.setData(curve.xData, y - np.mean(y))
-
-        self._push_history(undo_fn, redo_fn)
+        # One gesture, one undo entry, however many series it changes.
+        with self.undo_group():
+            for s in self._series_on(p):
+                y = s.y
+                if 'remove_average' not in s.capabilities or y is None or y.size == 0:
+                    continue
+                s.set_data(s.x, y - np.mean(y))
 
     def fft_below(self):
         p = self.focused_plot
@@ -192,13 +178,12 @@ class ViewOpsMixin:
         fft_pen = pg.mkPen((60, 60, 60), width=1)
 
         fft_plot = self.insert_subplot_below(p, title=title)
-        fft_curve = fft_plot.plot(freqs, mag, pen=fft_pen)
-        self._wire_curve_clickable(fft_plot, fft_curve)
+        fft_series = self._add_series(fft_plot, 'line', freqs, mag, pen=fft_pen)
         fft_plot.setLabel('bottom', 'Frequency (Hz)')
         fft_plot.setLabel('left', 'Magnitude')
 
         row, col = self._grid_position(fft_plot)
-        curves_data = [(freqs, mag, fft_pen, None)]
+        series_data = [fft_series.to_dict()]
         holder = {'plot': fft_plot}
 
         def undo_fn():
@@ -207,7 +192,9 @@ class ViewOpsMixin:
                 self._remove_subplot_with_shift(plot)
 
         def redo_fn():
-            new_plot = self._insert_subplot_with_shift(row, col, title, 'Frequency (Hz)', 'Magnitude', curves_data)
+            new_plot = self._insert_subplot_with_shift(row, col, title, 'Frequency (Hz)', 'Magnitude', [])
+            for d in series_data:
+                self._add_series_from_dict(new_plot, d)
             holder['plot'] = new_plot
             self.focused_plot = new_plot
             self._mark_active(new_plot)
