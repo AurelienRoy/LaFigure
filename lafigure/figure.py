@@ -60,7 +60,7 @@ import numpy as np
 from pyqtgraph.Qt import QtWidgets
 import pyqtgraph as pg
 
-from .selection import SelectionModel, LinkedScatter
+from .datasource import DataSource
 from .registry import get_registry
 from .clipboard import get_clipboard
 from .toolbar import ToolbarMixin
@@ -133,8 +133,6 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         self._hover_plot = None
         self.linked_x = False
         self.brushing = False
-        # The demo's linked-scatter pair shares this; None in an empty figure.
-        self.selection_model = None
 
         self.max_history = 20
         self.undo_stack = []     # list of (undo_fn, redo_fn)
@@ -149,10 +147,9 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         # Layout state (grid lines, boxes, z_order, drag states) is created
         # by _create_resize_handles below -- see layout.py.
 
-        # plot_item -> RectBrush, generic brush-select wired onto every
-        # subplot by add_subplot (see selection.py's RectBrush docstring).
-        # Absent for the two LinkedScatter demo subplots, which use their
-        # own row-linked brushing instead.
+        # plot_item -> RectBrush, the brush-select wired onto every subplot
+        # by add_subplot (see selection.py's RectBrush docstring); idle, with
+        # nothing allocated or connected, until Brush is turned on.
         self._brushers = {}
 
         # -- annotations ---------------------------------------------
@@ -214,17 +211,29 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         self._add_series(p2, 'line', t, y2, pen=pg.mkPen((220, 100, 80), width=1), name="signal B",
                          clip_to_view=True, downsample='peak')
 
+        # Two views of the same rows: two series of one DataSource, so
+        # brushing either highlights the same rows on both (brushing.py).
         rng = np.random.default_rng(0)
         n = 20_000
-        xs = rng.normal(size=n)
-        ys = xs * 0.6 + rng.normal(scale=0.5, size=n)
-        self.selection_model = SelectionModel(n)
+        a = rng.normal(size=n)
+        source = DataSource({'a': a, 'b': a * 0.6 + rng.normal(scale=0.5, size=n)})
 
         p3 = self.add_subplot(row=1, col=0, title="Scatter view 1 (brush me)")
-        self.scatter1 = LinkedScatter(p3, xs, ys, self.selection_model, color=(80, 160, 90), figure=self)
+        self._demo_scatter(p3, source, 'a', 'b', (80, 160, 90))
 
         p4 = self.add_subplot(row=1, col=1, title="Scatter view 2 (same rows)")
-        self.scatter2 = LinkedScatter(p4, ys, xs, self.selection_model, color=(160, 90, 160), figure=self)
+        self._demo_scatter(p4, source, 'b', 'a', (160, 90, 160))
 
         self.focused_plot = p1
         self._mark_active(p1)
+
+    def _demo_scatter(self, plot_item, source, x, y, color):
+        """A line series drawn as dots. TODO: ax.scatter once a scatter kind
+        exists (this style isn't carried by the line kind's copy/paste)."""
+        item = self._add_series(plot_item, 'line', source[x], source[y],
+                                name=f"{y} vs {x}", source=source, columns=(x, y)).item
+        item.setPen(None)  # the line kind reads pen=None as "default pen"
+        item.setSymbol('o')
+        item.setSymbolSize(4)
+        item.setSymbolPen(None)
+        item.setSymbolBrush(pg.mkBrush(*color, 160))
