@@ -185,6 +185,12 @@ class ToolbarMixin:
         action("Remove Average", self.remove_average, icon='icon1b1.png',
                tooltip="Remove Average: subtract the mean from every curve on the active subplot")
 
+        self.console_action = action(
+            "Console", self.toggle_console, checkable=True,
+            icon=SP.SP_ComputerIcon,
+            tooltip="Console: toggle an embedded Python console (fig/gca()/gcf()/np preloaded)",
+        )
+
         tb.addSeparator()
         action("Help", self.show_help, icon=SP.SP_MessageBoxQuestion,
                tooltip="Help: show controls reference (mouse/keys per mode), version, and credits")
@@ -197,6 +203,8 @@ class ToolbarMixin:
         QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Delete), self, activated=self.delete_selection)
         QtGui.QShortcut(QtGui.QKeySequence.Undo, self, activated=self.undo)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Y"), self, activated=self.redo)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+G"), self, activated=self.group_selection)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+G"), self, activated=self.ungroup_selection)
         QtGui.QShortcut(QtGui.QKeySequence(QtCore.Qt.Key_Escape), self,
                          activated=lambda: (self._cancel_placing(), self._cancel_relink(),
                                             self._deselect_all()))

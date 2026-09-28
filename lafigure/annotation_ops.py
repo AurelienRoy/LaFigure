@@ -32,6 +32,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
 from .annotations import AnnotationItem, TWO_CLICK_KINDS
+from .console import datatip_text
 
 
 class AnnotationOpsMixin:
@@ -125,13 +126,15 @@ class AnnotationOpsMixin:
                 return  # a data cursor needs a subplot's data axes -- ignore clicks elsewhere
             data_pos = parent_plot.getViewBox().mapSceneToView(scene_pos)
             curve = self._active_curve_on(parent_plot)
+            idx = None
             if curve is not None and curve.xData is not None and curve.xData.size:
                 idx = int(np.argmin(np.abs(curve.xData - data_pos.x())))
                 x, y = float(curve.xData[idx]), float(curve.yData[idx])
             else:
                 x, y = data_pos.x(), data_pos.y()
+            text = datatip_text(self, parent_plot, curve, idx, x, y)
             self._create_annotation('cursor', 'axes', parent_plot, QtCore.QPointF(x, y),
-                                     None, text=f"{x:.4g}, {y:.4g}")
+                                     None, text=text)
             self._cancel_placing()
             return
 

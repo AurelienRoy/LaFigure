@@ -49,13 +49,13 @@ package-tree comment and bug #8/#9 for what it found along the way.
 | F  | `DataSource` (pure numpy, no Qt) | 1 | 01 | sonnet | merged (7b85e7c) |
 | G  | 3D offscreen-readback spike (standalone, not integrated) | 1 | 01 | opus | merged (89b253e) — **go**, see spikes/README.md and CLAUDE.md bug #10 |
 | H  | Series/SeriesKind registry, Axes facade, gca/gcf; migrate all curve tuples (Phase 2 core) | 2 | A, F | opus | merged (6f79f52); coordinator applied its layout.py/brushing.py/__init__.py diffs — migration gap fully closed, `_PENDING_MIGRATION` empty |
-| I1 | Kinds: scatter, stairs, area, hist | 3 | H | sonnet | running (wp/I1, agent ae8dca4a52556621c) |
-| I2 | Kinds: bar, errorbar | 3 | H | sonnet | running (wp/I2, agent ac06b2e0140b4ff3d) |
-| I3 | Kind: heatmap/imshow + colorbar | 3 | H | sonnet | running (wp/I3, agent aa8c320b6a26867c2) |
+| I1 | Kinds: scatter, stairs, area, hist | 3 | H | sonnet | merged (bf63d55) |
+| I2 | Kinds: bar, errorbar | 3 | H | sonnet | merged (de052cf); found+fixed a real ErrorBarItem shape-mismatch crash |
+| I3 | Kind: heatmap/imshow + colorbar | 3 | H | sonnet | merged (e2b84ec); found a real Series.name gap (fixed by coordinator, see series.py) |
 | J  | Brushing on every kind, hide/show brushed, derived columns (Phase 3) | 3 | H | opus | running (wp/J, agent af6cdd012baf74aac) |
-| K1 | Groups model: hierarchy, common label, HSL color offsets (Phase 2b) | 3 | H | sonnet | running (wp/K1, agent a8fdebfb67ecb58f9) |
+| K1 | Groups model: hierarchy, common label, HSL color offsets (Phase 2b) | 3 | H | sonnet | merged (cccf853); clip_ops.py copy/paste hook reported but not yet applied — deferred until J (also owns clip_ops.py) merges |
 | K2 | Curve browser tab + bottom property editor (Phase 2b) | 4 | D, K1 | sonnet | todo |
-| L  | Console panel + datatip + `src.filter` wiring (Phase 2) | 3 | H | sonnet | running (wp/L, agent a5500f140da7b97ce) |
+| L  | Console panel + datatip + `src.filter` wiring (Phase 2) | 3 | H | sonnet | merged (00556a7) |
 | M  | HTML export via plotly + decimation popup (Phase 4) | 4 | E, I1, I2, I3 | sonnet | todo |
 | N  | Controls & reactive tables in grid cells / separate window (Phase 5) | 3 | A, F | sonnet | todo |
 | O  | 3D integration: `axes_type='3d'`, kinds, projected brushing (Phase 6) | 4 | A, G, H, J | opus | todo |

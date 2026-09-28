@@ -47,8 +47,10 @@ from .clipboard import get_clipboard, Clipboard
 from .annotations import AnnotationItem, SHAPE_KINDS
 from .datasource import DataSource
 from .series import Series, SeriesKind, register_series_kind, SERIES_KINDS
+from .groups import Group, GroupsMixin, raw_filtered_preset, sensor_family_preset, GROUP_COLOR_PRESETS
 from .axes import Axes, gca, gcf
 from . import kinds  # noqa: F401  (import registers every built-in SeriesKind beyond 'line')
+from . import console  # noqa: F401  (registers Axes.datatip -- see console.py)
 from .app import main
 
 __all__ = [
@@ -67,6 +69,11 @@ __all__ = [
     "SeriesKind",
     "register_series_kind",
     "SERIES_KINDS",
+    "Group",
+    "GroupsMixin",
+    "raw_filtered_preset",
+    "sensor_family_preset",
+    "GROUP_COLOR_PRESETS",
     "Axes",
     "gca",
     "gcf",

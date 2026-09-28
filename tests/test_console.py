@@ -24,11 +24,9 @@
 
 """WP-L: console panel, datatip, src.filter(...) UI wiring (console.py).
 
-ConsoleMixin isn't mixed into LaFigure yet (figure.py/toolbar.py wiring is
-reported to the coordinator, not applied here -- see console.py's module
-docstring), so these tests build a small local subclass combining
-ConsoleMixin with lafigure.LaFigure -- exactly the shape the real
-figure.py diff produces once applied.
+ConsoleMixin is mixed into the real LaFigure in figure.py (applied by the
+coordinator alongside GroupsMixin, since both landed as diffs against
+figure.py in the same wave); tests here just use LaFigure directly.
 """
 import numpy as np
 
@@ -39,10 +37,6 @@ from lafigure.datasource import DataSource
 from lafigure.axes import Axes, gca, gcf
 
 from tests.helpers import app, m
-
-
-class _ConsoleFigure(ConsoleMixin, m.LaFigure):
-    pass
 
 
 def _figure_with_two_linked_series():
@@ -60,7 +54,7 @@ def _figure_with_two_linked_series():
 # -- console panel --------------------------------------------------------
 
 def test_console_dock_creates_shows_and_hides_without_error():
-    f = _ConsoleFigure(empty=True)
+    f = m.LaFigure(empty=True)
     f.show()
     app.processEvents()
     assert getattr(f, '_console_dock', None) is None  # not built until first toggle
@@ -82,7 +76,7 @@ def test_console_dock_creates_shows_and_hides_without_error():
 
 
 def test_console_namespace_has_working_fig_gca_gcf_np():
-    f = _ConsoleFigure(empty=True)
+    f = m.LaFigure(empty=True)
     f.show()
     app.processEvents()
     f.toggle_console()

@@ -46,6 +46,8 @@ behavior lives in one mixin per concern:
     help.py            the "?" controls/version/credits dialog
     export.py          Save dialog: PNG/JPG/SVG/PDF + header preview
     series.py          series kinds, the Series wrapper, _add_series
+    console.py         embedded Python console dock, datatip, filter wiring
+    groups.py          Group hierarchy, common label, HSL color offsets
 
 The library-facing API sits on top: fig.subplot() returns an Axes
 (axes.py), whose plot() goes through _add_series.
@@ -74,6 +76,8 @@ from .naming import NamingMixin
 from .help import HelpMixin
 from .export import SaveMixin
 from .series import SeriesMixin
+from .console import ConsoleMixin
+from .groups import GroupsMixin
 from .axes import Axes
 
 pg.setConfigOptions(antialias=False, useOpenGL=True, background='w', foreground='k')
@@ -81,7 +85,8 @@ pg.setConfigOptions(antialias=False, useOpenGL=True, background='w', foreground=
 
 class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryMixin,
                BrushingMixin, ClipOpsMixin, AnnotationOpsMixin, ViewOpsMixin, NamingMixin,
-               HelpMixin, SaveMixin, SeriesMixin, QtWidgets.QMainWindow):
+               HelpMixin, SaveMixin, SeriesMixin, ConsoleMixin, GroupsMixin,
+               QtWidgets.QMainWindow):
     # The mixins come before QMainWindow so their Qt event overrides
     # (eventFilter, resizeEvent) win, and their super() calls still reach Qt.
     # No mixin defines __init__: all state is created here.

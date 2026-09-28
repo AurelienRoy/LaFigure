@@ -48,6 +48,12 @@ LaFigure/
                                             # _add_series is the one series-construction site
     axes.py                                 # Axes facade (fig.subplot() returns one),
                                              # module-level gca()/gcf()
+    kinds/                                   # built-in SeriesKinds beyond 'line':
+                                              # scatter/stairs/area/hist/bar/errorbar/imshow,
+                                              # one module each, self-registering on import
+    console.py                               # embedded Python console dock, datatip,
+                                              # src.filter(...) UI wiring
+    groups.py                                # Group hierarchy, common label, HSL color offsets
     manager.py                 # FigureManager: tree of open figures/subplots,
                                 # "New Figure" button (creates an empty figure)
     registry.py                 # FigureRegistry: process-wide list of open
@@ -502,10 +508,20 @@ package lands.
       `Series` wrapper doesn't replace it, so every existing curve
       consumer (`selection_ui.py`'s click/highlight/Tab-order,
       `menus.py`'s curve submenus, `brushing.py`'s `RectBrush`) keeps
-      working unmodified. The `highlight`/`hit`/`rows_in_rect`/
-      `show_rows`/`to_plotly` hooks and the scatter/stairs/area/hist/bar/
-      errorbar/imshow kinds are **not yet built** — those are packages
-      I1/I2/I3 (kinds) and J (brushing-on-every-kind), still open.
+      working unmodified. **Seven more kinds built 2026-09-28**:
+      `scatter`/`stairs`/`area`/`hist` (WP-I1), `bar`/`errorbar` (WP-I2),
+      `imshow` (WP-I3, + a `pg.ColorBarItem`) — all in `lafigure/kinds/`,
+      self-registering on `import lafigure`. Only `scatter`/`area` are
+      `'brush'`-capable so far (real parallel x/y `RectBrush` can zip
+      directly); `bar`/`errorbar`/`imshow` needed `SeriesKind.get_xy`/
+      `set_xy` overrides (added generically to the base class alongside
+      this work, so `Series.x`/`.y`/`.set_data` work for a kind whose item
+      isn't a plain `PlotDataItem`) and a `hasattr(item, 'curve')` guard
+      on `_add_series`'s click-wiring (an item without `.curve`, e.g.
+      `BarGraphItem`/`ImageItem`, is plotted but not yet click-selectable).
+      The `highlight`/`hit`/`rows_in_rect`/`show_rows`/`to_plotly` hooks
+      and true click-selection for non-`PlotDataItem` kinds are still
+      **not yet built** — that's WP-J (brushing-on-every-kind).
 - [x] `Axes` facade, `lafigure/axes.py` (WP-H): `fig.subplot(row, col,
       ...)` returns one (`add_subplot` itself is unchanged, still returns
       a raw `PlotItem`); `ax.plot(x, y)` / `ax.plot(source, x='col',
@@ -520,12 +536,26 @@ package lands.
       (`registry.focusChanged` alone misses "clicked back into an
       already-focused subplot"), not a `registry` field — see WP-H's
       lesson below if extending this.
-- [ ] Embedded Python console panel (`pyqtgraph.console.ConsoleWidget`)
-      with `fig`, `gca`, `np` preloaded. Not yet built (WP-L).
-- [ ] Datatip: format string (`"{log} @ {stamp:%H:%M:%S}"`, exportable to
-      plotly `hovertemplate`) or a Python callable of a row accessor.
-- [ ] `src.filter(mask | expr | None)`: every linked series re-derives its
-      visible rows; histograms rebin.
+- [x] Embedded Python console panel (`lafigure/console.py`, WP-L,
+      2026-09-28): `pyqtgraph.console.ConsoleWidget` in a `QDockWidget`,
+      toggled by a toolbar button, namespace `{fig, gca, gcf, np}`.
+- [x] Datatip: `ax.datatip = "fmt string"` or a callable, wired into the
+      data-cursor annotation's placement text
+      (`annotation_ops.py`'s `'cursor'` branch). Since `Axes` is
+      deliberately stateless (any `Axes(fig, plot)` on the same subplot
+      compares equal), the spec is stored keyed by `plot_item` in
+      `console.py`, not as an `Axes` instance attribute — reachable via a
+      `property` `console.py` adds to the `Axes` class at import time.
+      Plotly `hovertemplate` export not yet done (that's WP-M's job, when
+      it builds HTML export).
+- [x] `src.filter(mask | expr | None)`: `console.watch_source`/
+      `refresh_series_for_source` subscribe to `DataSource.on_change` and
+      re-derive every linked series' displayed x/y from
+      `source.visible_rows` via `SeriesKind.get_xy`/`set_xy` — view state,
+      not pushed to undo. A histogram-like kind's own `set_xy` would need
+      to rebin internally for this to "just work" on it; unverified (no
+      histogram kind was present in WP-L's own worktree when it built
+      this — confirm once I1's `hist` kind and this are both live).
 
 ### Phase 2b — Figure Manager renaming, curve browser, groups
 - [x] **Glossary — "focused subplot"**: the subplot that is selected, or
@@ -534,18 +564,20 @@ package lands.
       the only writer and the one place `registry.focusChanged(fig, plot)`
       fires. Toolbar actions and the curve browser target it. Distinct
       from `_hover_plot` (Home/Fit only).
-- [ ] The Figure Manager becomes **two tabs: "Figure browser" and "Curve
-      browser"**.
-- [ ] Figure browser tree: **every node text-editable** (double-click / F2):
+- [x] The Figure Manager becomes **two tabs: "Figure browser" and "Curve
+      browser"**. **Built by WP-D** (2026-09-28, `manager.py`) — the Curve
+      Browser tab is a structural placeholder only (K2 fills it in).
+- [x] Figure browser tree: **every node text-editable** (double-click / F2):
       a figure node renames the figure (window title), a subplot node
       renames the subplot (its title). Undoable in that figure.
-- [ ] Figure browser: rows of **selected subplots are colored blue**, synced
+- [x] Figure browser: rows of **selected subplots are colored blue**, synced
       live with each figure's selection.
-- [ ] Figure browser: **right-click menu on every node: Copy / Paste /
+- [x] Figure browser: **right-click menu on every node: Copy / Paste /
       Delete** (same actions and undo as in the figure itself).
-- [ ] Figure browser: **three checkboxes at the top — show curves, show
+- [x] Figure browser: **three checkboxes at the top — show curves, show
       annotations, show GUI controls**. When checked, those items appear as
-      sub-levels under their subplot (groups as a further sub-level).
+      sub-levels under their subplot (groups as a further sub-level, once
+      K2 wires `Group`/`GroupsMixin`, built below, into this tree).
 - [ ] **Curve browser tab** (a toolbar icon in each figure opens the manager
       on this tab): shows only the **focused subplot**'s series and
       annotations as a tree, following focus live (the focused subplot of
@@ -555,20 +587,29 @@ package lands.
       on the selected row(s): name, Z order (up/down/front/back; drag rows
       to reorder), color, line width, line style, marker, alpha. Property
       edits are undoable; visibility checkboxes are view state (not undo).
-- [ ] **Groups** (hierarchy for series and annotations, nestable; **a group
-      never spans subplots** — user decision): group / ungroup (Ctrl+G /
-      Ctrl+Shift+G), show/hide a whole group, a group **base color**: each
-      member stores its color as an HSL offset from the group base, so
-      changing the group tone preserves the members' small variations.
-      Presets: "raw/filtered" (same hue, light vs dark) and "sensor family"
-      (small hue spread). Grouped annotations move/select together
-      (LibreOffice Draw style). Serialized in `to_dict`, so copy/paste of a
-      group or subplot keeps the hierarchy.
-- [ ] Group **common label**: displayed member label = common label + own
-      name, or own name + common label. The **position (beginning / end)**
-      is an option in the Curve browser's bottom editor when the group row
-      is selected. Group node right-click (both tabs): Copy / Paste /
-      Delete the whole group, Edit common label.
+- [x] **Groups** (hierarchy for series and annotations, nestable; **a group
+      never spans subplots** — user decision, enforced by raising on a
+      mismatched member): group / ungroup (Ctrl+G / Ctrl+Shift+G,
+      undoable), show/hide a whole group (view state, not undoable — same
+      rule as every other visibility toggle in this app), a group **base
+      color**: each member stores its color as an HSL offset from the
+      group base (via `colorsys`), so changing the group tone preserves
+      the members' small variations; re-deriving a member's offset uses
+      its color *as of the next retint*, not a stale preset offset, if the
+      user recolored it individually in between. Presets: "raw/filtered"
+      (same hue, light vs dark) and "sensor family" (small hue spread).
+      Serialized (`Group.to_dict`/`from_dict`, `lafigure/groups.py`).
+      **Built by WP-K1** (2026-09-28) — data model + Ctrl+G/Ctrl+Shift+G
+      only; grouped-annotation move/select-together already existed
+      (multi-select) and needs no group-specific code. **Not yet wired**:
+      the `clip_ops.py` hook that carries a group through copy/paste
+      (K1 doesn't own that file; reported diff pending, see PLAN.md).
+- [ ] Group **common label**: `Group.display_name(member)` (prefix/suffix,
+      built by WP-K1) exists and never mutates the underlying item's own
+      name, but isn't wired into anything a user sees yet — that's part of
+      **K2** (the Curve browser's bottom editor, where the prefix/suffix
+      position toggle and the group-node right-click menu — Copy/Paste/
+      Delete the whole group, Edit common label — both live).
 
 ### Phase 3 — brushing/linking on every kind
 - [ ] Brushing works on any kind via `rows_in_rect`/`show_rows`; histogram
@@ -1138,6 +1179,35 @@ used X" tracker needs to listen at the same granularity as what "using"
 actually means to the caller — a signal that fires on a narrower
 condition (subplot focus) will silently miss a broader one (window
 focus) that the caller cares about just as much.
+
+### 13. A worker's "not wired in yet" test shim breaks the moment the coordinator actually wires it in
+
+**Symptom (recurring — WP-E/WP-C in wave 1, WP-L in wave 3, all
+2026-09-28):** a work package builds a new mixin (`SaveMixin`, `HelpMixin`,
+`ConsoleMixin`, ...) that isn't yet a base class of `LaFigure` (the
+package doesn't own `figure.py`, or `figure.py` is being edited by a
+sibling package in the same wave). To test it anyway, the package writes
+`class _SomeFigure(NewMixin, m.LaFigure): pass` and builds figures with
+that instead. Every time, once the coordinator applies the reported diff
+and `NewMixin` becomes a REAL base of `LaFigure` (`class LaFigure(...,
+NewMixin, QtWidgets.QMainWindow)`), that test-only subclass throws
+`TypeError: Cannot create a consistent method resolution order (MRO) for
+bases NewMixin, LaFigure` — `LaFigure` now already has `NewMixin`
+somewhere in its own MRO, so putting it first in a subclass's bases
+creates a contradiction Python's C3 linearization can't resolve.
+
+**Root cause:** the shim's whole premise (`NewMixin` reachable only
+through this test subclass) stops being true the moment the coordinator's
+wiring lands, but nothing signals the test file to stop using it.
+
+**Lesson:** once a coordinator applies a "mix `NewMixin` into `LaFigure`"
+diff, immediately grep that package's own test file for a
+`class _X(NewMixin, m.LaFigure)` (or similarly named) shim and replace
+every use of it with `m.LaFigure` directly — this is now a required,
+predictable step of applying that specific kind of diff, not an
+occasional cleanup. A worker package can preempt it: if you know your
+mixin will likely need `figure.py` wiring later, say so plainly in your
+report next to the diff, so the coordinator expects this exact fix.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 
