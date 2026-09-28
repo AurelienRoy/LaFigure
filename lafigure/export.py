@@ -41,12 +41,9 @@ written as the user edits it (a UI preference, not a data/document write).
         selection chrome hidden) into `path`, baking `header_text` at the
         fractional position `header_pos = (x_frac, y_frac)` (0..1 of the
         pixmap's width/height -- proportional, so it holds up across the
-        different export sizes/formats). A `None` value means the format's
-        *name* is a known, planned entry but not currently wired up (either
-        an optional dependency is missing in this environment -- see
-        `UNAVAILABLE_REASONS[format]` for why -- or, for 'html', that it is
-        someone else's package's job: WP-M plugs a plotly-based HTML
-        exporter in here).
+        different export sizes/formats). A `None` value means an optional
+        dependency is missing in this environment -- see
+        `UNAVAILABLE_REASONS[format]` for why.
 
     `register_exporter(name, fn)` just does `EXPORTERS[name] = fn`; it
     exists so a caller doesn't need this module's other internals.
@@ -55,19 +52,20 @@ written as the user edits it (a UI preference, not a data/document write).
     the same `(pixmap, path, header_text, header_pos)` signature would be
     fake genericity. The decision of *which* function to call for a given
     format IS table-driven (`SaveDialog._do_export` just does
-    `EXPORTERS[fmt](...)` in a loop over the checked formats) -- but WP-M is
-    free to special-case 'html' with its own call signature right there
-    (one `if fmt == 'html': ...` branch) rather than contort this one.
-    `EXPORTERS['html']` is pre-seeded to `None` (checkbox present, disabled,
-    with an explanatory tooltip) precisely so that one line -- assigning a
-    real callable, and adjusting that one `_do_export` branch -- is the
-    entire integration; nothing else in this module or the dialog needs to
-    change.
+    `EXPORTERS[fmt](...)` in a loop over the checked formats), but 'html'
+    is special-cased right there with its own call signature (one
+    `if fmt == 'html': ...` branch) rather than contorting this one --
+    `EXPORTERS['html']` is `lafigure.html_export.export_html` (WP-M,
+    2026-09-28), which takes `(figure, path, parent=...)`, not a pixmap.
+    plotly is an optional dependency -- see html_export.py's own docstring
+    for how it stays optional without breaking `import lafigure`.
 """
 import os
 from datetime import datetime
 
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
+
+from . import html_export
 
 # -- exporter registry -----------------------------------------------------
 
@@ -170,10 +168,13 @@ except (ImportError, AttributeError) as e:
     UNAVAILABLE_REASONS['pdf'] = str(e)
     register_exporter('pdf', None)
 
-# Placeholder: present so the dialog can show an (disabled) HTML checkbox
-# and so WP-M's integration is "assign a callable here", not "add a new key
-# and rewire the dialog" -- see this module's docstring.
-register_exporter('html', None)
+# WP-M's integration: exactly "assign a callable here" plus the one
+# `_do_export` branch below, per this module's own docstring -- nothing
+# else in this module or the dialog needed to change. html_export.py
+# itself never imports plotly at module level (see its own docstring), so
+# this registration always succeeds; only calling the exporter can raise
+# (caught by _do_export's own try/except, same as any other format).
+register_exporter('html', html_export.export_html)
 
 
 # -- header template -------------------------------------------------------
@@ -296,10 +297,7 @@ class SaveDialog(QtWidgets.QDialog):
         self._format_checks = {}
         for fmt in ('png', 'jpg', 'svg', 'pdf', 'html'):
             cb = QtWidgets.QCheckBox(fmt.upper())
-            if fmt == 'html':
-                cb.setEnabled(False)
-                cb.setToolTip("Requires the plotly export package (coming soon)")
-            elif EXPORTERS.get(fmt) is None:
+            if EXPORTERS.get(fmt) is None:
                 cb.setEnabled(False)
                 cb.setToolTip("Unavailable in this environment"
                                + (f": {UNAVAILABLE_REASONS[fmt]}" if fmt in UNAVAILABLE_REASONS else ""))
@@ -386,7 +384,15 @@ class SaveDialog(QtWidgets.QDialog):
                 continue
             path = os.path.join(directory, f"{base}.{fmt}")
             try:
-                fn(self._pixmap, path, header_text, header_pos)
+                if fmt == 'html':
+                    # HTML's input is a plotly figure, not a QPixmap -- see
+                    # this module's own docstring on why it's special-cased
+                    # here rather than forced through the pixmap signature.
+                    fn(self.figure, path, parent=self)
+                else:
+                    fn(self._pixmap, path, header_text, header_pos)
+            except html_export.ExportCancelled:
+                pass  # the user cancelled the too-large-HTML popup -- not an error
             except Exception as e:
                 errors.append(f"{fmt}: {e}")
 
