@@ -248,6 +248,14 @@ def _band_drag(f, a, b, mods=QtCore.Qt.NoModifier):
     _mouse(f, QtCore.QEvent.MouseButtonRelease, b, QtCore.Qt.NoButton, mods=mods)
 
 
+def _brush_drag(f, plot_item, a, b, mods=QtCore.Qt.NoModifier):
+    """A real left-button drag on plot_item from data point `a` to data
+    point `b` (each an (x, y) tuple) -- a brush rectangle while Brush is on."""
+    vb = plot_item.getViewBox()
+    _band_drag(f, vb.mapViewToScene(QtCore.QPointF(*a)), vb.mapViewToScene(QtCore.QPointF(*b)),
+               mods=mods)
+
+
 def _key(f, key, mods=QtCore.Qt.NoModifier):
     f.activateWindow()
     app.processEvents()

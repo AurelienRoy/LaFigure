@@ -276,6 +276,13 @@ class SelectionUIMixin:
 
     def _highlight_curve_pen(self, curve):
         orig_pen = curve.opts.get('pen')
+        no_line = orig_pen is None or pg.mkPen(orig_pen).style() == QtCore.Qt.NoPen
+        if no_line and curve.opts.get('symbol') is not None:
+            # Dots without a line (e.g. the demo's scatters): outline the
+            # dots -- giving them a pen would draw a line through every point.
+            curve.opts.setdefault('_orig_symbol_pen', curve.opts.get('symbolPen'))
+            curve.setSymbolPen(pg.mkPen('k', width=1.5))
+            return
         curve.opts.setdefault('_orig_pen', orig_pen)
         base = pg.mkPen(orig_pen) if orig_pen is not None else pg.mkPen('k')
         curve.setPen(pg.mkPen(color=base.color(), width=base.width() + 3))
@@ -302,6 +309,8 @@ class SelectionUIMixin:
         orig_pen = curve.opts.get('_orig_pen')
         if orig_pen is not None:
             curve.setPen(orig_pen)
+        if '_orig_symbol_pen' in curve.opts:
+            curve.setSymbolPen(curve.opts['_orig_symbol_pen'])
 
     @selection_op
     def _deselect_curve(self):

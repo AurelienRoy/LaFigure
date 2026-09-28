@@ -25,6 +25,12 @@
 """Edit operations on curves and subplots: copy/paste (via the
 process-wide Clipboard, so they work across figure windows) and delete
 (Del key: everything selected, whatever its kind).
+
+Series go through _series_full_dict/_add_series_restoring (brushing.py),
+not bare to_dict/_add_series_from_dict: a copy or an undone delete keeps
+the rows a series isn't drawing right now, and hides them again. A copied
+series keeps its DataSource by reference, so a paste -- in any window --
+stays linked to it (brushing, hidden rows).
 """
 from .annotations import AnnotationItem
 from .selection_ui import selection_op
@@ -56,7 +62,7 @@ class ClipOpsMixin:
         plot_item = self._curve_plot(curve)
         if plot_item is None:
             return
-        data = self._series_of(curve).to_dict()
+        data = self._series_full_dict(self._series_of(curve))
         plot_item.removeItem(curve)
         self._forget_curve_selection(curve)
         brusher = self._brushers.get(plot_item)
@@ -66,7 +72,7 @@ class ClipOpsMixin:
         holder = {}
 
         def undo_fn():
-            holder['curve'] = self._add_series_from_dict(plot_item, data).item
+            holder['curve'] = self._add_series_restoring(plot_item, data).item
 
         def redo_fn():
             c = holder.get('curve')
@@ -110,7 +116,7 @@ class ClipOpsMixin:
             targets = [c] if c is not None else []
         if not targets:
             return
-        self.clipboard.curve = [self._series_of(c).to_dict() for c in targets]
+        self.clipboard.curve = [self._series_full_dict(self._series_of(c)) for c in targets]
         self.clipboard.last_copied = 'curve'
 
     def paste_curve(self):
@@ -120,7 +126,7 @@ class ClipOpsMixin:
         series_data = self.clipboard.curve
 
         def build():
-            return [self._add_series_from_dict(p, d).item for d in series_data]
+            return [self._add_series_restoring(p, d).item for d in series_data]
 
         holder = {'curves': build()}
 
@@ -150,7 +156,7 @@ class ClipOpsMixin:
                 'title': p.titleLabel.text,
                 'xlabel': p.getAxis('bottom').labelText,
                 'ylabel': p.getAxis('left').labelText,
-                'series': [s.to_dict() for s in self._series_on(p)],
+                'series': [self._series_full_dict(s) for s in self._series_on(p)],
                 'annotations': [a.to_dict() for a in self._annotations_on(p)],
             }
             for p in targets
@@ -176,7 +182,7 @@ class ClipOpsMixin:
                     start_row + i, col, data['title'], data['xlabel'], data['ylabel'], []
                 )
                 for d in data['series']:
-                    self._add_series_from_dict(new_plot, d)
+                    self._add_series_restoring(new_plot, d)
                 for d in data.get('annotations', []):
                     AnnotationItem.from_dict(self, new_plot, d)
                 new_plots.append(new_plot)

@@ -22,62 +22,165 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Figure-wide data brushing: the Brush toggle, the RectBrush /
-LinkedScatter coordination, and the four brushed-point actions (Delete,
-Transform, Stats, Fit).
+"""Figure-wide data brushing: the Brush toggle, linking through DataSource
+rows, Hide Brushed Points / Show All, derived columns, and the four
+brushed-point actions (Delete, Transform, Stats, Fit).
+
+**Selection.** Each subplot's RectBrush (selection.py) holds the rows
+brushed on each of its series. The figure-wide selection is their union per
+*brush key* -- the series' DataSource, or the item itself for a series of
+plain arrays -- and is shown on every series with the same key, which is
+what links two subplots of one source. Brushing stays per figure: another
+window showing the same source keeps its own (and its own Brush toggle).
+
+**Hidden rows.** Hide Brushed Points marks rows hidden on their DataSource
+(`hide_rows`; the data itself is untouched) and every series of that
+source, in every open figure, stops drawing them. A series drawing only
+some of its rows keeps its complete data in a _RowView on its item (under
+ROW_VIEW_ATTR), and only for as long as some row is left out; the drawn
+data is the view's entries whose row is visible (`source.visible_rows`,
+which also honours `source.filter`). A plain-array series has no source to
+mark, so its view carries its own hidden mask. Values edited while rows are
+hidden (Series.set_data) are written back into the view before it's used.
+
+**Derived columns.** Remove Average and Transform, on a series whose y is
+still exactly a column of a DataSource, write the result into a new column
+of that source and point the series at it; the original column is never
+written, and undo points the series back at it (the derived column stays in
+the source, unused -- DataSource has no way to remove a column). A series of
+plain arrays has nothing shared to protect and is still edited in place.
+FFT results never had the time series' rows, so a source series' FFT gets
+a new DataSource of its own (view_ops.py).
 """
 import numpy as np
 from pyqtgraph.Qt import QtCore, QtWidgets
 import pyqtgraph as pg
 
+from .datasource import DataSource
+from .selection import positions_of_rows
+
+# Attribute holding a series item's _RowView -- on the item, like the Series
+# itself, so it dies with it.
+ROW_VIEW_ATTR = '_lafigure_row_view'
+
+
+class _RowView:
+    """The complete data of a series some of whose entries aren't drawn:
+    x, y and rows (None for plain arrays) of every entry, the source they
+    come from (None for plain arrays), a hidden mask of its own for plain
+    arrays, and which entries are drawn. Never mutated once stored: a
+    change stores a new one, so undo snapshots can hold on to the old."""
+    __slots__ = ('x', 'y', 'rows', 'source', 'hidden', 'shown')
+
+    def __init__(self, x, y, rows, source, hidden, shown):
+        self.x, self.y, self.rows = x, y, rows
+        self.source, self.hidden, self.shown = source, hidden, shown
+
+    def replace(self, **changes):
+        fields = {name: getattr(self, name) for name in self.__slots__}
+        fields.update(changes)
+        return _RowView(**fields)
+
+
+def _visible_mask(source):
+    mask = ~source.hidden_mask
+    if source.filter_mask is not None:
+        mask &= source.filter_mask
+    return mask
+
+
+def _write_back(full, shown, drawn):
+    out = np.array(full, dtype=np.result_type(full, drawn), copy=True)
+    out[shown] = drawn
+    return out
+
 
 class BrushingMixin:
     def toggle_brush(self, checked):
         self.brushing = checked
-        for scatter in (getattr(self, 'scatter1', None), getattr(self, 'scatter2', None)):
-            if scatter is not None:
-                scatter.set_brushing(checked)
         for brusher in self._brushers.values():
             brusher.set_brushing(checked)
         for p in self.plots:
             self._apply_mouse_enabled(p.getViewBox())
-        if not checked and self.selection_model is not None:
-            self.selection_model.clear()
+
+    # -- the figure-wide, row-linked selection -------------------------------
+    @staticmethod
+    def _brush_key(series):
+        """What a series' brushed rows are rows *of*: its DataSource, shared
+        with every other series of that source, or itself (plain arrays)."""
+        return series.source if series.rows is not None else series.item
+
+    def _brushed_rows(self):
+        """{brush key: sorted rows} brushed anywhere in this figure."""
+        keyed = {}
+        for brusher in self._brushers.values():
+            for item, rows in brusher.selection.items():
+                series = self._series_of(item)
+                if series is None:
+                    continue
+                key = self._brush_key(series)
+                keyed[key] = np.union1d(keyed[key], rows) if key in keyed else rows
+        return keyed
+
+    def _show_brushed_rows(self, keyed):
+        """Make {brush key: rows} the whole figure's selection: every
+        brushable series shows the rows of its key it has."""
+        for brusher in self._brushers.values():
+            selection = {}
+            for series in brusher.brushable_series():
+                rows = keyed.get(self._brush_key(series))
+                if rows is None:
+                    continue
+                if series.rows is not None:
+                    rows = rows[np.isin(rows, series.rows)]
+                selection[series.item] = rows
+            brusher.set_selection(selection)
 
     def _on_rect_brush_finished(self, plot_item, matches, additive):
         """RectBrush's on_finished callback (see selection.py) -- brushing
         is a figure-wide concept: a fresh, non-additive brush drag anywhere
-        unbrushes every other subplot (and the linked-scatter pair) in this
-        figure first; a Shift-held drag instead adds to whatever's already
-        selected everywhere."""
-        if not additive:
-            self._clear_all_brush_selection(except_plot=plot_item)
-            self._brushers[plot_item].set_selection(matches)
-        else:
-            self._brushers[plot_item].merge_selection(matches)
+        unbrushes every other subplot in this figure first; a Shift-held
+        drag instead adds to whatever's already selected everywhere. Either
+        way the result is shown on every series sharing a source."""
+        keyed = self._brushed_rows() if additive else {}
+        for item, rows in matches.items():
+            key = self._brush_key(self._series_of(item))
+            keyed[key] = np.union1d(keyed[key], rows) if key in keyed else rows
+        self._show_brushed_rows(keyed)
 
     def _clear_all_brush_selection(self, except_plot=None):
         for plot_item, brusher in self._brushers.items():
             if plot_item is not except_plot:
                 brusher.clear_selection()
-        if self.selection_model is not None:  # None in a figure without the demo pair
-            self.selection_model.clear()
+
+    def _redraw_brush(self):
+        for brusher in self._brushers.values():
+            if brusher.selection:
+                brusher.redraw()
 
     def _figure_brush_items(self):
-        """Every (curve, mask) with an active brush selection, figure-wide
-        -- pooled across every subplot's RectBrush, since brushing is a
-        figure-level concept (see _on_rect_brush_finished)."""
+        """Every (item, mask over its drawn points) with an active brush
+        selection, figure-wide -- pooled across every subplot's RectBrush,
+        since brushing is a figure-level concept (see
+        _on_rect_brush_finished). Only point-like series: a histogram's
+        bars aren't points to delete, transform or fit."""
         items = []
         for brusher in self._brushers.values():
-            for curve, mask in brusher.selection.items():
-                if mask.any():
-                    items.append((curve, mask))
+            for item, rows in brusher.selection.items():
+                series = self._series_of(item)
+                mask = positions_of_rows(series, rows) if series is not None else None
+                if mask is not None and mask.any():
+                    items.append((item, mask))
         return items
+
+    def _item_xy(self, item):
+        x, y = self._series_of(item).kind_obj.get_xy(item)
+        return np.asarray(x), np.asarray(y)
 
     def _pooled_brush_xy(self, items):
         xs, ys = [], []
-        for curve, mask in items:
-            x, y = np.asarray(curve.xData), np.asarray(curve.yData)
+        for item, mask in items:
+            x, y = self._item_xy(item)
             xs.append(x[mask])
             ys.append(y[mask])
         if not xs:
@@ -86,7 +189,7 @@ class BrushingMixin:
 
     def _require_brush_selection(self):
         """Shared guard for the four brushed-selection actions below --
-        returns the figure-wide list of (curve, mask) if there's a live
+        returns the figure-wide list of (item, mask) if there's a live
         selection anywhere, else tells the user what to do and returns None."""
         items = self._figure_brush_items()
         if not items:
@@ -99,26 +202,300 @@ class BrushingMixin:
             return None
         return items
 
+    # -- row views: series drawing only some of their rows ------------------
+    def _all_series(self):
+        return [s for p in self.plots for s in self._series_on(p)]
+
+    def _synced_row_view(self, series):
+        """The series' _RowView with the drawn values written back into it,
+        or None -- also dropping a view the drawn data no longer matches
+        (the series was replaced wholesale since, e.g. set_data to another
+        length): then the drawn data is all there is."""
+        item = series.item
+        view = getattr(item, ROW_VIEW_ATTR, None)
+        if view is None:
+            return None
+        x, y = series.kind_obj.get_xy(item)
+        rows = series.rows
+        n_shown = int(np.count_nonzero(view.shown))
+        if (x is None or y is None or len(x) != n_shown or len(y) != n_shown
+                or (rows is None) != (view.rows is None)
+                or (rows is not None and (series.source is not view.source
+                                          or not np.array_equal(rows, view.rows[view.shown])))):
+            delattr(item, ROW_VIEW_ATTR)
+            return None
+        view = view.replace(x=_write_back(view.x, view.shown, x), y=_write_back(view.y, view.shown, y))
+        setattr(item, ROW_VIEW_ATTR, view)
+        return view
+
+    def _point_view(self, series):
+        """The synced view, or a fresh one with every entry drawn; None if
+        the series isn't one x/y point per row (nothing to leave out)."""
+        view = self._synced_row_view(series)
+        if view is not None:
+            return view
+        x, y = series.kind_obj.get_xy(series.item)
+        if x is None or y is None or np.ndim(x) != 1 or np.shape(x) != np.shape(y):
+            return None
+        rows = series.rows
+        if rows is not None and len(rows) != len(x):
+            return None
+        n = len(x)
+        return _RowView(np.asarray(x), np.asarray(y), rows,
+                        series.source if rows is not None else None,
+                        np.zeros(n, dtype=bool) if rows is None else None,
+                        np.ones(n, dtype=bool))
+
+    def _apply_row_visibility(self, series):
+        """Draw exactly the series' visible entries: rows visible in its
+        source, or not in its own hidden mask. Returns whether that changed
+        what's drawn. The one place a row view is applied."""
+        view = self._synced_row_view(series)
+        if view is None:
+            if series.rows is None:
+                return False  # plain arrays without a view: nothing is hidden
+            if _visible_mask(series.source)[series.rows].all():
+                return False
+            view = self._point_view(series)
+            if view is None:
+                return False
+        if view.source is not None:
+            keep = _visible_mask(view.source)[view.rows]
+        else:
+            keep = ~view.hidden
+        if np.array_equal(keep, view.shown):
+            return False
+        self._draw_view(series, view, keep)
+        return True
+
+    def _draw_view(self, series, view, keep):
+        item = series.item
+        series._apply(view.x[keep], view.y[keep], view.source,
+                      None if view.rows is None else view.rows[keep])
+        if keep.all():
+            if hasattr(item, ROW_VIEW_ATTR):
+                delattr(item, ROW_VIEW_ATTR)
+        else:
+            setattr(item, ROW_VIEW_ATTR, view.replace(shown=keep))
+        if view.rows is None:
+            # Plain arrays: a brush holds positions, which just moved.
+            for brusher in self._brushers.values():
+                if item in brusher.selection:
+                    brusher.forget_curve(item)
+
+    def _set_private_hidden(self, series, entries, hidden):
+        """Hide/show entries (indices into the complete data) of a
+        plain-array series, which has no source to mark them on."""
+        view = self._point_view(series)
+        if view is None or view.hidden is None:
+            return
+        mask = view.hidden.copy()
+        mask[entries] = hidden
+        setattr(series.item, ROW_VIEW_ATTR, view.replace(hidden=mask))
+        self._apply_row_visibility(series)
+
+    def _refresh_sources(self, sources):
+        """Redraw every series of `sources` in every open figure -- hidden
+        rows live on the source, so they reach pasted copies elsewhere."""
+        figures = list(self.registry.figures)
+        if self not in figures:
+            figures.append(self)
+        for fig in figures:
+            for series in fig._all_series():
+                if series.rows is not None and series.source in sources:
+                    fig._apply_row_visibility(series)
+            fig._redraw_brush()
+
+    # -- the complete data, for copy/paste and delete/undo ------------------
+    def _series_full_dict(self, series):
+        """Series.to_dict, but with the rows it's not drawing right now
+        included, so a paste (or an undone delete) keeps them -- and, via
+        _add_series_restoring, keeps them hidden."""
+        d = series.to_dict()
+        view = self._synced_row_view(series)
+        if view is not None:
+            d['x'], d['y'] = np.array(view.x, copy=True), np.array(view.y, copy=True)
+            if view.rows is not None:
+                d['rows'] = np.array(view.rows, copy=True)
+            else:
+                d['hidden'] = view.hidden.copy()
+        return d
+
+    def _add_series_restoring(self, plot_item, d):
+        """_add_series_from_dict, then leave out what should be: rows
+        hidden in its source, or the entries a plain-array copy had hidden."""
+        series = self._add_series_from_dict(plot_item, d)
+        hidden = d.get('hidden')
+        if hidden is not None and np.any(hidden):
+            self._set_private_hidden(series, np.nonzero(hidden)[0], True)
+        else:
+            self._apply_row_visibility(series)
+        return series
+
+    # -- Hide Brushed Points / Show All --------------------------------------
+    def hide_brushed_points(self):
+        """Stop drawing the brushed rows everywhere they're shown: hidden on
+        their DataSource (the data stays intact), so every series of that
+        source in every figure leaves them out. Undoable."""
+        sources, private = {}, []
+        for key, rows in self._brushed_rows().items():
+            if isinstance(key, DataSource):
+                rows = rows[~key.hidden_mask[rows]]
+                if rows.size:
+                    sources[key] = rows
+            else:
+                series = self._series_of(key)
+                view = self._point_view(series)
+                if view is not None and view.hidden is not None:
+                    drawn = np.nonzero(view.shown)[0]
+                    private.append((series, drawn[rows[rows < drawn.size]]))
+        if not sources and not private:
+            return
+        self._clear_all_brush_selection()
+
+        def apply(hidden):
+            for src, rows in sources.items():
+                (src.hide_rows if hidden else src.show_rows)(rows)
+            for series, entries in private:
+                self._set_private_hidden(series, entries, hidden)
+            self._refresh_sources(sources)
+
+        apply(True)
+        self._push_history(undo_fn=lambda: apply(False), redo_fn=lambda: apply(True))
+
+    def show_all_hidden_points(self):
+        """Draw every hidden row again, for every series of this figure
+        (DataSource.show_all on their sources). Undoable."""
+        sources, private = {}, []
+        for series in self._all_series():
+            if series.rows is not None:
+                src = series.source
+                if src not in sources and src.hidden_mask.any():
+                    sources[src] = np.nonzero(src.hidden_mask)[0]
+            else:
+                view = self._synced_row_view(series)
+                if view is not None and view.hidden.any():
+                    private.append((series, np.nonzero(view.hidden)[0]))
+        if not sources and not private:
+            return
+
+        def show():
+            for src in sources:
+                src.show_all()
+            for series, entries in private:
+                self._set_private_hidden(series, entries, False)
+            self._refresh_sources(sources)
+
+        def hide():
+            for src, rows in sources.items():
+                src.hide_rows(rows)
+            for series, entries in private:
+                self._set_private_hidden(series, entries, True)
+            self._refresh_sources(sources)
+
+        show()
+        self._push_history(undo_fn=hide, redo_fn=show)
+
+    def has_hidden_points(self):
+        """For enabling Show All: is any row of this figure's series hidden?"""
+        for series in self._all_series():
+            if series.rows is not None:
+                if series.source.hidden_mask.any():
+                    return True
+            elif getattr(series.item, ROW_VIEW_ATTR, None) is not None:
+                return True
+        return False
+
+    # -- snapshots: one series' whole drawn state, for undo -----------------
+    def _snapshot(self, series):
+        view = self._synced_row_view(series)
+        x, y = series.kind_obj.get_xy(series.item)
+        source = series.source if series.rows is not None else None
+        return (x, y, source, series.rows, series.columns, view)
+
+    def _restore(self, series, snapshot):
+        x, y, source, rows, columns, view = snapshot
+        series._apply(x, y, source, rows)
+        series.columns = columns
+        if view is not None:
+            setattr(series.item, ROW_VIEW_ATTR, view)
+        elif hasattr(series.item, ROW_VIEW_ATTR):
+            delattr(series.item, ROW_VIEW_ATTR)
+
+    def _push_snapshots(self, changes):
+        """Push one undo step for [(series, before, after)], already applied."""
+        self._push_history(
+            undo_fn=lambda: [self._restore(s, before) for s, before, _ in reversed(changes)],
+            redo_fn=lambda: [self._restore(s, after) for s, _, after in changes],
+        )
+
+    # -- derived columns --------------------------------------------------
+    def _column_backed(self, series):
+        """The DataSource if the series' y is still exactly its y column
+        (for all its rows, hidden ones included), else None."""
+        columns = series.columns
+        if series.rows is None or not columns or len(columns) < 2 or not isinstance(columns[1], str):
+            return None
+        source = series.source
+        if columns[1] not in source:
+            return None
+        view = self._synced_row_view(series)
+        y, rows = (view.y, view.rows) if view is not None else (series.y, series.rows)
+        if y is None or len(y) != len(rows):
+            return None
+        try:
+            same = np.array_equal(source[columns[1]][rows], y, equal_nan=True)
+        except TypeError:
+            same = np.array_equal(source[columns[1]][rows], y)
+        return source if same else None
+
+    def _derive_y_column(self, series, label, values):
+        """Write `values` (one per source row) into a new column of the
+        series' source, named after its y column and `label`, and point the
+        series' y at it. Undoable; the original column is never written."""
+        source = series.source
+        xcol, ycol = series.columns[0], series.columns[1]
+        name = f"{ycol} {label}"
+        n = 2
+        while name in source:
+            name, n = f"{ycol} {label} ({n})", n + 1
+        source.add_column(name, values)
+        new_y = source[name]
+        before = self._snapshot(series)
+        x, _y, _src, rows, columns, view = before
+        if view is not None:
+            view = view.replace(y=new_y[view.rows])
+        after = (x, new_y[rows], source, rows, (xcol, name) + tuple(columns[2:]), view)
+        self._restore(series, after)
+        self._push_snapshots([(series, before, after)])
+
+    # -- the four brushed-point actions -------------------------------------
     def delete_brushed_points(self):
+        """Remove the brushed points from their series. A series of a
+        DataSource stays linked to it, drawing fewer of its rows; the
+        source itself is untouched."""
         items = self._require_brush_selection()
         if items is None:
             return
-        affected = [
-            (curve, np.asarray(curve.xData).copy(), np.asarray(curve.yData).copy(), mask.copy())
-            for curve, mask in items
-        ]
         self._clear_all_brush_selection()
-
-        def apply_delete():
-            for curve, x, y, mask in affected:
-                curve.setData(x=x[~mask], y=y[~mask])
-
-        def undo_restore():
-            for curve, x, y, mask in affected:
-                curve.setData(x=x, y=y)
-
-        apply_delete()
-        self._push_history(undo_fn=undo_restore, redo_fn=apply_delete)
+        changes = []
+        for item, mask in items:
+            series = self._series_of(item)
+            before = self._snapshot(series)
+            x, y, source, rows, columns, view = before
+            keep = ~mask
+            if view is not None:
+                entries = np.ones(len(view.x), dtype=bool)
+                entries[np.nonzero(view.shown)[0][mask]] = False
+                view = view.replace(
+                    x=view.x[entries], y=view.y[entries], shown=view.shown[entries],
+                    rows=None if view.rows is None else view.rows[entries],
+                    hidden=None if view.hidden is None else view.hidden[entries])
+            after = (np.asarray(x)[keep], np.asarray(y)[keep], source,
+                     None if rows is None else rows[keep], columns, view)
+            self._restore(series, after)
+            changes.append((series, before, after))
+        self._push_snapshots(changes)
 
     def transform_brushed_points(self):
         items = self._require_brush_selection()
@@ -133,9 +510,9 @@ class BrushingMixin:
         if not ok or not expr:
             return
 
-        affected = []
-        for curve, mask in items:
-            x_full, y_full = np.asarray(curve.xData), np.asarray(curve.yData)
+        results = []
+        for item, mask in items:
+            x_full, y_full = self._item_xy(item)
             x_sel, y_sel = x_full[mask], y_full[mask]
             try:
                 new_y_sel = np.asarray(
@@ -151,30 +528,35 @@ class BrushingMixin:
                     "Result must have the same shape as the selected points.",
                 )
                 return
-            affected.append((curve, x_full, y_full.copy(), mask.copy(), new_y_sel))
+            results.append((self._series_of(item), mask, new_y_sel))
 
-        def apply_transform():
-            for curve, x_full, y_full, mask, new_y_sel in affected:
-                new_y = y_full.copy()
-                new_y[mask] = new_y_sel
-                curve.setData(x=x_full, y=new_y)
-
-        def undo_restore():
-            for curve, x_full, y_full, mask, new_y_sel in affected:
-                curve.setData(x=x_full, y=y_full)
-
-        apply_transform()
         self._clear_all_brush_selection()
-        self._push_history(undo_fn=undo_restore, redo_fn=apply_transform)
+        # One gesture, one undo entry, however many series it changes.
+        with self.undo_group():
+            for series, mask, new_y_sel in results:
+                source = self._column_backed(series)
+                if source is not None:
+                    values = np.array(source[series.columns[1]], dtype=float)
+                    values[series.rows[mask]] = new_y_sel
+                    self._derive_y_column(series, "(transformed)", values)
+                    continue
+                before = self._snapshot(series)
+                x, y, src, rows, columns, view = before
+                new_y = np.array(y, dtype=float)
+                new_y[mask] = new_y_sel
+                after = (x, new_y, src, rows, columns, view)
+                self._restore(series, after)
+                self._push_snapshots([(series, before, after)])
 
     def show_selection_stats(self):
         items = self._require_brush_selection()
         if items is None:
             return
         lines = []
-        for curve, mask in items:
-            x, y = np.asarray(curve.xData)[mask], np.asarray(curve.yData)[mask]
-            label = curve.name() or "(unnamed curve)"
+        for item, mask in items:
+            x, y = self._item_xy(item)
+            x, y = x[mask], y[mask]
+            label = item.name() or "(unnamed curve)"
             lines.append(
                 f"{label}: n={mask.sum()}  "
                 f"x: mean={x.mean():.4g} std={x.std():.4g}  "

@@ -30,6 +30,7 @@ import numpy as np
 from pyqtgraph.Qt import QtCore
 import pyqtgraph as pg
 
+from .datasource import DataSource
 from .editable_text import wire_legend_editable
 from .selection_ui import selection_op
 
@@ -150,6 +151,9 @@ class ViewOpsMixin:
                 p.legend = None
 
     def remove_average(self):
+        """Subtract the mean of what's drawn. A series whose y is a column
+        of a DataSource gets a new derived column instead of an edit (see
+        brushing.py, "Derived columns")."""
         p = self.focused_plot
         if p is None:
             return
@@ -159,7 +163,13 @@ class ViewOpsMixin:
                 y = s.y
                 if 'remove_average' not in s.capabilities or y is None or y.size == 0:
                     continue
-                s.set_data(s.x, y - np.mean(y))
+                mean = np.mean(y)
+                source = self._column_backed(s)
+                if source is not None:
+                    self._derive_y_column(s, "- mean", np.asarray(source[s.columns[1]], dtype=float) - mean)
+                else:
+                    s.set_data(s.x, y - mean)
+        self._redraw_brush()
 
     def fft_below(self):
         p = self.focused_plot
@@ -168,7 +178,8 @@ class ViewOpsMixin:
         curve = self._active_curve_on(p)
         if curve is None:
             return
-        x, y = curve.xData, curve.yData
+        series = self._series_of(curve)
+        x, y = series.x, series.y
         if x is None or x.size < 2:
             return
         dt = np.mean(np.diff(x))
@@ -178,7 +189,16 @@ class ViewOpsMixin:
         fft_pen = pg.mkPen((60, 60, 60), width=1)
 
         fft_plot = self.insert_subplot_below(p, title=title)
-        fft_series = self._add_series(fft_plot, 'line', freqs, mag, pen=fft_pen)
+        if series.rows is not None:
+            # The spectrum's rows are frequencies, not the time series' rows:
+            # a DataSource of its own, leaving the time series' one untouched.
+            ycol = series.columns[1] if series.columns and len(series.columns) > 1 else 'y'
+            columns = ('frequency', f"|FFT({ycol})|")
+            source = DataSource(dict(zip(columns, (freqs, mag))))
+            fft_series = self._add_series(fft_plot, 'line', freqs, mag, pen=fft_pen,
+                                          source=source, columns=columns)
+        else:
+            fft_series = self._add_series(fft_plot, 'line', freqs, mag, pen=fft_pen)
         fft_plot.setLabel('bottom', 'Frequency (Hz)')
         fft_plot.setLabel('left', 'Magnitude')
 
