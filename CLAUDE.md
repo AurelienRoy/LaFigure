@@ -54,6 +54,8 @@ LaFigure/
     console.py                               # embedded Python console dock, datatip,
                                               # src.filter(...) UI wiring
     groups.py                                # Group hierarchy, common label, HSL color offsets
+    controls.py                              # ControlPanel/ControlPanelWindow: buttons,
+                                              # sliders, dropdowns, checkboxes, reactive tables
     manager.py                 # FigureManager: tree of open figures/subplots,
                                 # "New Figure" button (creates an empty figure)
     registry.py                 # FigureRegistry: process-wide list of open
@@ -683,16 +685,30 @@ package lands.
       editable, default 10) / peak-preserving decimation (same look).
 
 ### Phase 5 — interactive controls + reactive tables
-- [ ] Buttons, sliders, dropdowns, checkboxes with user Python callbacks
-      (e.g. drive `src.filter`), and editable tables (e.g. live stats of
-      brushed points: `table(fn, depends_on=[src])` recomputes on selection
-      / filter / hidden changes).
-- [ ] Controls live **in grid cells** (a cell kind like a subplot, same
-      move/resize/snap) **or in a separate figure window** — a generic
-      container class usable for both.
-- [ ] Slider callbacks debounced (~50 ms); a failing callback shows its
-      traceback in the status bar, never crashes; control-driven filter
-      changes are view state (not undo entries).
+**Built by WP-N** (2026-09-28, `lafigure/controls.py`), fully standalone
+-- no edits needed anywhere else in the package.
+- [x] Buttons, sliders, dropdowns, checkboxes with user Python callbacks
+      (e.g. drive `src.filter`), and editable tables: `table(fn,
+      depends_on=[src])` (`fn()` returns `{column_name: sequence}`,
+      matching `DataSource`'s own shape) recomputes on any dependency's
+      `on_change` (filter / hide/show / add_column).
+- [x] Controls live **in a separate figure window**
+      (`ControlPanelWindow`/`open_control_panel(figure=None)`) — built
+      and tested. **In grid cells**: `ControlPanel` itself is already
+      layout-agnostic (a plain `QWidget`, no figure/scene dependency), so
+      it's ready to embed, but the actual grid-cell integration is **not
+      yet wired** — that needs a `layout.py` change (`axes_type=
+      'controls'`, wrapping `ControlPanel` in a `QGraphicsProxyWidget`)
+      that WP-N didn't own; the proposed hook is written up in
+      `controls.py`'s own module docstring for whoever picks it up next
+      (O, or a later pass, since O now owns `layout.py`).
+- [x] Slider callbacks debounced (~50 ms, single-shot `QTimer` restarted
+      on each change); a failing callback (including a `table`'s `fn`) is
+      caught and its traceback shown in the status bar/label, never
+      crashes; nothing in `controls.py` ever calls `_push_history` itself
+      — control-driven changes are view state (a callback that itself
+      edits a `Series` and wants undo, e.g. via `Series.set_data`, still
+      gets it — that's the callback's own business, not the framework's).
 
 ### Phase 6 — 3D
 - [x] **Option A**: a 3D cell is a normal grid item that renders an

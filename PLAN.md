@@ -54,11 +54,11 @@ package-tree comment and bug #8/#9 for what it found along the way.
 | I3 | Kind: heatmap/imshow + colorbar | 3 | H | sonnet | merged (e2b84ec); found a real Series.name gap (fixed by coordinator, see series.py) |
 | J  | Brushing on every kind, hide/show brushed, derived columns (Phase 3) | 3 | H | opus | merged (b638b99); coordinator applied its menus.py/toolbar.py/layout.py diffs, replaced the demo's line-drawn-as-dots workaround with real ax.scatter (I1's kind), deleted dead SelectionModel/LinkedScatter — see CLAUDE.md bug #14/#15 |
 | K1 | Groups model: hierarchy, common label, HSL color offsets (Phase 2b) | 3 | H | sonnet | merged (cccf853); clip_ops.py copy/paste hook applied by coordinator alongside J's merge (both owned clip_ops.py) — 2 new tests in test_groups.py confirm it round-trips through undo |
-| K2 | Curve browser tab + bottom property editor (Phase 2b) | 4 | D, K1 | sonnet | todo |
+| K2 | Curve browser tab + bottom property editor (Phase 2b) | 4 | D, K1 | sonnet | running (wp/K2, agent a9200c01b262708b3) |
 | L  | Console panel + datatip + `src.filter` wiring (Phase 2) | 3 | H | sonnet | merged (00556a7) |
-| M  | HTML export via plotly + decimation popup (Phase 4) | 4 | E, I1, I2, I3 | sonnet | todo |
-| N  | Controls & reactive tables in grid cells / separate window (Phase 5) | 3 | A, F | sonnet | todo |
-| O  | 3D integration: `axes_type='3d'`, kinds, projected brushing (Phase 6) | 4 | A, G, H, J | opus | todo |
+| M  | HTML export via plotly + decimation popup (Phase 4) | 4 | E, I1, I2, I3 | sonnet | running (wp/M, agent a142d430b0fb52e6a) |
+| N  | Controls & reactive tables in grid cells / separate window (Phase 5) | 3 | A, F | sonnet | merged (a500df0); separate-window variant fully built, grid-cell integration left as a documented layout.py hook (see controls.py docstring) for O or a later pass |
+| O  | 3D integration: `axes_type='3d'`, kinds, projected brushing (Phase 6) | 4 | A, G, H, J | opus | running (wp/O, agent a286ce6d1acdbf4e3) |
 
 Waves: **0** → {A, B, C, D, E, F, G} in parallel → **H** alone →
 {I1, I2, I3, J, K1, L, N} in parallel → {K2, M, O}.

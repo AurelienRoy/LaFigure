@@ -50,6 +50,7 @@ from .groups import Group, GroupsMixin, raw_filtered_preset, sensor_family_prese
 from .axes import Axes, gca, gcf
 from . import kinds  # noqa: F401  (import registers every built-in SeriesKind beyond 'line')
 from . import console  # noqa: F401  (registers Axes.datatip -- see console.py)
+from .controls import ControlPanel, ControlPanelWindow, open_control_panel
 from .app import main
 
 __all__ = [
@@ -74,5 +75,8 @@ __all__ = [
     "Axes",
     "gca",
     "gcf",
+    "ControlPanel",
+    "ControlPanelWindow",
+    "open_control_panel",
     "main",
 ]
