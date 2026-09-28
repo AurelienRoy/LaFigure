@@ -49,13 +49,13 @@ package-tree comment and bug #8/#9 for what it found along the way.
 | F  | `DataSource` (pure numpy, no Qt) | 1 | 01 | sonnet | merged (7b85e7c) |
 | G  | 3D offscreen-readback spike (standalone, not integrated) | 1 | 01 | opus | merged (89b253e) — **go**, see spikes/README.md and CLAUDE.md bug #10 |
 | H  | Series/SeriesKind registry, Axes facade, gca/gcf; migrate all curve tuples (Phase 2 core) | 2 | A, F | opus | merged (6f79f52); coordinator applied its layout.py/brushing.py/__init__.py diffs — migration gap fully closed, `_PENDING_MIGRATION` empty |
-| I1 | Kinds: scatter, stairs, area, hist | 3 | H | sonnet | todo |
-| I2 | Kinds: bar, errorbar | 3 | H | sonnet | todo |
-| I3 | Kind: heatmap/imshow + colorbar | 3 | H | sonnet | todo |
-| J  | Brushing on every kind, hide/show brushed, derived columns (Phase 3) | 3 | H | opus | todo |
-| K1 | Groups model: hierarchy, common label, HSL color offsets (Phase 2b) | 3 | H | sonnet | todo |
+| I1 | Kinds: scatter, stairs, area, hist | 3 | H | sonnet | running (wp/I1, agent ae8dca4a52556621c) |
+| I2 | Kinds: bar, errorbar | 3 | H | sonnet | running (wp/I2, agent ac06b2e0140b4ff3d) |
+| I3 | Kind: heatmap/imshow + colorbar | 3 | H | sonnet | running (wp/I3, agent aa8c320b6a26867c2) |
+| J  | Brushing on every kind, hide/show brushed, derived columns (Phase 3) | 3 | H | opus | running (wp/J, agent af6cdd012baf74aac) |
+| K1 | Groups model: hierarchy, common label, HSL color offsets (Phase 2b) | 3 | H | sonnet | running (wp/K1, agent a8fdebfb67ecb58f9) |
 | K2 | Curve browser tab + bottom property editor (Phase 2b) | 4 | D, K1 | sonnet | todo |
-| L  | Console panel + datatip + `src.filter` wiring (Phase 2) | 3 | H | sonnet | todo |
+| L  | Console panel + datatip + `src.filter` wiring (Phase 2) | 3 | H | sonnet | running (wp/L, agent a5500f140da7b97ce) |
 | M  | HTML export via plotly + decimation popup (Phase 4) | 4 | E, I1, I2, I3 | sonnet | todo |
 | N  | Controls & reactive tables in grid cells / separate window (Phase 5) | 3 | A, F | sonnet | todo |
 | O  | 3D integration: `axes_type='3d'`, kinds, projected brushing (Phase 6) | 4 | A, G, H, J | opus | todo |
@@ -148,7 +148,8 @@ interface, which the coordinator adds on master first).
 | `export.py` (new) | E → M |
 | `datasource.py` (new) | F → J |
 | `spikes/` (new) | G |
-| `figure.py`, `series.py`, `axes.py` (new), `clip_ops.py`, `view_ops.py` | H → I*/J/K1 |
+| `figure.py`, `clip_ops.py`, `view_ops.py` | H → J |
+| `series.py`, `axes.py` | H, then the coordinator generalized both (2026-09-28, `1858c4a`) so no kind/brushing/group package needs to touch either — see the note below the table |
 | `kinds/<name>.py` (new, one per kind) | I1, I2, I3, O |
 | `brushing.py`, `selection.py`, `selection_ui.py` | J |
 | `groups.py` (new) | K1 |
@@ -164,6 +165,23 @@ When two packages in the same wave would own the same file, they are
 first package likely to need a new mixin registered there; earlier
 packages (A/B/C/D/E/F/G) should not need to touch it — if one does,
 report it rather than editing.
+
+**`series.py`/`axes.py` after the coordinator's wave-3 prep (`1858c4a`,
+2026-09-28):** I1/I2/I3/K1/L do **not** own or need to edit either file.
+A new kind gets `ax.<kind name>(...)` automatically once registered
+(`Axes.__getattr__`/`_plot_kind` route any name in `SERIES_KINDS` there —
+only `'line'` keeps its own `plot()` method, for its single-array
+convenience). `SeriesKind.get_xy`/`set_xy` (new, override the
+`item.xData`/`item.yData`/`item.setData` default) make `Series.x`/`.y`/
+`.set_data`/`.source` work for a kind whose item isn't a plain
+`PlotDataItem` — needed by any kind building a `BarGraphItem`,
+`ErrorBarItem` or `ImageItem`. `_add_series`'s click-wiring
+(`_wire_curve_clickable`, which assumes `item.curve`) is now guarded by
+`hasattr(item, 'curve')` — a kind without that attribute is plotted, just
+not yet click-selectable; making it selectable is **J**'s job, not the
+kind package's. If a kind package finds it genuinely needs to change
+`series.py`/`axes.py` beyond registering a kind (not just using the
+mechanisms above), stop and report rather than editing.
 
 ## Worker agent brief (template the coordinator fills in)
 
