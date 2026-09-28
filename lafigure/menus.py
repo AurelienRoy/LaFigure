@@ -64,6 +64,8 @@ class MenusMixin:
         menu.addAction("Paste Curve").triggered.connect(bound(self.paste_curve))
         menu.addAction("Copy Subplot").triggered.connect(bound(self.copy_subplot))
         menu.addAction("Paste Subplot").triggered.connect(bound(self.paste_subplot))
+        menu.addAction("Bring to Front").triggered.connect(bound(lambda: self.bring_to_front(plot_item)))
+        menu.addAction("Send to Back").triggered.connect(bound(lambda: self.send_to_back(plot_item)))
         menu.addAction("Toggle Legend").triggered.connect(bound(self.toggle_legend))
         menu.addAction("Remove Average").triggered.connect(bound(self.remove_average))
         menu.addAction("FFT -> Subplot Below").triggered.connect(bound(self.fft_below))

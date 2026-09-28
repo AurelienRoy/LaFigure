@@ -105,10 +105,10 @@ class AnnotationOpsMixin:
         """Which parent a click at `scene_pos` implies: a subplot's data
         area (axes-anchored), a subplot's chrome/margins (border-anchored),
         or nowhere in particular (figure-anchored, free-floating)."""
-        for p in self.plots:
+        for p in self._plots_by_z():
             if p.getViewBox().sceneBoundingRect().contains(scene_pos):
                 return 'axes', p
-        for p in self.plots:
+        for p in self._plots_by_z():
             if p.sceneBoundingRect().contains(scene_pos):
                 return 'border', p
         return 'figure', None
@@ -219,7 +219,7 @@ class AnnotationOpsMixin:
             if ann._rotate_handle is not None:
                 ann._position_rotate_handle()
         if anchor == 'border' and parent_plot is not None:
-            ann.anchor_offset = p0 - parent_plot.sceneBoundingRect().topLeft()
+            ann.anchor_offset = self._box_fraction(parent_plot, p0)
         self._add_annotation_to_scene(ann, p0)
         self._select_annotation(ann)
 
@@ -263,7 +263,7 @@ class AnnotationOpsMixin:
 
     def _place_border_annotation(self, ann):
         if ann.parent_plot in self.plots:
-            ann.setPos(ann.parent_plot.sceneBoundingRect().topLeft() + ann.anchor_offset)
+            ann.setPos(self._box_point(ann.parent_plot, ann.anchor_offset))
 
     def _reposition_annotations(self):
         for a in self.annotations:
@@ -380,7 +380,7 @@ class AnnotationOpsMixin:
         ann.anchor = anchor
         ann.parent_plot = parent_plot
         if anchor == 'border' and parent_plot is not None:
-            ann.anchor_offset = local_pos - parent_plot.sceneBoundingRect().topLeft()
+            ann.anchor_offset = self._box_fraction(parent_plot, local_pos)
         self._add_annotation_to_scene(ann, local_pos)
 
     def _reparent_annotation(self, ann, new_anchor, new_parent_plot, scene_pos):

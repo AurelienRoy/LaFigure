@@ -275,8 +275,15 @@ def test_band_from_the_margin_selects_enclosed_subplots_only():
     assert f._band is None and not f._suppress_click
     assert not any(isinstance(i, QtWidgets.QGraphicsRectItem) and i.zValue() == 1e6
                    for i in f.layout_widget.scene().items()), "the band rectangle must be removed"
-    _mouse(f, QtCore.QEvent.MouseButtonPress, corner, QtCore.Qt.LeftButton)
-    _mouse(f, QtCore.QEvent.MouseButtonRelease, corner, QtCore.Qt.NoButton)
+    # p0 is now selected, so its resize handles show right at its box's
+    # top-left corner -- which, on the free layout's small FIG_MARGIN, can
+    # now coincide with `corner` (WP-A's fix to tests/helpers._mouse made
+    # handles actually receive real clicks, unlike before). Use a point in
+    # the opposite margin, away from any handle, for the plain click below.
+    far_corner = QtCore.QPointF(f.layout_widget.width() - 2, f.layout_widget.height() - 2)
+    assert f._can_start_band_at(far_corner), "control: the opposite margin also starts a band"
+    _mouse(f, QtCore.QEvent.MouseButtonPress, far_corner, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, far_corner, QtCore.Qt.NoButton)
     assert _selected(f) == ([], [], None), "the next plain click must not be swallowed"
     f.close()
 

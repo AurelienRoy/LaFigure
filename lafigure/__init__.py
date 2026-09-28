@@ -45,6 +45,7 @@ from .selection import SelectionModel, LinkedScatter
 from .registry import get_registry, FigureRegistry
 from .clipboard import get_clipboard, Clipboard
 from .annotations import AnnotationItem, SHAPE_KINDS
+from .datasource import DataSource
 from .app import main
 
 __all__ = [
@@ -58,5 +59,6 @@ __all__ = [
     "Clipboard",
     "AnnotationItem",
     "SHAPE_KINDS",
+    "DataSource",
     "main",
 ]

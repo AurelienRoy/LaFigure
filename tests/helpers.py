@@ -221,8 +221,21 @@ def _scene_pos(ann):
 
 
 def _mouse(f, etype, scene_pt, buttons, button=QtCore.Qt.LeftButton, mods=QtCore.Qt.NoModifier):
+    """The short QMouseEvent(type, localPos, button, buttons, modifiers)
+    constructor sets globalPos to QCursor.pos() -- and QGraphicsScene picks
+    the *item* under the mouse from the global position (mapped back
+    through the viewport), not from localPos/scenePos. So that short form
+    reaches the scene's own event filter (which reads scenePos) at the
+    right point -- enough for rubber-band/click dispatch, which is why
+    that worked before this fix -- but hands the actual press to whatever
+    item sits under the real, arbitrary OS cursor instead of scene_pt.
+    Dragging a handle, gutter or annotation needs the item at scene_pt to
+    receive the press, so the global position must be the same point too
+    (found by WP-A; see CLAUDE.md)."""
     view = f.layout_widget
-    ev = QtGui.QMouseEvent(etype, QtCore.QPointF(view.mapFromScene(scene_pt)), button, buttons, mods)
+    local = QtCore.QPointF(view.mapFromScene(scene_pt))
+    global_pos = QtCore.QPointF(view.viewport().mapToGlobal(local.toPoint()))
+    ev = QtGui.QMouseEvent(etype, local, local, global_pos, button, buttons, mods)
     QtWidgets.QApplication.sendEvent(view.viewport(), ev)
     app.processEvents()
 

@@ -132,7 +132,7 @@ class SelectionUIMixin:
             return
 
         hit_plot = None
-        for p in self.plots:
+        for p in self._plots_by_z():
             if p.getViewBox().sceneBoundingRect().contains(pos):
                 hit_plot = p
                 break
@@ -201,7 +201,7 @@ class SelectionUIMixin:
     def _on_scene_hovered(self, pos):
         """sigMouseMoved gives scene coords directly (unlike sigMouseClicked's
         event object) -- pos is already what the hit-test loop below needs."""
-        for p in self.plots:
+        for p in self._plots_by_z():
             if p.getViewBox().sceneBoundingRect().contains(pos):
                 self._hover_plot = p
                 break

@@ -22,11 +22,10 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Save dialog + exporter registry (export.py, WP-E). figure.py doesn't yet
-mix SaveMixin in (that lands with WP-H's figure.py edits -- see PLAN.md file
-ownership; the coordinator wires the real toolbar button in the meantime),
-so tests here combine it locally with the real LaFigure -- exactly what
-that future mixin list addition will do.
+"""Save dialog + exporter registry (export.py, WP-E). SaveMixin is mixed
+into the real LaFigure in figure.py (applied by the coordinator alongside
+WP-C's HelpMixin, since both landed as diffs against figure.py before
+WP-H); tests here just use LaFigure directly.
 """
 import os
 import tempfile
@@ -38,12 +37,8 @@ from tests.helpers import app, m, has_border
 from lafigure import export
 
 
-class _SaveFigure(export.SaveMixin, m.LaFigure):
-    pass
-
-
 def _demo_save_figure():
-    f = _SaveFigure()
+    f = m.LaFigure()
     f.show()
     app.processEvents()
     return f

@@ -588,10 +588,30 @@ package lands.
       changes are view state (not undo entries).
 
 ### Phase 6 — 3D
-- [ ] **Option A**: a 3D cell is a normal grid item that renders an
+- [x] **Option A**: a 3D cell is a normal grid item that renders an
       offscreen GL view to an image each frame and forwards mouse input to
       its camera — keeps move/resize/select/copy/annotations working.
-      Prototype the readback speed live before committing.
+      **Spiked and confirmed GO by WP-G** (2026-09-28, `spikes/README.md`,
+      `spikes/gl_offscreen_readback.py`): on a real GPU, one 3D cell costs
+      ≤2.4ms/frame at 1600x1000 up to 1M points (readback is 70-95% of
+      that, cost tracks image size not point count); four 1M-point cells
+      in a realistic window cost 6.8ms/frame — well inside a 16.7ms/60fps
+      budget. Software (Mesa llvmpipe) rendering is a **no-go** for large
+      data (1M points: ~170ms/frame) — the draw itself is slow, same as a
+      native GLViewWidget would be on the same software renderer, so this
+      doesn't count against Option A specifically. Camera math (orbit/pan/
+      wheel, reimplemented in numpy since PyOpenGL wasn't installable
+      here) matches Qt's own to 2.6e-6, verified against real lit pixels
+      after real mouse-driven drags. Brushing via numpy projection: ~30ms
+      for 1M points, too slow per mouse-move — project once on drag-press
+      (camera doesn't move mid-drag) and rect-test per move instead (~2ms).
+      **WP-O's five conditions, from the spike's own recommendation**:
+      redraw only when something changed; one offscreen context per figure,
+      made current before each draw; brush projects once per drag, not per
+      move; size images for high-DPI; a placeholder when no GL context
+      exists. GLViewWidget/GLScatterPlotItem themselves were never actually
+      run (PyOpenGL unavailable) — the spike's own drawing/readback calls
+      stand in, documented as unverified against pyqtgraph's real classes.
 - [ ] `axes_type='3d'`: `scatter3d`, `line3d`, `surface`; brushing via
       camera-matrix projection in numpy → rows (links with 2D plots).
 
@@ -988,6 +1008,90 @@ that loop have anything to do". Snapshot whatever the check needs (here:
 `bool(self.floating)`, or just always apply) before the loop that consumes
 the collection runs, not after.
 
+### 10. `QT_QPA_PLATFORM=offscreen` gives no OpenGL at all on Windows/Qt 5.15
+**Symptom (found by WP-G's 3D spike, 2026-09-28):** a standalone script
+using `QOpenGLContext`/`QOffscreenSurface` to render a 3D scene and read it
+back (the Phase 6 "Option A" approach) needs a real GL context; under this
+project's own headless test platform (`QT_QPA_PLATFORM=offscreen`),
+`QOpenGLContext.create()` simply returns `False` — no context, no error
+message pointing at why.
+
+**Root cause:** the `offscreen` QPA platform plugin on Windows provides no
+GL support at all (unlike Linux, where Mesa's llvmpipe can back it). This
+is a platform-plugin limitation, not something the app or pyqtgraph can
+work around. Confirmed real GPU rendering *does* work when a real Windows
+session is used (no `QT_QPA_PLATFORM` override) even with no window ever
+shown; software rendering can be forced app-wide with `QT_OPENGL=software`,
+but that also demotes the *2D* viewport's `useOpenGL=True` to software,
+not just the offscreen surface — the two aren't independently selectable.
+
+**Lesson:** don't assume the same `offscreen` platform trick that makes
+this project's 2D headless tests possible (`smoke_test.py`/`run_tests.py`
+since day one) extends to GL features — verify with a plain
+`QOpenGLContext().create()` check, not just "pyqtgraph imported fine", the
+same caution CLAUDE.md already gives for `PySide6.QtCore` imports (see
+item 7 above). Any GL-dependent feature (3D, Phase 6's WP-O) needs its own
+logic (camera math, hit-testing, brushing projection) kept GL-free and
+independently testable — exactly what WP-G's spike did, reimplementing
+`GLViewWidget`'s camera math in numpy so it could be verified without a
+real context — plus a runtime fallback (a placeholder cell) for when no GL
+context can be created at all, which the offscreen test suite will always
+hit.
+
+### 11. A short `QMouseEvent` constructor's `globalPos` defaults to `QCursor.pos()`, breaking item-level hit-testing in headless tests
+**Symptom (found by WP-A, 2026-09-28):** dragging a resize handle, a
+gutter, or an annotation via `tests/helpers._mouse` never worked — the
+handle simply never received its press — even though the same helper's
+events reached the scene's own `eventFilter` (rubber-band selection,
+built entirely on `eventFilter`, worked fine) at exactly the right
+`scenePos()`.
+
+**Root cause:** `_mouse` built its `QMouseEvent` with the short
+constructor, `QMouseEvent(type, localPos, button, buttons, modifiers)`,
+which sets `windowPos`/`screenPos` to `QCursor.pos()` — the real, arbitrary
+OS cursor position, unrelated to `localPos` — rather than to the point
+being simulated. `QGraphicsScene`'s own item-picking (which `QGraphicsItem`
+receives a press) is driven by the event's *global* position mapped back
+through the view, not by `scenePos()`/`localPos()`. So every simulated
+press landed, for hit-testing purposes, whatever was under the real,
+never-moved OS cursor — while the scene's `eventFilter` (which reads
+`event.scenePos()` directly, computed from `localPos`/`pos()`, not from
+the global position) still saw the intended point. Two different pieces of
+Qt machinery reading two different fields of the same event, only one of
+which the short constructor sets correctly.
+
+**Lesson:** when a headless mouse-event helper needs an *item* (not just
+the scene's own event filter) to receive the simulated event, use the full
+`QMouseEvent(type, localPos, windowPos, screenPos, button, buttons,
+modifiers)` constructor with `windowPos`/`screenPos` explicitly mapped
+from the same point via `view.viewport().mapToGlobal(...)` — never rely on
+the short constructor's `QCursor.pos()` default for anything that depends
+on Qt's own hit-testing. Fixed in `tests/helpers._mouse`, used by every
+package's drag tests from here on. A related, smaller lesson from the same
+fix: once handles correctly receive clicks, a test's *fixed* screen-space
+point (e.g. `QtCore.QPointF(2, 2)`, chosen when "the figure margin is
+always empty") can silently start landing on a *different* interactive
+element (a newly-selected subplot's resize handle, now positioned right
+there) after some earlier step in the same test changes what's selected —
+`test_band_from_the_margin_selects_enclosed_subplots_only` hit exactly
+this. Don't assume a magic coordinate stays "empty space" once the
+test has changed what's selected; pick a point relative to what should
+still be empty at that specific moment, or re-verify with
+`_can_start_band_at`/equivalent rather than reusing an earlier point.
+
+## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
+
+**This section described the codebase from the original single-file POC
+through the library refactor, up to Phase 1's free-layout rewrite. WP-A
+deleted `QGraphicsGridLayout` entirely** — subplots are now positioned
+directly by fractional grid coordinates (`lafigure/grid.py`,
+`lafigure/layout.py`), so the "layouts prevent overlap by construction"
+framing below, and bugs #1/#2/#3/#5/#6 it explains, are history: none of
+that code exists any more. Kept for the *general* lesson (a container
+managing an item's placement takes back exactly the affordances you're
+using it for), which still applies to `QGraphicsScene`, undo stacks, and
+anything else "managing" this code touches next.
+
 ## Should you reuse the code?
 
 Only if you're extending *this exact app*. If you're building something
@@ -996,19 +1100,23 @@ above over copying this file's structure — a few things in it are
 POC-grade simplifications made under the sandbox constraints above, not
 necessarily the right call in a codebase you can actually test:
 
-- Manual resizing/moving deliberately **forgets** custom sizing across any
-  structural grid change (add/delete a subplot) rather than trying to
-  reindex row/col stretch factors precisely. Simpler and safer than getting
-  renumbering exactly right blind — but a real product likely wants better.
+- **Superseded by WP-A (2026-09-28):** this bullet used to describe manual
+  resizing/moving forgetting custom sizing across a structural grid change,
+  because the grid was `QGraphicsGridLayout` row/col stretch factors that
+  couldn't be precisely reindexed. The free-layout rewrite's fractional
+  grid coordinates (`lafigure/grid.py`) don't have this problem — an edge
+  is a fraction referencing specific grid lines, so it survives an
+  add/delete elsewhere in the grid exactly, with no reindexing needed.
 - Brushing is hardcoded to two named scatter subplots (`self.scatter1`/
   `self.scatter2`) rather than a general registry — a known, documented
   shortcut, not a pattern to repeat.
-- `_grid_layout()` reaches into `GraphicsLayout.layout`, a private/
-  undocumented pyqtgraph attribute, because it's the only way found to get
-  at row/column stretch factors. It prints a runtime `WARNING` to stderr if
-  that attribute is missing (version mismatch) instead of failing silently
-  — keep that pattern (fail loud, not silent) if you reuse this technique,
-  but look for a public API first if this pyqtgraph version has one.
+- **Superseded by WP-A:** `_grid_layout()`, which reached into pyqtgraph's
+  private `GraphicsLayout.layout` for row/column stretch factors, is gone
+  along with `QGraphicsGridLayout` itself — subplots are positioned
+  directly now, so there's no pyqtgraph layout object left to reach into.
+  The "fail loud, not silent" pattern it used (a runtime `WARNING` to
+  stderr on an unexpected pyqtgraph internal) is still worth keeping if a
+  future package reaches into another undocumented pyqtgraph attribute.
 
 ## Does this need a Skill?
 

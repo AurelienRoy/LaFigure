@@ -41,13 +41,13 @@ package-tree comment and bug #8/#9 for what it found along the way.
 |----|-------|------|-----------|-------|--------|
 | 00 | Commit current state (Phase 0 edits, docs) | 0 | — | coordinator | merged (0ba7284) |
 | 01 | Split figure.py into mixins; split tests; freeze interfaces | 0 | 00 | opus | merged (cda9273; 3 real bugs found & fixed, see CLAUDE.md bug #8/#9) |
-| A  | Free layout engine on fractional grid (Phase 1) | 1 | 01 | opus | todo |
-| B  | Context-menu cleanup + CSV export; verify Home/Fit/zoom color (Phase 0) | 1 | 01 | sonnet | todo |
-| C  | "?" help dialog | 1 | 01 | haiku | todo |
-| D  | Figure Manager: tabs, editable nodes, blue selection, node menus (Phase 2b, figure-browser part) | 1 | 01 | sonnet | todo |
-| E  | Save dialog: PNG/JPG/SVG/PDF + header preview (Phase 4, non-HTML part) | 1 | 01 | sonnet | todo |
-| F  | `DataSource` (pure numpy, no Qt) | 1 | 01 | sonnet | todo |
-| G  | 3D offscreen-readback spike (standalone, not integrated) | 1 | 01 | opus | todo |
+| A  | Free layout engine on fractional grid (Phase 1) | 1 | 01 | opus | merged (0a72601); coordinator applied its 4 cross-file diffs + a figure.py cleanup + a real _mouse bug fix (tests/helpers.py) — see CLAUDE.md bug #11 |
+| B  | Context-menu cleanup + CSV export; verify Home/Fit/zoom color (Phase 0) | 1 | 01 | sonnet | merged (06cda8d) |
+| C  | "?" help dialog | 1 | 01 | haiku | merged (35c6069); figure.py/toolbar.py wiring applied directly by coordinator (mechanical, no owner yet) |
+| D  | Figure Manager: tabs, editable nodes, blue selection, node menus (Phase 2b, figure-browser part) | 1 | 01 | sonnet | merged (9c2c820) |
+| E  | Save dialog: PNG/JPG/SVG/PDF + header preview (Phase 4, non-HTML part) | 1 | 01 | sonnet | merged (0069605); figure.py/toolbar.py wiring applied directly by coordinator |
+| F  | `DataSource` (pure numpy, no Qt) | 1 | 01 | sonnet | merged (7b85e7c) |
+| G  | 3D offscreen-readback spike (standalone, not integrated) | 1 | 01 | opus | merged (89b253e) — **go**, see spikes/README.md and CLAUDE.md bug #10 |
 | H  | Series/SeriesKind registry, Axes facade, gca/gcf; migrate all curve tuples (Phase 2 core) | 2 | A, F | opus | todo |
 | I1 | Kinds: scatter, stairs, area, hist | 3 | H | sonnet | todo |
 | I2 | Kinds: bar, errorbar | 3 | H | sonnet | todo |
@@ -217,7 +217,14 @@ Package note: see PLAN.md "Per-package notes" → <id> (plus anything new).
   with the header text item draggable on it; export only on "Export".
   Keep the exporter API format-pluggable so M only adds a format.
 - **F**: no Qt import at all, so its tests run in milliseconds and it can
-  be used from a plain console.
+  be used from a plain console. **Done** (`7b85e7c`) — final API for H/J/L/N
+  to code against: `DataSource(dict_or_dataframe)`, `len(src)`/`src.n_rows`,
+  `src.columns`, `src[name]` (read-only array), `src.add_column(name, arr)`,
+  `src.filter(bool_array | "expr" | None)` + `src.filter_mask`,
+  `src.hide_rows(idx)`/`show_rows(idx)`/`show_all()` + `src.hidden_mask`,
+  `src.visible_rows` (filter AND NOT hidden), `src.on_change(cb)`/
+  `off_change(cb)` (plain callback list, no Qt signal). Row index is the
+  point ID; no id column exists or is needed.
 - **G**: deliverable is a standalone script + a measured number (ms per
   frame at 800×600 and 1600×1000, 1M points) + a go/no-go recommendation
   in the report. No integration into LaFigure.

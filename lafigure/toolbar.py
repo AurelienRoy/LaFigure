@@ -104,8 +104,12 @@ class ToolbarMixin:
 
         SP = QtWidgets.QStyle
 
+        action("Save", self.show_save_dialog, icon=SP.SP_DialogSaveButton,
+               tooltip="Save: export the figure as PNG/JPG/SVG/PDF, with a "
+                       "customizable header (Ctrl+S)")
+
         action("Add Subplot", self.add_new_subplot, icon=SP.SP_FileDialogNewFolder,
-               tooltip="Add Subplot: add a new empty subplot in a new row at the bottom")
+               tooltip="Add Subplot: fill the first empty grid cell, else add a new row")
         action("Delete", self.delete_selection, icon=SP.SP_TrashIcon,
                tooltip="Delete: remove the selected curve, or the active subplot if no curve is selected (Del)")
         self.undo_action = action("Undo", self.undo, icon=SP.SP_ArrowBack, tooltip="Undo last action (Ctrl+Z)")
@@ -114,19 +118,6 @@ class ToolbarMixin:
         self.redo_action.setEnabled(False)
 
         tb.addSeparator()
-        self.overlap_resize_action = action(
-            "Grid Layout", lambda checked: self.toggle_overlap_resize(not checked), checkable=True,
-            icon=SP.SP_ToolBarVerticalExtensionButton,
-            tooltip="Grid Layout: drag the active subplot's border/corner to resize it.\n"
-                    "On (default): the grid reflows live as you drag, "
-                    "resizing neighbors to fit -- no overlap.\n"
-                    "Off: the subplot floats above its neighbors and keeps "
-                    "overlapping them after you release; neighbors never "
-                    "change size. Turning this back on snaps everything "
-                    "back into the grid.",
-        )
-        self.overlap_resize_action.setChecked(True)
-
         menu_button('pencil.png', "Annotate: place a shape on the figure", [
             (SHAPE_LABELS[kind], lambda checked=False, kind=kind: self.start_placing_annotation(kind))
             for kind in SHAPE_KINDS if kind != 'cursor'
@@ -194,6 +185,11 @@ class ToolbarMixin:
         action("Remove Average", self.remove_average, icon='icon1b1.png',
                tooltip="Remove Average: subtract the mean from every curve on the active subplot")
 
+        tb.addSeparator()
+        action("Help", self.show_help, icon=SP.SP_MessageBoxQuestion,
+               tooltip="Help: show controls reference (mouse/keys per mode), version, and credits")
+
+        QtGui.QShortcut(QtGui.QKeySequence.Save, self, activated=self.show_save_dialog)
         QtGui.QShortcut(QtGui.QKeySequence.Copy, self, activated=self.copy_selection)
         QtGui.QShortcut(QtGui.QKeySequence.Paste, self, activated=self.paste_selection)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self, activated=self.copy_subplot)

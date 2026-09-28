@@ -463,7 +463,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         def set_pos(pos):
             self.setPos(pos)
             if self.anchor == 'border' and self.parent_plot in self.figure.plots:
-                self.anchor_offset = pos - self.parent_plot.sceneBoundingRect().topLeft()
+                self.anchor_offset = self.figure._box_fraction(self.parent_plot, pos)
         self.figure._push_history(
             undo_fn=lambda: set_pos(origin),
             redo_fn=lambda: set_pos(moved_to),
@@ -546,7 +546,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             self.setPos(pos)
             self.p1_local = p1
             if self.anchor == 'border' and self.parent_plot in self.figure.plots:
-                self.anchor_offset = pos - self.parent_plot.sceneBoundingRect().topLeft()
+                self.anchor_offset = self.figure._box_fraction(self.parent_plot, pos)
             if self._end_handle is not None:
                 self._end_handle.setPos(p1)
             if self._rotate_handle is not None:

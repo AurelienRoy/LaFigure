@@ -43,6 +43,8 @@ behavior lives in one mixin per concern:
     annotation_ops.py  annotation placement, eventFilter, relink, properties
     view_ops.py        interaction mode, Home/Fit, legend, Link X, Remove Average, FFT
     naming.py          figure/subplot/curve names and axis labels
+    help.py            the "?" controls/version/credits dialog
+    export.py          Save dialog: PNG/JPG/SVG/PDF + header preview
 
 See CLAUDE.md for the design lessons behind this structure -- in
 particular, why "plain add/delete a subplot" and "FFT's whole-row
@@ -65,13 +67,15 @@ from .clip_ops import ClipOpsMixin
 from .annotation_ops import AnnotationOpsMixin
 from .view_ops import ViewOpsMixin
 from .naming import NamingMixin
+from .help import HelpMixin
+from .export import SaveMixin
 
 pg.setConfigOptions(antialias=False, useOpenGL=True, background='w', foreground='k')
 
 
 class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryMixin,
                BrushingMixin, ClipOpsMixin, AnnotationOpsMixin, ViewOpsMixin, NamingMixin,
-               QtWidgets.QMainWindow):
+               HelpMixin, SaveMixin, QtWidgets.QMainWindow):
     # The mixins come before QMainWindow so their Qt event overrides
     # (eventFilter, resizeEvent) win, and their super() calls still reach Qt.
     # No mixin defines __init__: all state is created here.
@@ -87,7 +91,7 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         self.layout_widget = pg.GraphicsLayoutWidget()
         self.setCentralWidget(self.layout_widget)
 
-        self.plots = []          # list of PlotItem, in row order
+        self.plots = []          # list of PlotItem, in creation order
         # The focused subplot: the selected one, or else the one that got
         # the last action -- the toolbar target. Written only through the
         # focused_plot property (selection_ui.py), which emits the
@@ -131,16 +135,8 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         # saw the consumed moves); this swallows that one click.
         self._suppress_click = False
 
-        # Row/col stretch factors; resizing a border adjusts them so the grid
-        # layout reflows the rest of the grid for free.
-        self.row_stretch = {}
-        self.col_stretch = {}
-        self.overlap_resize = False
-        self._resize_state = None
-        self._warned_no_grid_layout = False
-        # plot_item -> placeholder holding its grid cell while detached/floating.
-        self.floating = {}
-        self._move_state = None
+        # Layout state (grid lines, boxes, z_order, drag states) is created
+        # by _create_resize_handles below -- see layout.py.
 
         # plot_item -> RectBrush, generic brush-select wired onto every
         # subplot by add_subplot (see selection.py's RectBrush docstring).

@@ -35,7 +35,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from lafigure import grid
 from lafigure.handles import GutterHandle
 from tests.helpers import (
-    app, m, shown_figure, _click_subplot,
+    app, m, shown_figure, _click_subplot, _mouse,
 )
 
 L = QtCore.Qt.LeftButton
@@ -46,22 +46,6 @@ CTRL = QtCore.Qt.ControlModifier
 PRESS = QtCore.QEvent.MouseButtonPress
 MOVE = QtCore.QEvent.MouseMove
 RELEASE = QtCore.QEvent.MouseButtonRelease
-
-
-def _mouse(f, etype, scene_pt, buttons, button=L, mods=QtCore.Qt.NoModifier):
-    """Like helpers._mouse, but with a real global position. The short
-    QMouseEvent constructor sets globalPos to QCursor.pos(), and
-    QGraphicsScene picks the *item* under the mouse from the global
-    position (mapped back through the viewport) -- so helpers._mouse
-    reaches the scene event filter (which reads scenePos) at the right
-    point but hands presses to whatever item sits under the real cursor.
-    Dragging a handle or a gutter needs the item to get the press."""
-    view = f.layout_widget
-    local = QtCore.QPointF(view.mapFromScene(scene_pt))
-    global_pos = QtCore.QPointF(view.viewport().mapToGlobal(local.toPoint()))
-    ev = QtGui.QMouseEvent(etype, local, local, global_pos, button, buttons, mods)
-    QtWidgets.QApplication.sendEvent(view.viewport(), ev)
-    app.processEvents()
 
 
 def _drag(f, a, b, mods=QtCore.Qt.NoModifier):
