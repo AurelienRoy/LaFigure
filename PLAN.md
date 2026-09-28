@@ -48,7 +48,7 @@ package-tree comment and bug #8/#9 for what it found along the way.
 | E  | Save dialog: PNG/JPG/SVG/PDF + header preview (Phase 4, non-HTML part) | 1 | 01 | sonnet | merged (0069605); figure.py/toolbar.py wiring applied directly by coordinator |
 | F  | `DataSource` (pure numpy, no Qt) | 1 | 01 | sonnet | merged (7b85e7c) |
 | G  | 3D offscreen-readback spike (standalone, not integrated) | 1 | 01 | opus | merged (89b253e) — **go**, see spikes/README.md and CLAUDE.md bug #10 |
-| H  | Series/SeriesKind registry, Axes facade, gca/gcf; migrate all curve tuples (Phase 2 core) | 2 | A, F | opus | todo |
+| H  | Series/SeriesKind registry, Axes facade, gca/gcf; migrate all curve tuples (Phase 2 core) | 2 | A, F | opus | merged (6f79f52); coordinator applied its layout.py/brushing.py/__init__.py diffs — migration gap fully closed, `_PENDING_MIGRATION` empty |
 | I1 | Kinds: scatter, stairs, area, hist | 3 | H | sonnet | todo |
 | I2 | Kinds: bar, errorbar | 3 | H | sonnet | todo |
 | I3 | Kind: heatmap/imshow + colorbar | 3 | H | sonnet | todo |

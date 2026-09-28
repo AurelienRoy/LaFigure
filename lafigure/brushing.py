@@ -226,8 +226,7 @@ class BrushingMixin:
 
         def build():
             fit_pen = pg.mkPen((200, 30, 30), width=2, style=QtCore.Qt.DashLine)
-            curve = plot_item.plot(xs_sorted, ys_fit, pen=fit_pen, name=label)
-            self._wire_curve_clickable(plot_item, curve)
+            curve = self._add_series(plot_item, 'line', xs_sorted, ys_fit, pen=fit_pen, name=label).item
             text_item = pg.TextItem(text, color=(200, 30, 30), anchor=(0, 1))
             text_item.setPos(xs_sorted[-1], ys_fit[-1])
             plot_item.addItem(text_item)

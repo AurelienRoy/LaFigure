@@ -37,10 +37,11 @@ from lafigure.series import (
 from tests.helpers import m, first_curve, shown_figure
 
 
-# Series construction sites that still live in files this package doesn't
-# own -- the coordinator applies WP-H's reported diffs there, then empties
-# this dict. Anything else calling .plot( is a new bypass of _add_series.
-_PENDING_MIGRATION = {'layout.py': 1, 'brushing.py': 1}
+# Series construction sites that once lived in files this package didn't
+# own -- the coordinator applied WP-H's reported diffs for layout.py and
+# brushing.py, so this is empty. Anything calling .plot( outside series.py
+# is a new bypass of _add_series.
+_PENDING_MIGRATION = {}
 
 
 def _construction_sites(text):

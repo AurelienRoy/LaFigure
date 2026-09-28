@@ -396,10 +396,10 @@ class LayoutMixin:
         self.registry.notify_subplots_changed(self)
         return row, col
 
-    def _insert_subplot_at(self, row, col, title, xlabel, ylabel, curves_data, box=None):
+    def _insert_subplot_at(self, row, col, title, xlabel, ylabel, series_data, box=None):
         """Place a new subplot in cell (row, col) -- or exactly at `box`,
         when restoring a deleted one -- without shifting anything. Inverse
-        of _remove_subplot."""
+        of _remove_subplot. series_data: Series.to_dict() outputs."""
         new_plot = self.add_subplot(row=row, col=col, title=title)
         if box is not None:
             self.boxes[new_plot] = box
@@ -408,9 +408,8 @@ class LayoutMixin:
             new_plot.setLabel('bottom', xlabel)
         if ylabel:
             new_plot.setLabel('left', ylabel)
-        for x, y, pen, name in curves_data:
-            nc = new_plot.plot(x, y, pen=pen, name=name)
-            self._wire_curve_clickable(new_plot, nc)
+        for d in series_data:
+            self._add_series_from_dict(new_plot, d)
         return new_plot
 
     def insert_subplot_below(self, reference_plot, title=""):
@@ -424,12 +423,12 @@ class LayoutMixin:
         self._insert_grid_track('row', row)
         return self.add_subplot(row=row, col=col, title=title)
 
-    def _insert_subplot_with_shift(self, row, col, title, xlabel, ylabel, curves_data):
+    def _insert_subplot_with_shift(self, row, col, title, xlabel, ylabel, series_data):
         """Redo of an FFT insertion: insert grid row `row` again, then the
         subplot in cell (row, col) -- what insert_subplot_below did, without
         needing its (by now recreated) reference plot."""
         self._insert_grid_track('row', row)
-        return self._insert_subplot_at(row, col, title, xlabel, ylabel, curves_data)
+        return self._insert_subplot_at(row, col, title, xlabel, ylabel, series_data)
 
     def _remove_subplot_with_shift(self, plot_item):
         """Undo of an FFT insertion: remove the subplot and the grid row it
@@ -493,10 +492,7 @@ class LayoutMixin:
         title = plot_item.titleLabel.text
         xlabel = plot_item.getAxis('bottom').labelText
         ylabel = plot_item.getAxis('left').labelText
-        curves_data = [
-            (c.xData.copy(), c.yData.copy(), c.opts.get('_orig_pen', c.opts.get('pen')), c.name())
-            for c in plot_item.listDataItems() if isinstance(c, pg.PlotDataItem)
-        ]
+        series_data = [s.to_dict() for s in self._series_on(plot_item)]
         # Snapshot annotations first: _remove_subplot purges them unconditionally.
         annotations_data = [a.to_dict() for a in self._annotations_on(plot_item)]
         box = self.boxes.get(plot_item)
@@ -510,7 +506,7 @@ class LayoutMixin:
         holder = {}
 
         def undo_fn():
-            new_plot = self._insert_subplot_at(row, col, title, xlabel, ylabel, curves_data, box=box)
+            new_plot = self._insert_subplot_at(row, col, title, xlabel, ylabel, series_data, box=box)
             if z_index is not None:
                 self.z_order.remove(new_plot)
                 self.z_order.insert(min(z_index, len(self.z_order)), new_plot)

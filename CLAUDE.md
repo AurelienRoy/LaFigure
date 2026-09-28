@@ -42,6 +42,12 @@ LaFigure/
     view_ops.py                         # Home/Fit, Link X, remove average, FFT,
                                          # set_interaction_mode
     naming.py                           # figure/subplot/curve renaming, axis labels
+    help.py                              # the "?" toolbar dialog (controls/version/credits)
+    export.py                             # Save dialog: PNG/JPG/SVG/PDF + header preview
+    series.py                              # SeriesKind registry + Series wrapper --
+                                            # _add_series is the one series-construction site
+    axes.py                                 # Axes facade (fig.subplot() returns one),
+                                             # module-level gca()/gcf()
     manager.py                 # FigureManager: tree of open figures/subplots,
                                 # "New Figure" button (creates an empty figure)
     registry.py                 # FigureRegistry: process-wide list of open
@@ -478,22 +484,44 @@ package lands.
       mode), version, and credits.
 
 ### Phase 2 — data model: DataSource + Series kinds + console API
-- [ ] `DataSource`: shared columnar table (dict of numpy arrays, or from a
+- [x] `DataSource`: shared columnar table (dict of numpy arrays, or from a
       pandas DataFrame; pandas optional). **A point's ID is its row index**;
       user IDs (database key, drone log, timestamp, …) are just columns.
-      Series sharing a source are linked.
-- [ ] `SeriesKind` registry (`register_series_kind`), each kind:
-      `create`, `to_dict`, `capabilities` (brush/fft/fit/…), `highlight`,
-      `hit`, `rows_in_rect`, `show_rows`, `to_plotly`. Replaces every
-      `(x, y, pen, name)` tuple and `isinstance(c, pg.PlotDataItem)` filter;
-      `_add_series` is the only series construction site (smoke-test guard,
-      like `add_subplot`'s).
-- [ ] `Axes` facade returned by `add_subplot(..., axes_type='cartesian')`:
-      `ax.plot/scatter/stairs/area/hist/bar/errorbar/imshow`, `ax.series`,
-      `s.x/s.y` (read-only arrays), `s.rows`, `s.source`, `s.set_data`
-      (undoable). Module-level `lafigure.gca()` / `gcf()` via the registry.
+      Series sharing a source are linked. **Built by WP-F** (2026-09-28,
+      `lafigure/datasource.py`, no Qt dependency) — see its own docstrings
+      for the exact API (`filter`, `hide_rows`/`show_rows`, `on_change`).
+- [x] `SeriesKind` registry (`register_series_kind`), each kind: `create`,
+      `to_dict`, `capabilities`. Replaces every `(x, y, pen, name)` tuple
+      and `isinstance(c, pg.PlotDataItem)` filter with `_add_series`, the
+      one series construction site (`tests/test_series.py`'s
+      `test_add_series_is_the_only_series_construction_site`, same
+      AST-scan pattern as `add_subplot`'s guard). **Built by WP-H**
+      (2026-09-28, `lafigure/series.py`) with one kind, `'line'`
+      (`{'brush','fft','remove_average','fit','copy'}`), which still
+      creates a genuine `pg.PlotDataItem` via `plot_item.plot(...)` — the
+      `Series` wrapper doesn't replace it, so every existing curve
+      consumer (`selection_ui.py`'s click/highlight/Tab-order,
+      `menus.py`'s curve submenus, `brushing.py`'s `RectBrush`) keeps
+      working unmodified. The `highlight`/`hit`/`rows_in_rect`/
+      `show_rows`/`to_plotly` hooks and the scatter/stairs/area/hist/bar/
+      errorbar/imshow kinds are **not yet built** — those are packages
+      I1/I2/I3 (kinds) and J (brushing-on-every-kind), still open.
+- [x] `Axes` facade, `lafigure/axes.py` (WP-H): `fig.subplot(row, col,
+      ...)` returns one (`add_subplot` itself is unchanged, still returns
+      a raw `PlotItem`); `ax.plot(x, y)` / `ax.plot(source, x='col',
+      y='col')`, `ax.series` (derived live, no separate list to go
+      stale), `ax.plot_item`. `s.x`/`s.y` (read-only views), `s.rows`,
+      `s.source` (a private per-series `DataSource` when built from plain
+      arrays, so linking costs nothing unless opted into), `s.set_data`
+      (undoable). Only `ax.plot` exists so far — `scatter/stairs/area/
+      hist/bar/errorbar/imshow` come with their respective kind packages.
+      Module-level `lafigure.gca()`/`gcf()` (`axes.py`): the current
+      figure is tracked via weak refs + `QApplication.focusChanged`
+      (`registry.focusChanged` alone misses "clicked back into an
+      already-focused subplot"), not a `registry` field — see WP-H's
+      lesson below if extending this.
 - [ ] Embedded Python console panel (`pyqtgraph.console.ConsoleWidget`)
-      with `fig`, `gca`, `np` preloaded.
+      with `fig`, `gca`, `np` preloaded. Not yet built (WP-L).
 - [ ] Datatip: format string (`"{log} @ {stamp:%H:%M:%S}"`, exportable to
       plotly `hovertemplate`) or a Python callable of a row accessor.
 - [ ] `src.filter(mask | expr | None)`: every linked series re-derives its
@@ -1078,6 +1106,38 @@ this. Don't assume a magic coordinate stays "empty space" once the
 test has changed what's selected; pick a point relative to what should
 still be empty at that specific moment, or re-verify with
 `_can_start_band_at`/equivalent rather than reusing an earlier point.
+
+### 12. Two lessons from WP-H (Series/SeriesKind, 2026-09-28)
+
+**A "one construction site" guard can span files across package
+ownership boundaries.** WP-H's brief asked for a test asserting exactly
+one series-construction call site, mirroring `add_subplot`'s existing
+guard — but two curve-building call sites turned out to live in
+`layout.py` (`delete_subplot`'s undo, `_insert_subplot_at`) and
+`brushing.py` (the Fit overlay curve), neither of which WP-H owned or
+could edit. **Lesson:** when a coordinator plans a package that adds a
+"there is exactly one construction site" invariant, check first whether
+every current call site already sits inside that package's owned files —
+if not, either widen ownership for that package, or have it ship the
+guard with an explicit, temporary exceptions list (`_PENDING_MIGRATION`
+in `tests/test_series.py`) plus ready-to-apply diffs for the
+out-of-ownership sites, so the coordinator can close the gap in one pass
+right after merging — which is what happened here (both diffs applied,
+the exceptions list is now empty).
+
+**`registry.focusChanged` alone can't track "the current figure" for a
+module-level `gcf()`.** It only fires when `focused_plot` actually
+*changes* — so clicking back into a figure whose focused subplot is
+already correct (e.g. switching window focus without touching a subplot)
+never fires it, and a `gcf()` built only on that signal would keep
+returning a stale figure. `axes.py` also listens to
+`QApplication.focusChanged` (connected lazily, since `axes.py` can be
+imported before a `QApplication` exists) to catch plain window-focus
+changes the subplot-level signal misses. **Lesson:** a "most recently
+used X" tracker needs to listen at the same granularity as what "using"
+actually means to the caller — a signal that fires on a narrower
+condition (subplot focus) will silently miss a broader one (window
+focus) that the caller cares about just as much.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 

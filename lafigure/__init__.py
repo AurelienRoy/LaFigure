@@ -46,6 +46,8 @@ from .registry import get_registry, FigureRegistry
 from .clipboard import get_clipboard, Clipboard
 from .annotations import AnnotationItem, SHAPE_KINDS
 from .datasource import DataSource
+from .series import Series, SeriesKind, register_series_kind, SERIES_KINDS
+from .axes import Axes, gca, gcf
 from .app import main
 
 __all__ = [
@@ -60,5 +62,12 @@ __all__ = [
     "AnnotationItem",
     "SHAPE_KINDS",
     "DataSource",
+    "Series",
+    "SeriesKind",
+    "register_series_kind",
+    "SERIES_KINDS",
+    "Axes",
+    "gca",
+    "gcf",
     "main",
 ]
