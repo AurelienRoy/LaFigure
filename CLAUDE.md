@@ -584,15 +584,29 @@ package lands.
       annotations, show GUI controls**. When checked, those items appear as
       sub-levels under their subplot (groups as a further sub-level, once
       K2 wires `Group`/`GroupsMixin`, built below, into this tree).
-- [ ] **Curve browser tab** (a toolbar icon in each figure opens the manager
-      on this tab): shows only the **focused subplot**'s series and
-      annotations as a tree, following focus live (the focused subplot of
-      the most recently active figure). Visibility checkbox per row
-      (tristate on groups) for quick inspection; right-click menu on every
-      node; selection synced both ways with the figure. Bottom editor acts
-      on the selected row(s): name, Z order (up/down/front/back; drag rows
-      to reorder), color, line width, line style, marker, alpha. Property
-      edits are undoable; visibility checkboxes are view state (not undo).
+- [x] **Curve browser tab** (`manager.py`'s second tab, WP-D's
+      placeholder filled in by **WP-K2**, 2026-09-28): shows only the
+      **focused subplot**'s series/groups/annotations as a tree, following
+      focus live (its own small "most recently used figure" tracker,
+      reimplementing `axes.py`'s `gcf()` pattern locally rather than
+      editing that file). A grouped member shows `group.display_name`,
+      never its raw name. Tristate visibility checkbox per row; right-click
+      Delete (+ "Edit common label..." on a group row — Copy/Paste a group
+      is **not built**, since there's no single-group clipboard concept
+      today and adding one needs `clipboard.py`/`clip_ops.py`, neither
+      owned by K2 — reported, not guessed at). Selection synced both ways
+      with the figure. Bottom editor: name, Z order (front/back via
+      `item.setZValue` — verified live that this actually changes real
+      on-screen stacking order, not assumed; "drag rows to reorder" not
+      implemented, only the front/back buttons), color, line width, line
+      style, marker (gated by `Series.kind`, not by `item.opts` key
+      presence — see the lesson after bug #15: a `PlotDataItem`
+      pre-populates `opts['symbol']` etc. to `None` regardless of what was
+      actually plotted, so key presence alone can't tell you what kind of
+      series it is), alpha. Property edits are undoable; visibility
+      checkboxes are view state (not undo). An `AnnotationItem` row shows
+      no editor controls yet (only Delete) — its own right-click
+      "Properties…" in the figure itself still covers full editing.
 - [x] **Groups** (hierarchy for series and annotations, nestable; **a group
       never spans subplots** — user decision, enforced by raising on a
       mismatched member): group / ungroup (Ctrl+G / Ctrl+Shift+G,
@@ -610,12 +624,12 @@ package lands.
       select) and needs no group-specific code. Copy/paste of a subplot
       now carries its groups too (`clip_ops.py`'s hook, applied by the
       coordinator after WP-J — see Phase 3 above).
-- [ ] Group **common label**: `Group.display_name(member)` (prefix/suffix,
-      built by WP-K1) exists and never mutates the underlying item's own
-      name, but isn't wired into anything a user sees yet — that's part of
-      **K2** (the Curve browser's bottom editor, where the prefix/suffix
-      position toggle and the group-node right-click menu — Copy/Paste/
-      Delete the whole group, Edit common label — both live).
+- [x] Group **common label**: `Group.display_name(member)` (WP-K1) shown
+      in the Curve browser tree for every grouped member; the prefix/
+      suffix position toggle lives in the bottom editor when a group row
+      is selected, and the group-node right-click menu has Edit common
+      label / Delete (**Copy/Paste a group is not built** — see the Curve
+      browser tab bullet above).
 
 ### Phase 3 — brushing/linking on every kind
 **Built by WP-J** (2026-09-28, `lafigure/selection.py`, `brushing.py`).
@@ -1346,6 +1360,30 @@ downstream hit-testing. Read the specific class's own handling of a
 pyqtgraph class's convention), and verify the *rendered* result (a real
 screenshot or a pixel/hit-test check), not just that a style-comparison
 assertion passes on the wrong object.
+
+### 16. A `PlotDataItem`'s `opts` dict pre-populates keys you didn't set
+
+**Symptom (found by WP-K2, 2026-09-28):** an early attempt to gate the
+Curve browser's "marker" property control on `'symbol' in item.opts`
+(to decide whether the selected series is scatter-like) always showed
+the control, even for a plain line series.
+
+**Root cause:** `pg.PlotDataItem.opts` is populated with a full, fixed
+set of keys at construction (`'symbol'`, `'pen'`, `'fillLevel'`, ... all
+defaulting to `None`/a default value) regardless of which keyword
+arguments were actually passed to `.plot(...)` — so `'symbol' in
+item.opts` is `True` for every `PlotDataItem`, line or scatter alike;
+only `item.opts['symbol'] is None` vs. not tells them apart, and even
+that only works by accident (nothing stops a future kind from setting
+`symbol=None` deliberately for some other reason).
+
+**Lesson:** don't gate behavior on whether a pyqtgraph item's `opts` dict
+*contains* a key — check `Series.kind` (the string name) or
+`SeriesKind.capabilities` instead, both of which this project already
+maintains precisely for this purpose. This is the same family as bug
+#7/#8's "an object's attribute doesn't hold what its presence/absence
+seems to suggest" — verify the actual value and its real meaning for the
+specific class, never infer meaning from a dict key merely existing.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 
