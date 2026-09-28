@@ -22,21 +22,34 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""The subplot grid: construction (add_subplot -- the only addPlot() call
-site), plain single-cell add/delete, FFT's whole-row insert/delete, and
-the resize/move/swap/float machinery with its handles.
+"""The free subplot layout on a fractional grid: construction (add_subplot
+-- the only PlotItem construction site), add/delete, FFT's row insertion,
+and the Select-mode layout gestures (resize, move/swap, grid-line drag,
+snapping) with their handles, gutters and undo.
 
-Resize, move, swap and float are kept together in this one module on
-purpose: they share one piece of state (self.floating, the detached
-plot -> placeholder map) and the same grid bookkeeping, and splitting
-them would put that state in two mixins. See CLAUDE.md bugs #1-#6.
+No QGraphicsGridLayout is involved any more. The figure owns a grid --
+column and row line positions as figure fractions (self.grid_cols,
+self.grid_rows) -- and every subplot a box (self.boxes[plot] = (left, top,
+right, bottom)) in fractional grid coordinates; see grid.py for the math.
+_apply_layout maps every box to pixels and setGeometry()s its subplot, on
+every change and on every viewport resize. A subplot is a top-level scene
+item from creation to removal: nothing ever detaches or reparents it, so
+the float/placeholder/reattach machinery -- and bugs #2, #3, #5 and #6,
+which all lived in it -- are gone rather than guarded. Overlap is just two
+intersecting boxes; self.z_order says which one is on top.
+
+The whole layout is a few numbers (lines, boxes, z-order), so every layout
+gesture pushes one undo entry holding a before/after snapshot of it.
 """
+import math
 import sys
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
+from . import grid
+from .grid import EPS
 from .selection import RectBrush
-from .handles import ResizeHandle, MoveHandle
+from .handles import ResizeHandle, MoveHandle, GutterHandle, GUIDES_Z
 from .editable_text import wire_plot_labels_editable
 from .annotations import AnnotationItem
 from .selection_ui import selection_op
@@ -45,21 +58,275 @@ from .selection_ui import selection_op
 AXES_TYPES = ('cartesian',)
 
 
+class _ViewportWatcher(QtCore.QObject):
+    """Re-lays the figure out whenever the view's viewport changes size.
+    Watching the viewport (rather than overriding the main window's
+    resizeEvent) sees the final size synchronously, including the
+    pending resize a window only delivers when it is first shown."""
+
+    def __init__(self, figure):
+        super().__init__(figure)
+        self._figure = figure
+
+    def eventFilter(self, obj, ev):
+        if ev.type() == QtCore.QEvent.Resize:
+            self._figure._apply_layout()
+        return False
+
+
+class SnapGuides(QtWidgets.QGraphicsItem):
+    """The magnetic sub-grid, shown only while a layout drag is running:
+    the grid lines, their snap subdivisions (dotted), and -- highlighted --
+    whichever line/edge the drag is currently snapped to (the alignment
+    guides). Paint-only: an empty shape() keeps it out of hit-testing."""
+
+    def __init__(self):
+        super().__init__()
+        self.setZValue(GUIDES_Z)
+        self.setAcceptedMouseButtons(QtCore.Qt.NoButton)
+        self._rect = QtCore.QRectF()
+        self._lines = []      # (x0, y0, x1, y1, kind) with kind 'line' or 'sub'
+        self._guides = []     # (x0, y0, x1, y1): the active snaps
+        self.hide()
+
+    def set_content(self, rect, lines, guides):
+        self.prepareGeometryChange()
+        self._rect = QtCore.QRectF(rect)
+        self._lines = lines
+        self._guides = guides
+        self.update()
+
+    def boundingRect(self):
+        return self._rect.adjusted(-2, -2, 2, 2)
+
+    def shape(self):
+        return QtGui.QPainterPath()
+
+    def paint(self, painter, option, widget=None):
+        line_pen = pg.mkPen((150, 150, 150), width=1)
+        sub_pen = pg.mkPen((180, 180, 180), width=1, style=QtCore.Qt.DotLine)
+        guide_pen = pg.mkPen((230, 0, 150), width=1)
+        for pen in (line_pen, sub_pen, guide_pen):
+            pen.setCosmetic(True)
+        for x0, y0, x1, y1, kind in self._lines:
+            painter.setPen(line_pen if kind == 'line' else sub_pen)
+            painter.drawLine(QtCore.QLineF(x0, y0, x1, y1))
+        painter.setPen(guide_pen)
+        for x0, y0, x1, y1 in self._guides:
+            painter.drawLine(QtCore.QLineF(x0, y0, x1, y1))
+
+
 class LayoutMixin:
+    FIG_MARGIN = 4       # px between the view's edge and grid lines 0 / n
+    CELL_PAD = 3         # px a subplot is drawn inside its box: 6 px gutters
+    GUTTER_PX = 8        # hit width of a draggable grid line
+    SNAP_PX = 8          # magnetic snapping threshold
+    MIN_BOX_PX = 40      # smallest subplot a resize can make
+    MIN_TRACK_PX = 30    # smallest row/column a grid-line drag can make
+    PLOT_Z = 1           # z of the bottom subplot; self.z_order stacks up from it
+
+    # -- state and pixel mapping ---------------------------------------------
+    def _create_resize_handles(self):
+        """Called once by LaFigure.__init__, before any subplot exists:
+        creates the layout state, the handles, the snap guides, and the
+        viewport watcher."""
+        self.grid_cols = [0.0, 1.0]
+        self.grid_rows = [0.0, 1.0]
+        self.boxes = {}          # PlotItem -> (left, top, right, bottom), grid coordinates
+        self.z_order = []        # PlotItems, bottom to top
+        # Cell subdivisions the magnetic sub-grid snaps to: 2 = halves, 4 = quarters.
+        self.snap_subdivisions = 2
+        # Grid growth made by add_subplot, so undoing the addition shrinks
+        # the grid back (see _record_growth / _undo_growth).
+        self._grid_growth = []
+        self._gutters = {}       # (axis, index, segment) -> GutterHandle
+        self._resize_state = None
+        self._move_state = None
+        self._gutter_state = None
+
+        scene = self.layout_widget.scene()
+        roles = ('top', 'bottom', 'left', 'right',
+                 'top-left', 'top-right', 'bottom-left', 'bottom-right')
+        self.resize_handles = {role: ResizeHandle(self, role) for role in roles}
+        for handle in self.resize_handles.values():
+            scene.addItem(handle)
+        self.move_handle = MoveHandle(self)
+        scene.addItem(self.move_handle)
+        self._snap_guides = SnapGuides()
+        scene.addItem(self._snap_guides)
+        self._viewport_watcher = _ViewportWatcher(self)
+        self.layout_widget.viewport().installEventFilter(self._viewport_watcher)
+
+    def _figure_rect(self):
+        """The scene rect the grid spans: the viewport minus FIG_MARGIN.
+        pyqtgraph's view maps scene coordinates 1:1 onto viewport pixels."""
+        vp = self.layout_widget.viewport()
+        m = self.FIG_MARGIN
+        return QtCore.QRectF(m, m, max(vp.width() - 2 * m, 1), max(vp.height() - 2 * m, 1))
+
+    def _gx_to_px(self, gx):
+        r = self._figure_rect()
+        return r.left() + grid.to_frac(self.grid_cols, gx) * r.width()
+
+    def _gy_to_px(self, gy):
+        r = self._figure_rect()
+        return r.top() + grid.to_frac(self.grid_rows, gy) * r.height()
+
+    def _px_to_gx(self, x):
+        r = self._figure_rect()
+        return grid.from_frac(self.grid_cols, (x - r.left()) / r.width())
+
+    def _px_to_gy(self, y):
+        r = self._figure_rect()
+        return grid.from_frac(self.grid_rows, (y - r.top()) / r.height())
+
+    def _g_to_px(self, axis, g):
+        return self._gx_to_px(g) if axis == 'x' else self._gy_to_px(g)
+
+    def _px_to_g(self, axis, px):
+        return self._px_to_gx(px) if axis == 'x' else self._px_to_gy(px)
+
+    def _n_tracks(self, axis):
+        return len(self.grid_cols if axis in ('x', 'col') else self.grid_rows) - 1
+
+    def _box_scene_rect(self, box):
+        """A box's full extent in scene pixels (the subplot is drawn
+        CELL_PAD inside it)."""
+        left, top, right, bottom = box
+        return QtCore.QRectF(QtCore.QPointF(self._gx_to_px(left), self._gy_to_px(top)),
+                             QtCore.QPointF(self._gx_to_px(right), self._gy_to_px(bottom)))
+
+    def _apply_layout(self):
+        """Map every box to pixels and place its subplot there; restack by
+        z_order; refresh backgrounds, gutters and handles. The one place a
+        subplot's geometry is ever set."""
+        pad = self.CELL_PAD
+        for z, p in enumerate(self.z_order):
+            p.setZValue(self.PLOT_Z + z)
+        for p in self.plots:
+            box = self.boxes.get(p)
+            if box is None:
+                continue
+            rect = self._box_scene_rect(box).adjusted(pad, pad, -pad, -pad)
+            p.setGeometry(rect)
+        self._update_backgrounds()
+        self._position_handles()
+
+    def _update_backgrounds(self):
+        """A subplot drawn above another one it overlaps (an inset) gets an
+        opaque background, the figure's color; the others stay transparent."""
+        color = pg.mkColor(pg.getConfigOption('background'))
+        for i, p in enumerate(self.z_order):
+            box = self.boxes.get(p)
+            covers = box is not None and any(
+                grid.boxes_overlap(box, self.boxes[q]) for q in self.z_order[:i] if q in self.boxes)
+            if covers:
+                palette = p.palette()
+                palette.setColor(QtGui.QPalette.Window, color)
+                p.setPalette(palette)
+            p.setAutoFillBackground(covers)
+
+    # -- grid structure ----------------------------------------------------------
+    def _insert_grid_track(self, axis, index):
+        """Insert a new, empty column/row at line `index`; every edge at or
+        past it shifts by one grid unit (grid.shift_span_for_insert)."""
+        if axis == 'col':
+            self.grid_cols = grid.insert_track(self.grid_cols, index)
+        else:
+            self.grid_rows = grid.insert_track(self.grid_rows, index)
+        for p, (left, top, right, bottom) in list(self.boxes.items()):
+            if axis == 'col':
+                left, right = grid.shift_span_for_insert(left, right, index)
+            else:
+                top, bottom = grid.shift_span_for_insert(top, bottom, index)
+            self.boxes[p] = (left, top, right, bottom)
+
+    def _delete_grid_track(self, axis, index):
+        """Inverse of _insert_grid_track: remove track `index`."""
+        if self._n_tracks(axis) <= 1:
+            return
+        if axis == 'col':
+            self.grid_cols = grid.delete_track(self.grid_cols, index)
+        else:
+            self.grid_rows = grid.delete_track(self.grid_rows, index)
+        for p, (left, top, right, bottom) in list(self.boxes.items()):
+            if axis == 'col':
+                left, right = grid.shift_span_for_delete(left, right, index)
+            else:
+                top, bottom = grid.shift_span_for_delete(top, bottom, index)
+            self.boxes[p] = (left, top, right, bottom)
+
+    def _record_growth(self, plot_item, before):
+        """add_subplot appended rows/columns to fit plot_item's box. Keep
+        what the grid looked like before and after, so that removing
+        plot_item as the undo of its own addition (paste, Add Subplot)
+        shrinks the grid back -- see _undo_growth."""
+        self._grid_growth.append({
+            'plot': plot_item, 'before': before, 'retired': False,
+            'after': (tuple(self.grid_cols), tuple(self.grid_rows)),
+        })
+
+    def _undo_growth(self, plot_item, restore):
+        """plot_item was just removed. restore=False (a user Delete, which
+        leaves a hole) forgets its growth record. restore=True (an undo)
+        retires it, then pops every retired record off the top of the stack
+        whose grid is still exactly what it produced and whose added
+        tracks are empty now -- in stack order, so undoing a multi-subplot
+        paste shrinks the grid back whatever order the subplots go in."""
+        for rec in list(self._grid_growth):
+            if rec['plot'] is plot_item:
+                if restore:
+                    rec['retired'] = True
+                else:
+                    self._grid_growth.remove(rec)
+        while self._grid_growth and self._grid_growth[-1]['retired']:
+            rec = self._grid_growth[-1]
+            cols, rows = rec['before']
+            if (tuple(self.grid_cols), tuple(self.grid_rows)) != rec['after']:
+                break
+            boxes = self.boxes.values()
+            if not (all(grid.track_is_empty(boxes, 'col', c) for c in range(len(cols) - 1, self._n_tracks('col')))
+                    and all(grid.track_is_empty(boxes, 'row', r) for r in range(len(rows) - 1, self._n_tracks('row')))):
+                break
+            self.grid_cols, self.grid_rows = list(cols), list(rows)
+            self._grid_growth.pop()
+
+    # -- adding/removing whole subplots ------------------------------------------
+    # Plain add/delete only touches its own box -- it never shifts another
+    # subplot (bug #1): a deleted subplot leaves a hole. FFT inserts a whole
+    # grid row, which shifts edges by grid units -- safe for any layout with
+    # fractional coordinates. _remove_subplot/_insert_subplot_at: plain.
+    # insert_subplot_below / _insert_subplot_with_shift /
+    # _remove_subplot_with_shift: FFT.
+
     def add_subplot(self, row, col, rowspan=1, colspan=1, title='', axes_type='cartesian'):
         """The only subplot construction site (guarded by
         test_add_subplot_is_the_only_subplot_construction_site): every new
         subplot adopts the figure-wide toggles here.
 
-        rowspan/colspan are passed through to the grid. axes_type is part
-        of the frozen interface for later work packages; only 'cartesian'
-        exists so far, and it is recorded on the PlotItem as
-        `plot_item.axes_type`."""
+        The new subplot's box is the cells (row, col) .. (row + rowspan,
+        col + colspan); the grid grows (new rows/columns appended) to fit
+        it. axes_type is part of the frozen interface for later work
+        packages; only 'cartesian' exists so far, and it is recorded on the
+        PlotItem as `plot_item.axes_type`."""
         if axes_type not in AXES_TYPES:
             raise NotImplementedError(f"axes_type={axes_type!r} is not implemented yet "
                                       f"(available: {', '.join(AXES_TYPES)})")
-        plot_item = self.layout_widget.addPlot(row=row, col=col, rowspan=rowspan,
-                                               colspan=colspan, title=title)
+        plot_item = pg.PlotItem(title=title)
+        # Its geometry is ours (_apply_layout); its own size hints must not clamp it.
+        plot_item.setMinimumSize(1, 1)
+        self.layout_widget.scene().addItem(plot_item)
+        box = (col, row, col + colspan, row + rowspan)
+        before = (tuple(self.grid_cols), tuple(self.grid_rows))
+        while self._n_tracks('col') < box[2]:
+            self.grid_cols = grid.insert_track(self.grid_cols, self._n_tracks('col'))
+        while self._n_tracks('row') < box[3]:
+            self.grid_rows = grid.insert_track(self.grid_rows, self._n_tracks('row'))
+        if (tuple(self.grid_cols), tuple(self.grid_rows)) != before:
+            self._record_growth(plot_item, before)
+        self.boxes[plot_item] = box
+        self.z_order.append(plot_item)
+
         plot_item.axes_type = axes_type
         plot_item.showGrid(x=True, y=True, alpha=0.2)
         wire_plot_labels_editable(plot_item)
@@ -79,67 +346,64 @@ class LayoutMixin:
         self._brushers[plot_item] = brusher
         self.plots.append(plot_item)
         self._apply_link_x()
-        self._reset_grid_stretch()
+        self._apply_layout()
         self.registry.notify_subplots_changed(self)
         return plot_item
 
+    @staticmethod
+    def _cell_of(box):
+        return int(math.floor(box[1] + EPS)), int(math.floor(box[0] + EPS))
+
     def _grid_position(self, plot_item):
-        return self.layout_widget.ci.items[plot_item][0]
+        """(row, col) of the cell holding the box's top-left corner -- where
+        FFT/paste/delete-undo place things relative to this subplot."""
+        return self._cell_of(self.boxes[plot_item])
 
     def _try_grid_position(self, plot_item):
-        """Like _grid_position, but returns None instead of KeyError-ing
-        when plot_item isn't currently a key in the grid's own item map --
-        used by _remove_subplot's defensive guard below."""
-        entry = self.layout_widget.ci.items.get(plot_item)
-        return entry[0] if entry else None
+        """Like _grid_position, but None for a plot this figure doesn't lay out."""
+        box = self.boxes.get(plot_item)
+        return self._cell_of(box) if box is not None else None
 
-    # -- adding/removing whole subplots ----------------------------------
-    # Plain add/delete only touches its own cell -- never shifts rows, since
-    # a shift could walk into a still-occupied sibling cell. FFT always adds
-    # its own dedicated row, so shifting whole rows is safe there only.
-    # _remove_subplot/_insert_subplot_at: plain. insert_subplot_below /
-    # _insert_subplot_with_shift / _remove_subplot_with_shift: FFT only.
-
-    def _remove_subplot(self, plot_item):
-        """Remove exactly this subplot's cell. Leaves the cell empty --
-        does not shift or resize any other subplot."""
-        if plot_item in self.floating:
-            self._reattach_floating(plot_item)
+    def _detach_plot(self, plot_item):
+        """Shared removal: annotations, scene, bookkeeping. Returns its box
+        (None if this figure wasn't laying it out)."""
         for a in self._annotations_on(plot_item):
             self._purge_annotation(a)
-        position = self._try_grid_position(plot_item)
-        if position is None:
-            # Should be unreachable -- every plot_item is either grid-managed
-            # or tracked in self.floating, and the branch above reattaches
-            # the latter before we get here. If this fires, a bug upstream
-            # (move/swap/resize bookkeeping) left plot_item in neither, which
-            # would otherwise KeyError here and crash whatever undo/redo/
-            # delete called us. Clean up what we still can instead of
-            # losing the action entirely, and say so loudly so the exact
-            # repro that triggered it can be tracked down.
-            print(
-                f"WARNING: _remove_subplot: {plot_item} was not found in the "
-                "grid layout or self.floating -- removing it from bookkeeping "
-                "only. This points to a bug in subplot move/swap/resize; "
-                "please report the exact steps that led here.",
-                file=sys.stderr,
-            )
-            row, col = None, None
-            if plot_item.scene() is not None:
-                plot_item.scene().removeItem(plot_item)
-        else:
-            row, col = position
-            self.layout_widget.removeItem(plot_item)
+        box = self.boxes.pop(plot_item, None)
+        if plot_item in self.z_order:
+            self.z_order.remove(plot_item)
+        if plot_item.scene() is not None:
+            plot_item.scene().removeItem(plot_item)
         self.plots.remove(plot_item)
         self._forget_removed_plot(plot_item)
-        self._reset_grid_stretch()
+        return box
+
+    def _remove_subplot(self, plot_item, restore_grid=True):
+        """Remove exactly this subplot. Leaves a hole -- no other subplot
+        moves or resizes. restore_grid=True (the default, for undoing an
+        addition: paste, Add Subplot) also shrinks back grid rows/columns
+        that adding it created, if they are empty now; delete_subplot passes
+        False, since a deleted subplot leaves its hole."""
+        box = self._detach_plot(plot_item)
+        if box is None:
+            print(f"WARNING: _remove_subplot: {plot_item} had no layout box -- "
+                  "removed it from bookkeeping only.", file=sys.stderr)
+            row, col = None, None
+        else:
+            row, col = self._cell_of(box)
+        self._undo_growth(plot_item, restore_grid)
+        self._apply_layout()
         self.registry.notify_subplots_changed(self)
         return row, col
 
-    def _insert_subplot_at(self, row, col, title, xlabel, ylabel, curves_data):
-        """Place a new subplot directly into a specific, already-empty grid
-        cell -- no shifting. Inverse of _remove_subplot."""
+    def _insert_subplot_at(self, row, col, title, xlabel, ylabel, curves_data, box=None):
+        """Place a new subplot in cell (row, col) -- or exactly at `box`,
+        when restoring a deleted one -- without shifting anything. Inverse
+        of _remove_subplot."""
         new_plot = self.add_subplot(row=row, col=col, title=title)
+        if box is not None:
+            self.boxes[new_plot] = box
+            self._apply_layout()
         if xlabel:
             new_plot.setLabel('bottom', xlabel)
         if ylabel:
@@ -150,49 +414,32 @@ class LayoutMixin:
         return new_plot
 
     def insert_subplot_below(self, reference_plot, title=""):
-        """Shift every subplot at/after the reference's row down one, then
-        insert a fresh plot directly beneath it -- used by 'FFT -> subplot
-        below', which always creates its own dedicated single-column row."""
-        self._reattach_all_floating()
-        ref_row, ref_col = self._grid_position(reference_plot)
-        for p in self.plots:
-            row, col = self._grid_position(p)
-            if row > ref_row:
-                self.layout_widget.removeItem(p)
-                self.layout_widget.addItem(p, row=row + 1, col=col)
-        new_plot = self.add_subplot(row=ref_row + 1, col=ref_col, title=title)
-        return new_plot
+        """FFT -> subplot below: insert a new grid row right under the
+        reference's bottom edge and put a fresh subplot in it, in the
+        reference's column. Only what lies below that line moves down (by
+        one grid row); the result is an ordinary, freely movable subplot."""
+        left, _, _, bottom = self.boxes[reference_plot]
+        row = int(math.ceil(bottom - EPS))
+        col = int(math.floor(left + EPS))
+        self._insert_grid_track('row', row)
+        return self.add_subplot(row=row, col=col, title=title)
 
     def _insert_subplot_with_shift(self, row, col, title, xlabel, ylabel, curves_data):
-        """Mirrors insert_subplot_below's shifting, for redoing an FFT
-        insertion (which insert_subplot_below itself can't do -- it needs a
-        live reference PlotItem, which no longer exists after an undo)."""
-        self._reattach_all_floating()
-        for p in self.plots:
-            r, c = self._grid_position(p)
-            if r >= row:
-                self.layout_widget.removeItem(p)
-                self.layout_widget.addItem(p, row=r + 1, col=c)
+        """Redo of an FFT insertion: insert grid row `row` again, then the
+        subplot in cell (row, col) -- what insert_subplot_below did, without
+        needing its (by now recreated) reference plot."""
+        self._insert_grid_track('row', row)
         return self._insert_subplot_at(row, col, title, xlabel, ylabel, curves_data)
 
     def _remove_subplot_with_shift(self, plot_item):
-        """Inverse of _insert_subplot_with_shift / insert_subplot_below:
-        remove a subplot that owns its entire row and shift every row below
-        it up by one to close the gap. Only safe for FFT's dedicated rows --
-        never for a plain subplot that might share its row with a sibling."""
-        self._reattach_all_floating()
-        for a in self._annotations_on(plot_item):
-            self._purge_annotation(a)
-        row, col = self._grid_position(plot_item)
-        self.layout_widget.removeItem(plot_item)
-        self.plots.remove(plot_item)
-        for p in self.plots:
-            r, c = self._grid_position(p)
-            if r > row:
-                self.layout_widget.removeItem(p)
-                self.layout_widget.addItem(p, row=r - 1, col=c)
-        self._forget_removed_plot(plot_item)
-        self._reset_grid_stretch()
+        """Undo of an FFT insertion: remove the subplot and the grid row it
+        was inserted into, moving everything below back up one row."""
+        box = self._detach_plot(plot_item)
+        self._undo_growth(plot_item, restore=False)
+        row, col = self._cell_of(box) if box is not None else (None, None)
+        if row is not None:
+            self._delete_grid_track('row', row)
+        self._apply_layout()
         self.registry.notify_subplots_changed(self)
         return row, col
 
@@ -214,12 +461,11 @@ class LayoutMixin:
         self._apply_link_x()
 
     def add_new_subplot(self):
-        """Toolbar 'Add Subplot': always creates a new, empty, dedicated
-        row at the bottom -- so it never has to guess which existing cell
-        is free, and stays consistent with FFT's row-shifting logic."""
-        self._reattach_all_floating()
-        row = max((self._grid_position(p)[0] for p in self.plots), default=-1) + 1
-        col = 0
+        """Toolbar 'Add Subplot': fills the first empty grid cell (reading
+        order), else appends a new row and uses its first cell."""
+        cell = grid.first_empty_cell(list(self.boxes.values()),
+                                     self._n_tracks('row'), self._n_tracks('col'))
+        row, col = cell if cell is not None else (self._n_tracks('row'), 0)
         title = f"Subplot {len(self.plots) + 1}"
         new_plot = self.add_subplot(row=row, col=col, title=title)
         self.focused_plot = new_plot
@@ -240,39 +486,130 @@ class LayoutMixin:
 
         self._push_history(undo_fn, redo_fn)
 
-    # -- subplot resize (drag a border/corner of the focused subplot) -----
+    def delete_subplot(self, plot_item):
+        min_subplots = 0 if self.empty else 1
+        if len(self.plots) <= min_subplots:
+            return  # keep at least one subplot (zero for a manager-created empty figure)
+        title = plot_item.titleLabel.text
+        xlabel = plot_item.getAxis('bottom').labelText
+        ylabel = plot_item.getAxis('left').labelText
+        curves_data = [
+            (c.xData.copy(), c.yData.copy(), c.opts.get('_orig_pen', c.opts.get('pen')), c.name())
+            for c in plot_item.listDataItems() if isinstance(c, pg.PlotDataItem)
+        ]
+        # Snapshot annotations first: _remove_subplot purges them unconditionally.
+        annotations_data = [a.to_dict() for a in self._annotations_on(plot_item)]
+        box = self.boxes.get(plot_item)
+        z_index = self.z_order.index(plot_item) if plot_item in self.z_order else None
+        row, col = self._remove_subplot(plot_item, restore_grid=False)
+        if row is None:
+            # _remove_subplot's defensive fallback -- append a new row
+            # rather than crashing undo with a None row/col.
+            row, col, box = self._n_tracks('row'), 0, None
+
+        holder = {}
+
+        def undo_fn():
+            new_plot = self._insert_subplot_at(row, col, title, xlabel, ylabel, curves_data, box=box)
+            if z_index is not None:
+                self.z_order.remove(new_plot)
+                self.z_order.insert(min(z_index, len(self.z_order)), new_plot)
+                self._apply_layout()
+            holder['plot'] = new_plot
+            for d in annotations_data:
+                AnnotationItem.from_dict(self, new_plot, d)
+            self.focused_plot = new_plot
+            self._mark_active(new_plot)
+
+        def redo_fn():
+            p = holder.get('plot')
+            if p is not None:
+                self._remove_subplot(p, restore_grid=False)
+
+        self._push_history(undo_fn, redo_fn)
+
+    # -- layout snapshots and undo -------------------------------------------------
+    def _layout_snapshot(self):
+        return {'cols': tuple(self.grid_cols), 'rows': tuple(self.grid_rows),
+                'boxes': dict(self.boxes), 'z': tuple(self.z_order)}
+
+    def _restore_layout(self, snap, structural=False):
+        """Apply a snapshot to the subplots it knows that still exist. Like
+        every closure on the undo stack, it holds PlotItem references: a
+        subplot recreated since (delete + undo) is a new object it can't see.
+        The grid lines are only restored if the track counts match, unless
+        `structural` (undoing an insert/delete of a track itself)."""
+        if structural or (len(snap['cols']) == len(self.grid_cols)
+                          and len(snap['rows']) == len(self.grid_rows)):
+            self.grid_cols, self.grid_rows = list(snap['cols']), list(snap['rows'])
+        for p, box in snap['boxes'].items():
+            if p in self.boxes:
+                self.boxes[p] = box
+        known = [p for p in snap['z'] if p in self.boxes]
+        self.z_order = known + [p for p in self.z_order if p not in known]
+        self._apply_layout()
+
+    def _push_layout_change(self, before, structural=False):
+        """One undo entry for whatever changed the layout since `before`
+        (a _layout_snapshot()); nothing if it didn't change."""
+        after = self._layout_snapshot()
+        if after == before:
+            return
+        self._push_history(lambda: self._restore_layout(before, structural),
+                           lambda: self._restore_layout(after, structural))
+
+    def set_subplot_box(self, plot_item, box):
+        """Place a subplot at an arbitrary box (left, top, right, bottom) in
+        grid coordinates -- any fraction, e.g. an inset. Undoable."""
+        before = self._layout_snapshot()
+        left, top, right, bottom = box
+        n_cols, n_rows = self._n_tracks('col'), self._n_tracks('row')
+        left, right = max(0.0, min(left, n_cols)), max(0.0, min(right, n_cols))
+        top, bottom = max(0.0, min(top, n_rows)), max(0.0, min(bottom, n_rows))
+        if right - left <= EPS or bottom - top <= EPS:
+            return
+        self.boxes[plot_item] = (left, top, right, bottom)
+        self._apply_layout()
+        self._push_layout_change(before)
+
+    def bring_to_front(self, plot_item):
+        """Draw this subplot above every other one. Undoable."""
+        self._restack(plot_item, top=True)
+
+    def send_to_back(self, plot_item):
+        """Draw this subplot below every other one. Undoable."""
+        self._restack(plot_item, top=False)
+
+    def _restack(self, plot_item, top):
+        if plot_item not in self.z_order:
+            return
+        before = self._layout_snapshot()
+        self.z_order.remove(plot_item)
+        if top:
+            self.z_order.append(plot_item)
+        else:
+            self.z_order.insert(0, plot_item)
+        self._apply_layout()
+        self._push_layout_change(before)
+
     def toggle_overlap_resize(self, checked):
-        self.overlap_resize = checked
-        if not checked:
-            # Turning overlap off is "rearrange now": snap every floating
-            # subplot back into the grid, sizing its row/col from where it
-            # currently sits so the reflow roughly matches what was on screen.
-            # Checked before the loop, which empties self.floating (checking
-            # after it meant the new stretch factors were never applied).
-            had_floating = bool(self.floating)
-            for plot_item in list(self.floating.keys()):
-                rect = QtCore.QRectF(plot_item.pos(), plot_item.size())
-                _, row, col, _ = self.floating[plot_item]
-                self._reattach_floating(plot_item)
-                self._set_stretch_for_size(self.col_stretch, col, rect.width(), self.layout_widget.width())
-                self._set_stretch_for_size(self.row_stretch, row, rect.height(), self.layout_widget.height())
-            if had_floating:
-                self._apply_grid_stretch()
-            self._position_handles()
+        """Obsolete, kept only so the old "Grid Layout" toolbar button
+        doesn't crash: there is no reflow-vs-overlap mode any more. Free
+        positioning is the normal state, and two subplots overlap exactly
+        when their boxes do."""
+        pass
 
-    def _create_resize_handles(self):
-        roles = ('top', 'bottom', 'left', 'right',
-                 'top-left', 'top-right', 'bottom-left', 'bottom-right')
-        self.resize_handles = {role: ResizeHandle(self, role) for role in roles}
-        for handle in self.resize_handles.values():
-            self.layout_widget.scene().addItem(handle)
-        self.move_handle = MoveHandle(self)
-        self.layout_widget.scene().addItem(self.move_handle)
+    def _reattach_all_floating(self):
+        """Obsolete no-op, kept for clip_ops.paste_subplot's call site:
+        nothing ever floats (is detached from a layout) any more."""
+        pass
 
+    # -- handles and gutters --------------------------------------------------------
     def _hide_handles(self):
         for handle in self.resize_handles.values():
             handle.hide()
         self.move_handle.hide()
+        self._update_gutters()
 
     def _position_handles(self):
         self._reposition_annotations()
@@ -282,6 +619,7 @@ class LayoutMixin:
         if active is None or active not in self.selected_plots or self.interaction_mode != 'select':
             self._hide_handles()
             return
+        self._update_gutters()
         rect = active.sceneBoundingRect()
         s = ResizeHandle.SIZE
         anchors = {
@@ -303,338 +641,371 @@ class LayoutMixin:
         self.move_handle.setPos(center.x() - ms / 2, center.y() - ms / 2)
         self.move_handle.show()
 
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev)
-        QtCore.QTimer.singleShot(0, self._position_handles)
+    def _update_gutters(self):
+        """One GutterHandle per stretch of an interior grid line that no
+        subplot crosses, in Select mode only. Items are kept per (axis,
+        line, stretch) key rather than rebuilt, so the gutter being dragged
+        -- whose key can't change during its own drag -- keeps its grab."""
+        wanted = {}
+        if self.interaction_mode == 'select':
+            boxes = list(self.boxes.values())
+            for axis in ('col', 'row'):
+                n, extent = self._n_tracks(axis), self._n_tracks('row' if axis == 'col' else 'col')
+                for index in range(1, n):
+                    for s, seg in enumerate(grid.gutter_segments(boxes, axis, index, extent)):
+                        wanted[(axis, index, s)] = seg
+        for key in [k for k in self._gutters if k not in wanted]:
+            item = self._gutters.pop(key)
+            if item.scene() is not None:
+                item.scene().removeItem(item)
+        half = self.GUTTER_PX / 2
+        for key, (g0, g1) in wanted.items():
+            item = self._gutters.get(key)
+            if item is None:
+                item = GutterHandle(self, key[0], key[1])
+                self.layout_widget.scene().addItem(item)
+                self._gutters[key] = item
+            axis, index, _ = key
+            if axis == 'col':
+                x, y0, y1 = self._gx_to_px(index), self._gy_to_px(g0), self._gy_to_px(g1)
+                item.setRect(x - half, y0, 2 * half, y1 - y0)
+            else:
+                y, x0, x1 = self._gy_to_px(index), self._gx_to_px(g0), self._gx_to_px(g1)
+                item.setRect(x0, y - half, x1 - x0, 2 * half)
+            item.show()
 
-    def _grid_layout(self):
-        """The QGraphicsGridLayout backing the subplot grid. Accessed via
-        pyqtgraph's private `.layout` attribute on the GraphicsLayout central
-        item -- not part of pyqtgraph's public API, so this is the one spot
-        most likely to need fixing on a pyqtgraph version mismatch."""
-        layout = getattr(self.layout_widget.ci, 'layout', None)
-        if layout is None and not self._warned_no_grid_layout:
-            print(
-                "WARNING: LaFigure._grid_layout() could not find "
-                "self.layout_widget.ci.layout (expected a QGraphicsGridLayout). "
-                "Subplot border/corner resize will have no visible effect. "
-                "This means pyqtgraph's internal GraphicsLayout attribute name "
-                "changed; update _grid_layout() to match.",
-                file=sys.stderr,
-            )
-            self._warned_no_grid_layout = True
-        return layout
+    def _gutter_under(self, scene_pos):
+        """The GutterHandle a press at scene_pos would reach, if any."""
+        for item in self.layout_widget.scene().items(scene_pos):
+            if item.isVisible() and item.acceptedMouseButtons():
+                return item if isinstance(item, GutterHandle) else None
+        return None
 
-    def _reset_grid_stretch(self):
-        """Re-derive row/col stretch factors from whatever is actually in
-        the grid layout right now (plots AND any floating-plot
-        placeholders) whenever subplots are added/removed/moved.
-        Deliberately forgets any manual resizing across a structural change
-        rather than trying to reindex it -- simpler and safer than tracking
-        row/col renumbering precisely. Iterating the layout's own item map
-        (rather than self.plots) also means this can't KeyError on a plot
-        that's currently floating (and so briefly absent from the layout)."""
-        self.row_stretch = {}
-        self.col_stretch = {}
-        for row, col in (positions[0] for positions in self.layout_widget.ci.items.values()):
-            self.row_stretch.setdefault(row, 100)
-            self.col_stretch.setdefault(col, 100)
-        self._apply_grid_stretch()
-        QtCore.QTimer.singleShot(0, self._position_handles)
+    def eventFilter(self, obj, event):
+        """A press on a gutter belongs to the gutter's own drag: the rubber
+        band (selection_ui._band_event, reached through the scene filter
+        chain) would arm on it -- a gutter is "nothing selectable" to it --
+        and then consume the drag's moves. Let the chain run, then disarm
+        the band for such a press."""
+        consumed = super().eventFilter(obj, event)
+        if (not consumed and obj is self.layout_widget.scene()
+                and event.type() == QtCore.QEvent.GraphicsSceneMousePress
+                and self._band is not None and self._gutter_under(event.scenePos()) is not None):
+            self._band = None
+        return consumed
 
-    def _reattach_all_floating(self):
-        for plot_item in list(self.floating.keys()):
-            self._reattach_floating(plot_item)
+    # -- magnetic snapping ------------------------------------------------------------
+    def _snap_candidates(self, axis, exclude=()):
+        """Grid coordinates a dragged edge on `axis` ('x' or 'y') may snap
+        to: grid lines (0 and n being the figure margins), cell
+        subdivisions, and the edges of every subplot not in `exclude`."""
+        n = self._n_tracks(axis)
+        subdiv = max(1, int(self.snap_subdivisions))
+        cands = [(float(k), 'line') for k in range(n + 1)]
+        cands += [(k + j / subdiv, 'sub') for k in range(n) for j in range(1, subdiv)]
+        lo, hi = (0, 2) if axis == 'x' else (1, 3)
+        for p, box in self.boxes.items():
+            if p not in exclude:
+                cands += [(box[lo], 'edge'), (box[hi], 'edge')]
+        return cands
 
-    def _start_floating(self, plot_item, row, col):
-        """Detach plot_item from the grid layout and let it float above the
-        scene at its own manually-controlled geometry, so it can genuinely
-        overlap neighboring subplots (a real QGraphicsGridLayout can't let
-        two managed cells overlap -- that's the whole point of a layout).
-        A same-sized invisible placeholder takes its place in the grid so
-        every other row/col keeps exactly its current size while it floats.
+    def _nearest_snap(self, axis, px, cands):
+        """(grid coordinate, pixel distance) of the candidate nearest `px`
+        within SNAP_PX, or None."""
+        best = None
+        for g, _ in cands:
+            d = abs(self._g_to_px(axis, g) - px)
+            if d <= self.SNAP_PX and (best is None or d < best[1]):
+                best = (g, d)
+        return best
 
-        The placeholder's own item-level min/max/preferred size hints are
-        NOT enough to pin the row/column on their own: QGraphicsGridLayout
-        computes a row's height (and a column's width) from ALL items
-        sharing it, so a sibling's own size hints (e.g. a neighboring
-        PlotItem's small preferred size, expanded only by stretch-factor
-        distribution) can still pull the row away from the placeholder's
-        fixed size once redistribution runs -- this was observed live to
-        shift/resize a non-selected neighbor by tens of pixels the instant
-        a subplot floated, before any drag even happened. Pinning the row/
-        column directly via the layout's own setRowFixedHeight/
-        setColumnFixedWidth is authoritative regardless of what siblings
-        report, and is what actually keeps neighbors byte-for-byte
-        unchanged (verified live)."""
-        rect = QtCore.QRectF(plot_item.sceneBoundingRect())
-        placeholder = QtWidgets.QGraphicsWidget()
-        placeholder.setPreferredSize(rect.size())
-        placeholder.setMinimumSize(rect.size())
-        placeholder.setMaximumSize(rect.size())
-        self.layout_widget.removeItem(plot_item)
-        self.layout_widget.addItem(placeholder, row=row, col=col)
-        layout = self._grid_layout()
-        prior_bounds = None
-        if layout is not None:
-            # Capture the row/col's own prior bounds so _reattach_floating can
-            # restore them exactly, rather than guessing an "unbounded" sentinel.
-            prior_bounds = (
-                layout.rowMinimumHeight(row), layout.rowMaximumHeight(row), layout.rowPreferredHeight(row),
-                layout.columnMinimumWidth(col), layout.columnMaximumWidth(col), layout.columnPreferredWidth(col),
-            )
-            layout.setRowFixedHeight(row, rect.height())
-            layout.setColumnFixedWidth(col, rect.width())
-            # addItem() above already ran one activate() pass using the
-            # placeholder's item-level hints alone (which, per the note
-            # above, isn't authoritative against siblings); force a second
-            # pass now that the row/col are explicitly pinned so any
-            # distortion from that first pass is corrected immediately
-            # rather than lingering until something else calls activate().
-            layout.activate()
+    def _show_snap_guides(self, guides=()):
+        """Show the magnetic sub-grid; `guides` = [(axis, grid coord)] of
+        the active snaps, drawn highlighted across the whole figure."""
+        r = self._figure_rect()
+        subdiv = max(1, int(self.snap_subdivisions))
+        lines = []
+        for axis in ('x', 'y'):
+            n = self._n_tracks(axis)
+            for k in range(n + 1):
+                for j in range(subdiv if k < n else 1):
+                    px = self._g_to_px(axis, k + j / subdiv)
+                    kind = 'line' if j == 0 else 'sub'
+                    lines.append((px, r.top(), px, r.bottom(), kind) if axis == 'x'
+                                 else (r.left(), px, r.right(), px, kind))
+        drawn = []
+        for axis, g in guides:
+            px = self._g_to_px(axis, g)
+            drawn.append((px, r.top(), px, r.bottom()) if axis == 'x' else (r.left(), px, r.right(), px))
+        self._snap_guides.set_content(r, lines, drawn)
+        self._snap_guides.show()
 
-        # removeItem() doesn't guarantee scene/parent/visibility -- force all three.
-        if plot_item.scene() is None:
-            self.layout_widget.scene().addItem(plot_item)
-        plot_item.setParentItem(None)
-        plot_item.setZValue(500)
-        plot_item.show()
-        plot_item.setPos(rect.topLeft())
-        plot_item.resize(rect.width(), rect.height())
+    def _hide_snap_guides(self):
+        self._snap_guides.hide()
 
-        # Store (row, col) here: once floating, plot_item is gone from
-        # layout_widget.ci.items, so this is the only record of its origin cell.
-        self.floating[plot_item] = (placeholder, row, col, prior_bounds)
+    @staticmethod
+    def _snapping(mods):
+        return not (mods & QtCore.Qt.AltModifier)
 
-    def _reattach_floating(self, plot_item):
-        """Undo _start_floating: drop the placeholder and give plot_item
-        back to the grid layout at the same cell, restoring normal
-        layout-managed sizing (its floated size/position is discarded).
-        Also releases the row/col fixed-size pin _start_floating applied,
-        restoring the bounds captured there -- otherwise the row/column
-        would stay rigidly locked at the floated size forever, even after
-        the plot rejoins the grid."""
-        entry = self.floating.pop(plot_item, None)
-        if entry is None:
-            return
-        placeholder, row, col, prior_bounds = entry
-        self.layout_widget.removeItem(placeholder)
-        plot_item.setZValue(0)
-        self.layout_widget.addItem(plot_item, row=row, col=col)
-        layout = self._grid_layout()
-        if layout is not None and prior_bounds is not None:
-            row_min, row_max, row_pref, col_min, col_max, col_pref = prior_bounds
-            layout.setRowMinimumHeight(row, row_min)
-            layout.setRowMaximumHeight(row, row_max)
-            layout.setRowPreferredHeight(row, row_pref)
-            layout.setColumnMinimumWidth(col, col_min)
-            layout.setColumnMaximumWidth(col, col_max)
-            layout.setColumnPreferredWidth(col, col_pref)
-
-    def _apply_grid_stretch(self):
-        layout = self._grid_layout()
-        if layout is None:
-            return
-        for row, stretch in self.row_stretch.items():
-            layout.setRowStretchFactor(row, int(round(stretch)))
-        for col, stretch in self.col_stretch.items():
-            layout.setColumnStretchFactor(col, int(round(stretch)))
-        layout.activate()
-
+    # -- resize one subplot (drag a border/corner handle) --------------------------
     def _begin_resize(self, role, scene_pos):
         p = self.focused_plot
-        if p is None:
+        if p is None or p not in self.boxes:
             return
-        if not self.overlap_resize and p in self.floating:
-            # Switching to reflow mode: restore layout management first.
-            self._reattach_floating(p)
-
-        if p in self.floating:
-            # Already floating: p isn't in layout_widget.ci.items, so use self.floating.
-            _, row, col, _ = self.floating[p]
-        else:
-            row, col = self._grid_position(p)
         self._resize_state = {
-            'role': role, 'row': row, 'col': col,
-            'origin': scene_pos, 'start_rect': QtCore.QRectF(p.sceneBoundingRect()),
-            'target_rect': QtCore.QRectF(p.sceneBoundingRect()),
+            'role': role, 'plot': p, 'origin': QtCore.QPointF(scene_pos),
+            'start_box': self.boxes[p], 'before': self._layout_snapshot(),
         }
-        if self.overlap_resize and p not in self.floating:
-            self._start_floating(p, row, col)
+        self._show_snap_guides()
 
-    def _update_resize(self, scene_pos):
+    def _update_resize(self, scene_pos, mods=QtCore.Qt.NoModifier):
+        """Move the dragged edge(s) of the one subplot being resized, in
+        pixels from where they started, snapped unless Alt is held. Only
+        this subplot's box changes -- neighbors never move (bug #6)."""
         st = self._resize_state
         if st is None:
             return
+        p, role = st['plot'], st['role']
+        left, top, right, bottom = st['start_box']
         dx = scene_pos.x() - st['origin'].x()
         dy = scene_pos.y() - st['origin'].y()
-        role = st['role']
-        start = st['start_rect']
-        min_size = 40
+        snap = self._snapping(mods)
+        guides = []
 
-        rect = QtCore.QRectF(start)
-        if 'right' in role:
-            rect.setWidth(max(min_size, start.width() + dx))
-        elif 'left' in role:
-            rect.setLeft(min(start.right() - min_size, start.left() + dx))
-        if 'bottom' in role:
-            rect.setHeight(max(min_size, start.height() + dy))
-        elif 'top' in role:
-            rect.setTop(min(start.bottom() - min_size, start.top() + dy))
+        def drag_edge(axis, g, delta, fixed, sign):
+            px = self._g_to_px(axis, g) + delta
+            # Never closer than MIN_BOX_PX to the opposite, fixed edge.
+            limit = self._g_to_px(axis, fixed) + sign * self.MIN_BOX_PX
+            px = max(px, limit) if sign > 0 else min(px, limit)
+            new = self._px_to_g(axis, px)
+            if snap:
+                hit = self._nearest_snap(axis, px, self._snap_candidates(axis, exclude=(p,)))
+                if hit is not None and sign * (self._g_to_px(axis, hit[0]) - limit) >= 0:
+                    new = hit[0]
+                    guides.append((axis, new))
+            return new
 
-        st['target_rect'] = rect
-
-        if self.overlap_resize:
-            # Detached, so this genuinely overlaps neighbors instead of resizing them.
-            p = self.focused_plot
-            p.setPos(rect.topLeft())
-            p.resize(rect.width(), rect.height())
-        else:
-            self._apply_resize_target(st)
-            # Repositioning (not hiding) is safe mid-drag: setPos() keeps the mouse grab.
-            self._position_handles()
+        if 'left' in role:
+            left = drag_edge('x', left, dx, right, -1)
+        elif 'right' in role:
+            right = drag_edge('x', right, dx, left, +1)
+        if 'top' in role:
+            top = drag_edge('y', top, dy, bottom, -1)
+        elif 'bottom' in role:
+            bottom = drag_edge('y', bottom, dy, top, +1)
+        self.boxes[p] = (left, top, right, bottom)
+        self._apply_layout()
+        self._show_snap_guides(guides)
 
     def _end_resize(self):
         st = self._resize_state
         if st is None:
             return
-        # Nothing else to do: both modes already applied live during the drag.
         self._resize_state = None
+        self._hide_snap_guides()
         self._position_handles()
+        self._push_layout_change(st['before'])
 
-    def _apply_resize_target(self, st):
-        """Translate the dragged rectangle's size into row/col stretch
-        factors, holding every other row/col's factor fixed so the layout
-        redistributes the remaining space among them (the 'reflow')."""
-        role, row, col, rect = st['role'], st['row'], st['col'], st['target_rect']
-        if 'left' in role or 'right' in role:
-            self._set_stretch_for_size(self.col_stretch, col, rect.width(), self.layout_widget.width())
-        if 'top' in role or 'bottom' in role:
-            self._set_stretch_for_size(self.row_stretch, row, rect.height(), self.layout_widget.height())
-        self._apply_grid_stretch()
-
-    @staticmethod
-    def _set_stretch_for_size(stretch_map, index, desired_size, total_size):
-        total_size = max(total_size, 1)
-        others = sum(v for i, v in stretch_map.items() if i != index)
-        fraction = min(max(desired_size / total_size, 0.05), 0.9)
-        stretch_map[index] = max(fraction * others / (1 - fraction), 5) if others > 0 else 100
-
-    # -- subplot move (drag the center handle, Select mode only) ---------
+    # -- move / swap (drag the move handle, Select mode only) ----------------------
     def _begin_move(self, scene_pos):
         p = self.focused_plot
-        if p is None or self.interaction_mode != 'select':
+        if p is None or self.interaction_mode != 'select' or p not in self.boxes:
             return
-        if p in self.floating:
-            _, row, col, _ = self.floating[p]
-        else:
-            row, col = self._grid_position(p)
-            self._start_floating(p, row, col)
-        self._move_state = {'origin': scene_pos, 'start_pos': QtCore.QPointF(p.pos())}
+        self._move_state = {
+            'plot': p, 'start_box': self.boxes[p], 'before': self._layout_snapshot(),
+            'origin': (self._px_to_gx(scene_pos.x()), self._px_to_gy(scene_pos.y())),
+        }
+        # Drawn on top while it moves; _apply_layout restores its z_order place.
+        p.setZValue(self.PLOT_Z + len(self.z_order))
+        self._show_snap_guides()
 
-    def _update_move(self, scene_pos):
+    def _update_move(self, scene_pos, mods=QtCore.Qt.NoModifier):
+        """Translate the box by the mouse's motion in grid units -- so it
+        keeps its grid size (a one-cell subplot stays one cell wide), and
+        snap whichever of its edges is nearest a candidate."""
         st = self._move_state
         if st is None:
             return
-        p = self.focused_plot
-        delta = scene_pos - st['origin']
-        p.setPos(st['start_pos'] + delta)
-        self._position_handles()
+        p = st['plot']
+        left, top, right, bottom = st['start_box']
+        gx0, gy0 = st['origin']
+        guides = []
+        new = {}
+        for axis, lo0, hi0, g0, pos in (('x', left, right, gx0, scene_pos.x()),
+                                        ('y', top, bottom, gy0, scene_pos.y())):
+            size, n = hi0 - lo0, self._n_tracks(axis)
+            lo = min(max(lo0 + self._px_to_g(axis, pos) - g0, 0.0), n - size)
+            hi = lo + size
+            if self._snapping(mods):
+                cands = self._snap_candidates(axis, exclude=(p,))
+                best = None   # (pixel distance, snapped edge is the high one, grid coord)
+                for is_hi, edge in ((False, lo), (True, hi)):
+                    hit = self._nearest_snap(axis, self._g_to_px(axis, edge), cands)
+                    if hit is not None and (best is None or hit[1] < best[0]):
+                        best = (hit[1], is_hi, hit[0])
+                if best is not None:
+                    _, is_hi, g = best
+                    # The snapped edge takes the candidate's exact value.
+                    snapped = (g - size, g) if is_hi else (g, g + size)
+                    if snapped[0] >= -EPS and snapped[1] <= n + EPS:
+                        lo, hi = snapped
+                        guides.append((axis, g))
+            new[axis] = (lo, hi)
+        (left, right), (top, bottom) = new['x'], new['y']
+        self.boxes[p] = (left, top, right, bottom)
+        self._apply_layout()
+        p.setZValue(self.PLOT_Z + len(self.z_order))
+        self._show_snap_guides(guides)
 
-    def _end_move(self, scene_pos):
+    def _end_move(self, scene_pos, mods=QtCore.Qt.NoModifier):
+        """Plain drop: the subplot stays where it was dragged. Ctrl+drop
+        onto another subplot: the two swap boxes (the dragged one takes the
+        target's, the target takes the dragged one's starting box)."""
         st = self._move_state
         if st is None:
             return
         self._move_state = None
-        p = self.focused_plot
-        target = None
-        for other in self.plots:
-            if other is p or other in self.floating:
-                continue
-            if other.sceneBoundingRect().contains(scene_pos):
-                target = other
-                break
-        if target is not None:
-            self._swap_subplots(p, target)
+        self._hide_snap_guides()
+        p = st['plot']
+        if mods & QtCore.Qt.ControlModifier:
+            target = self._plot_at(scene_pos, exclude=p)
+            if target is not None:
+                self.boxes[p] = self.boxes[target]
+                self.boxes[target] = st['start_box']
+        self._apply_layout()
+        self._push_layout_change(st['before'])
+
+    def _plot_at(self, scene_pos, exclude=None):
+        """The topmost subplot whose drawn box contains scene_pos."""
+        for p in self._plots_by_z():
+            if p is not exclude and p.sceneBoundingRect().contains(scene_pos):
+                return p
+        return None
+
+    def _plots_by_z(self):
+        """Every subplot, topmost first: the order a hit test must try them
+        in once subplots can overlap (an inset above its host)."""
+        return list(reversed(self.z_order))
+
+    # -- 'border' annotations: offsets as a fraction of the subplot's box ----------
+    def _box_fraction(self, plot_item, scene_pos):
+        """scene_pos as a fraction of plot_item's drawn box: (0, 0) is its
+        top-left corner, (1, 1) its bottom-right. Meant as a 'border'
+        annotation's anchor_offset, so the annotation keeps its relative
+        place when the subplot is resized (Annotations simplification #5)."""
+        r = plot_item.sceneBoundingRect()
+        return QtCore.QPointF((scene_pos.x() - r.left()) / max(r.width(), EPS),
+                              (scene_pos.y() - r.top()) / max(r.height(), EPS))
+
+    def _box_point(self, plot_item, fraction):
+        """Inverse of _box_fraction: the scene point at `fraction` of the box."""
+        r = plot_item.sceneBoundingRect()
+        return QtCore.QPointF(r.left() + fraction.x() * r.width(),
+                              r.top() + fraction.y() * r.height())
+
+    # -- grid-line drag (drag a gutter) --------------------------------------------
+    def _begin_gutter_drag(self, axis, index, scene_pos):
+        if self.interaction_mode != 'select' or not 0 < index < self._n_tracks(axis):
+            return
+        lines = self.grid_cols if axis == 'col' else self.grid_rows
+        self._gutter_state = {
+            'axis': axis, 'index': index, 'origin': QtCore.QPointF(scene_pos),
+            'start': lines[index], 'before': self._layout_snapshot(),
+        }
+        self._show_snap_guides()
+
+    def _update_gutter_drag(self, scene_pos, mods=QtCore.Qt.NoModifier):
+        """Move grid line `index`: every edge between its two neighbor
+        lines rescales with it (grid coordinates never change); it can't
+        squeeze a track below MIN_TRACK_PX. Snaps to where the two tracks
+        would be equal, to where all tracks would be equal, and to the
+        edges of subplots that don't move with it."""
+        st = self._gutter_state
+        if st is None:
+            return
+        axis, index = st['axis'], st['index']
+        r = self._figure_rect()
+        size = r.width() if axis == 'col' else r.height()
+        d = (scene_pos.x() - st['origin'].x()) if axis == 'col' else (scene_pos.y() - st['origin'].y())
+        lines = list(self.grid_cols if axis == 'col' else self.grid_rows)
+        frac = st['start'] + d / size
+        snapped = False
+        if self._snapping(mods):
+            n = len(lines) - 1
+            cands = [(lines[index - 1] + lines[index + 1]) / 2, index / n]
+            lo, hi = (0, 2) if axis == 'col' else (1, 3)
+            for box in self.boxes.values():
+                for e in (box[lo], box[hi]):
+                    if e <= index - 1 + EPS or e >= index + 1 - EPS:
+                        cands.append(grid.to_frac(lines, e))
+            best = min(cands, key=lambda c: abs(c - frac))
+            if abs(best - frac) * size <= self.SNAP_PX:
+                frac, snapped = best, True
+        margin = self.MIN_TRACK_PX / size
+        low, high = lines[index - 1] + margin, lines[index + 1] - margin
+        frac = min(max(frac, low), high) if low <= high else st['start']
+        lines[index] = frac
+        if axis == 'col':
+            self.grid_cols = lines
         else:
-            self._reattach_floating(p)
-            self._position_handles()
+            self.grid_rows = lines
+        self._apply_layout()
+        self._show_snap_guides([('x' if axis == 'col' else 'y', index)] if snapped else [])
 
-    def _swap_subplots(self, a, b):
-        """Drop 'a' (currently floating, mid-move) onto 'b': give each the
-        other's original grid cell. Used by _end_move -- dragging a
-        subplot's move handle onto another one swaps their positions."""
-        placeholder, row_a, col_a, prior_bounds = self.floating.pop(a)
-        row_b, col_b = self._grid_position(b)
-        self.layout_widget.removeItem(placeholder)
-        self.layout_widget.removeItem(b)
-        self.layout_widget.addItem(b, row=row_a, col=col_a)
-        self.layout_widget.addItem(a, row=row_b, col=col_b)
-        a.setZValue(0)
-        layout = self._grid_layout()
-        if layout is not None and prior_bounds is not None:
-            # Release the fixed-size pin _start_floating applied to (row_a,
-            # col_a) -- _reset_grid_stretch below re-derives stretch factors
-            # for every cell, but a leftover fixed min==max would still
-            # override that, silently freezing this cell at its old size.
-            row_min, row_max, row_pref, col_min, col_max, col_pref = prior_bounds
-            layout.setRowMinimumHeight(row_a, row_min)
-            layout.setRowMaximumHeight(row_a, row_max)
-            layout.setRowPreferredHeight(row_a, row_pref)
-            layout.setColumnMinimumWidth(col_a, col_min)
-            layout.setColumnMaximumWidth(col_a, col_max)
-            layout.setColumnPreferredWidth(col_a, col_pref)
-        self._reset_grid_stretch()  # also repositions handles once layout settles
+    def _end_gutter_drag(self):
+        st = self._gutter_state
+        if st is None:
+            return
+        self._gutter_state = None
+        self._hide_snap_guides()
+        self._push_layout_change(st['before'])
 
-        # Diagnostic for a KeyError seen later in _remove_subplot (undoing a
-        # paste/delete on a plot that had since been moved/swapped) whose
-        # root cause wasn't reproducible from reading this method alone --
-        # if addItem above silently didn't register one of these two, say so
-        # now, at the moment it actually happens, instead of leaving it to
-        # surface as a confusing crash somewhere unrelated much later.
-        for item, label in ((a, 'a'), (b, 'b')):
-            if item not in self.layout_widget.ci.items:
-                print(
-                    f"WARNING: _swap_subplots: {label}={item} did not register "
-                    "in the grid layout after addItem -- please report this, "
-                    "along with the exact drag/drop steps that led here.",
-                    file=sys.stderr,
-                )
+    # -- gutter right-click menu ----------------------------------------------------
+    def _build_gutter_menu(self, axis, index):
+        """Insert a column/row at this line, delete the (empty) one on
+        either side, or make every column/row the same size."""
+        menu = QtWidgets.QMenu(self)
+        word, before_word, after_word = (("Column", "Left", "Right") if axis == 'col'
+                                         else ("Row", "Above", "Below"))
+        menu.addAction(f"Insert {word} Here").triggered.connect(
+            lambda: self.insert_grid_track(axis, index))
+        boxes = list(self.boxes.values())
+        for label, track in ((before_word, index - 1), (after_word, index)):
+            act = menu.addAction(f"Delete {word} {label}")
+            act.setEnabled(self._n_tracks(axis) > 1 and grid.track_is_empty(boxes, axis, track))
+            act.triggered.connect(lambda checked=False, t=track: self.delete_grid_track(axis, t))
+        menu.addSeparator()
+        menu.addAction(f"Equalize {word}s").triggered.connect(lambda: self.equalize_grid(axis))
+        return menu
 
-    def delete_subplot(self, plot_item):
-        min_subplots = 0 if self.empty else 1
-        if len(self.plots) <= min_subplots:
-            return  # keep at least one subplot (zero for a manager-created empty figure)
-        title = plot_item.titleLabel.text
-        xlabel = plot_item.getAxis('bottom').labelText
-        ylabel = plot_item.getAxis('left').labelText
-        curves_data = [
-            (c.xData.copy(), c.yData.copy(), c.opts.get('_orig_pen', c.opts.get('pen')), c.name())
-            for c in plot_item.listDataItems() if isinstance(c, pg.PlotDataItem)
-        ]
-        # Snapshot annotations first: _remove_subplot purges them unconditionally.
-        annotations_data = [a.to_dict() for a in self._annotations_on(plot_item)]
-        row, col = self._remove_subplot(plot_item)
-        if row is None:
-            # _remove_subplot's defensive fallback (plot_item was already
-            # orphaned from the grid by some other bug) -- fall back to
-            # appending a new row rather than crashing undo with a None row/col.
-            row = max((self._grid_position(p)[0] for p in self.plots), default=-1) + 1
-            col = 0
+    def _show_gutter_menu(self, axis, index, screen_pos):
+        self._build_gutter_menu(axis, index).exec_(QtCore.QPointF(screen_pos).toPoint())
 
-        holder = {}
+    def insert_grid_track(self, axis, index):
+        """Insert an empty column ('col') or row ('row') at grid line
+        `index`; whatever lies past it shifts by one track. Undoable."""
+        before = self._layout_snapshot()
+        self._insert_grid_track(axis, index)
+        self._apply_layout()
+        self._push_layout_change(before, structural=True)
 
-        def undo_fn():
-            new_plot = self._insert_subplot_at(row, col, title, xlabel, ylabel, curves_data)
-            holder['plot'] = new_plot
-            for d in annotations_data:
-                AnnotationItem.from_dict(self, new_plot, d)
-            self.focused_plot = new_plot
-            self._mark_active(new_plot)
+    def delete_grid_track(self, axis, index):
+        """Delete column/row `index`, only if no subplot covers any of it.
+        Undoable."""
+        if self._n_tracks(axis) <= 1 or not grid.track_is_empty(list(self.boxes.values()), axis, index):
+            return
+        before = self._layout_snapshot()
+        self._delete_grid_track(axis, index)
+        self._apply_layout()
+        self._push_layout_change(before, structural=True)
 
-        def redo_fn():
-            p = holder.get('plot')
-            if p is not None:
-                self._remove_subplot(p)
-
-        self._push_history(undo_fn, redo_fn)
+    def equalize_grid(self, axis):
+        """Make every column ('col') or row ('row') the same size. Undoable."""
+        before = self._layout_snapshot()
+        lines = grid.equal_lines(self._n_tracks(axis))
+        if axis == 'col':
+            self.grid_cols = lines
+        else:
+            self.grid_rows = lines
+        self._apply_layout()
+        self._push_layout_change(before)

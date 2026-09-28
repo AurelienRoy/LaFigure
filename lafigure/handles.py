@@ -31,12 +31,18 @@ items"). Subclasses just report drag
 deltas/positions to whatever owns them; they don't know how to interpret
 the drag themselves.
 
-ResizeHandle/MoveHandle drive subplot resize/move. AnnotationHandle
-(annotations.py) reuses DragHandle the same way for annotation resize/
-rotate/endpoint editing.
+ResizeHandle/MoveHandle drive subplot resize/move, GutterHandle drags a
+grid line (layout.py). AnnotationHandle (annotations.py) reuses DragHandle
+the same way for annotation resize/rotate/endpoint editing.
 """
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
+
+
+# Stacking of the layout chrome: subplots sit at 1..n (layout.py), then
+# gutters, annotations (800), the snap guides, and handles on top.
+GUTTER_Z = 700
+GUIDES_Z = 900
 
 
 class DragHandle(QtWidgets.QGraphicsRectItem):
@@ -55,6 +61,9 @@ class DragHandle(QtWidgets.QGraphicsRectItem):
         self._on_press = on_press
         self._on_move = on_move
         self._on_release = on_release
+        # Keyboard modifiers of the latest press/move/release, for owners
+        # whose drag reads them (Alt = no snapping, Ctrl+drop = swap).
+        self.modifiers = QtCore.Qt.NoModifier
         self.setBrush(pg.mkBrush(*brush_color))
         self.setPen(pg.mkPen('k', width=1))
         self.setZValue(z_value)
@@ -74,22 +83,25 @@ class DragHandle(QtWidgets.QGraphicsRectItem):
         if ev.button() != QtCore.Qt.LeftButton:
             ev.ignore()
             return
+        self.modifiers = ev.modifiers()
         self._on_press(ev.scenePos())
         ev.accept()
 
     def mouseMoveEvent(self, ev):
+        self.modifiers = ev.modifiers()
         self._on_move(ev.scenePos())
         ev.accept()
 
     def mouseReleaseEvent(self, ev):
+        self.modifiers = ev.modifiers()
         self._on_release(ev.scenePos())
         ev.accept()
 
 
 class ResizeHandle(DragHandle):
-    """A drag grip on the border/corner of the focused subplot. It only
-    reports drag deltas; LaFigure owns all the actual resize/reflow
-    logic."""
+    """A drag grip on the border/corner of the selected subplot. It only
+    reports drag positions; LaFigure owns the resize (layout.py), which
+    changes that one subplot's box and nothing else."""
     SIZE = 10
     _CURSORS = {
         'top': QtCore.Qt.SizeVerCursor, 'bottom': QtCore.Qt.SizeVerCursor,
@@ -104,16 +116,17 @@ class ResizeHandle(DragHandle):
         super().__init__(
             self.SIZE,
             on_press=lambda pos: figure._begin_resize(role, pos),
-            on_move=lambda pos: figure._update_resize(pos),
+            on_move=lambda pos: figure._update_resize(pos, self.modifiers),
             on_release=lambda pos: figure._end_resize(),
             cursor=self._CURSORS[role],
         )
 
 
 class MoveHandle(DragHandle):
-    """A center drag grip on the focused subplot (Select mode only) that
+    """A center drag grip on the selected subplot (Select mode only) that
     moves it by dragging -- distinct from ResizeHandle's border/corner
-    grips. Dropping it on another subplot swaps their grid positions."""
+    grips. A plain drop moves it; Ctrl+drop onto another subplot swaps
+    their boxes."""
     SIZE = 14
 
     def __init__(self, figure):
@@ -121,11 +134,69 @@ class MoveHandle(DragHandle):
         super().__init__(
             self.SIZE,
             on_press=lambda pos: figure._begin_move(pos),
-            on_move=lambda pos: figure._update_move(pos),
-            on_release=lambda pos: figure._end_move(pos),
+            on_move=lambda pos: figure._update_move(pos, self.modifiers),
+            on_release=lambda pos: figure._end_move(pos, self.modifiers),
             brush_color=(70, 130, 255, 230),
             cursor=QtCore.Qt.SizeAllCursor,
         )
+
+
+class GutterHandle(DragHandle):
+    """An invisible hit strip over one draggable stretch of an interior
+    grid line (layout.py's _update_gutters makes one per stretch no
+    subplot crosses). Left-drag moves the line -- every subplot edge
+    between its two neighbor lines follows; right-click opens the line's
+    insert/delete/equalize menu. Shows a split cursor, and a faint strip
+    on hover so the gutter is discoverable.
+
+    axis is 'col' (a vertical line between columns) or 'row'; index is the
+    line's number, 1..n-1."""
+    _CURSORS = {'col': QtCore.Qt.SplitHCursor, 'row': QtCore.Qt.SplitVCursor}
+    _IDLE = (0, 0, 0, 0)
+    _HOVER = (40, 90, 200, 60)
+
+    def __init__(self, figure, axis, index):
+        self.figure = figure
+        self.axis = axis
+        self.index = index
+        super().__init__(
+            0,
+            on_press=lambda pos: figure._begin_gutter_drag(axis, index, pos),
+            on_move=lambda pos: figure._update_gutter_drag(pos, self.modifiers),
+            on_release=lambda pos: figure._end_gutter_drag(),
+            brush_color=self._IDLE, cursor=self._CURSORS[axis], z_value=GUTTER_Z,
+        )
+        self.setPen(pg.mkPen(None))
+        self.setAcceptHoverEvents(True)
+        self._dragging = False
+
+    def mousePressEvent(self, ev):
+        if self.figure._placing_kind is not None or self.figure._relink_source is not None:
+            ev.ignore()  # the click belongs to placement / Link to...
+            return
+        if ev.button() == QtCore.Qt.RightButton:
+            ev.accept()
+            self.figure._show_gutter_menu(self.axis, self.index, ev.screenPos())
+            return
+        super().mousePressEvent(ev)
+        self._dragging = ev.isAccepted()
+
+    def mouseMoveEvent(self, ev):
+        if self._dragging:
+            super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        if self._dragging:
+            self._dragging = False
+            super().mouseReleaseEvent(ev)
+        else:
+            ev.accept()
+
+    def hoverEnterEvent(self, ev):
+        self.setBrush(pg.mkBrush(*self._HOVER))
+
+    def hoverLeaveEvent(self, ev):
+        self.setBrush(pg.mkBrush(*self._IDLE))
 
 
 class AnnotationHandle(DragHandle):
