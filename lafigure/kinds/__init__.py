@@ -22,8 +22,12 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Extra SeriesKinds beyond 'line' (lafigure/series.py). Each submodule
-registers its own kind(s) via series.register_series_kind on import; the
-package's __init__ (lafigure/__init__.py, coordinator-owned) is what
-actually imports them so they self-register -- importing lafigure.kinds
-itself does nothing on its own beyond making this a package."""
+"""SeriesKind implementations beyond 'line' (lafigure/series.py).
+
+Each module here registers one (or a small family of related) kind(s) as
+an import side effect (register_series_kind(...) at module scope) -- that
+import is what makes ax.<kind name>(...) reachable (see axes.py's
+Axes._plot_kind/__getattr__). lafigure/__init__.py (coordinator-owned)
+imports every module in this package so a plain `import lafigure`
+self-registers all of them; importing lafigure.kinds itself does nothing
+beyond making this a package."""
