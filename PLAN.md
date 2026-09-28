@@ -37,7 +37,7 @@ It is one sequential agent and it changes no behavior.
 
 | WP | Title | Wave | Depends on | Model | Status |
 |----|-------|------|-----------|-------|--------|
-| 00 | Commit current state (Phase 0 edits, docs) | 0 | — | coordinator | todo |
+| 00 | Commit current state (Phase 0 edits, docs) | 0 | — | coordinator | merged (0ba7284) |
 | 01 | Split figure.py into mixins; split tests; freeze interfaces | 0 | 00 | opus | todo |
 | A  | Free layout engine on fractional grid (Phase 1) | 1 | 01 | opus | todo |
 | B  | Context-menu cleanup + CSV export; verify Home/Fit/zoom color (Phase 0) | 1 | 01 | sonnet | todo |
@@ -130,34 +130,20 @@ When two packages in the same wave would own the same file, they are
 
 ## Worker agent brief (template the coordinator fills in)
 
-Launch each package with `Agent(isolation="worktree", model=<Model>)` and
-a prompt built from this template. Workers start cold: the brief must be
-complete on its own.
+Launch each package with `Agent(subagent_type="lafigure-worker",
+isolation="worktree", model=<Model>, run_in_background=true)`. The
+standing rules (reading order, ownership, tests first, suite, license
+header, commit, report format) live in `.claude/agents/lafigure-worker.md`;
+the prompt carries only the package-specific part:
 
 ```
-You are implementing work package WP-<id> of the LaFigure project
-(PyQtGraph library, repo root = your working directory).
+Work package WP-<id>: <title>. Branch: wp/<id>.
 
-Read first: CLAUDE.md (whole file, especially the lessons and the roadmap
-item <link/heading>), PLAN.md sections "File ownership" and "WP-<id>".
-
-Goal: <1–3 sentences, pointing at the CLAUDE.md roadmap items>.
-You may edit only: <owned files>, new files you create, tests/test_<id>.py.
-Do not edit: CLAUDE.md, PLAN.md, lafigure/__init__.py, toolbar.py — put
-any change you need there in your final report as a diff instead.
+Goal: <1–3 sentences, pointing at the CLAUDE.md roadmap items by heading>.
+Owned files: <list>. Test file: tests/test_<id>.py.
 Interfaces you consume: <names>. Interfaces you must provide: <names>.
-
-Acceptance:
-- tests/test_<id>.py covering <list>, written first, failing, then passing.
-- Full suite green: QT_QPA_PLATFORM=offscreen python run_tests.py
-- Behavior that depends on Qt/pyqtgraph event routing is tested with real
-  QMouseEvents / QTest.keyClick (tests/helpers.py), not direct calls.
-- BSD license header on every new .py file.
-- Commit on your branch wp/<id>, message ending with the attribution line.
-
-Final report (your only output the coordinator sees): what you built,
-files touched, tests added, anything NOT done or unverified, any diff for
-coordinator-owned files, surprises worth a CLAUDE.md lesson.
+Acceptance tests must cover: <list>.
+Package note: see PLAN.md "Per-package notes" → <id> (plus anything new).
 ```
 
 ## Merge protocol (coordinator)

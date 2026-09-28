@@ -931,16 +931,17 @@ exactly that: many work packages, run as parallel worker agents across
 several sessions, each following the same rules, and a coordinator
 repeating the same resume/merge/launch cycle every session. So:
 
-- **Worker agent definition — `.claude/agents/lafigure-worker.md`
-  (planned, not created yet).** A custom subagent type rather than a
+- **Worker agent definition — `.claude/agents/lafigure-worker.md`.** A
+  custom subagent type rather than a
   Skill: it holds the standing rules every worker repeats — read CLAUDE.md
   and PLAN.md, edit only the package's owned files, tests first, run the
   offscreen suite, BSD header on new files, commit on `wp/<id>`, the fixed
   final-report format — plus its tools and default model. Each launch
   prompt then carries only the package-specific part (goal, owned files,
-  interfaces). The brief template in `PLAN.md` is its source; keep the two
-  in sync, or move the template there when the file is created.
-- **Coordinator Skill — `/lafigure-next` (planned, not created yet).** A
+  interfaces). `PLAN.md`'s brief template holds only the package-specific
+  part; the standing rules live in the agent file — change them there.
+- **Coordinator Skill — `/lafigure-next`
+  (`.claude/skills/lafigure-next/SKILL.md`).** A
   thin trigger for `PLAN.md`'s "How to resume" and "Merge protocol":
   status table, branches and worktrees, merge finished packages, run the
   suite, update the docs, launch the next wave. The logic stays in
