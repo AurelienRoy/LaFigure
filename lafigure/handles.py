@@ -87,7 +87,7 @@ class DragHandle(QtWidgets.QGraphicsRectItem):
 
 
 class ResizeHandle(DragHandle):
-    """A drag grip on the border/corner of the active subplot. It only
+    """A drag grip on the border/corner of the focused subplot. It only
     reports drag deltas; LaFigure owns all the actual resize/reflow
     logic."""
     SIZE = 10
@@ -111,7 +111,7 @@ class ResizeHandle(DragHandle):
 
 
 class MoveHandle(DragHandle):
-    """A center drag grip on the active subplot (Select mode only) that
+    """A center drag grip on the focused subplot (Select mode only) that
     moves it by dragging -- distinct from ResizeHandle's border/corner
     grips. Dropping it on another subplot swaps their grid positions."""
     SIZE = 14
