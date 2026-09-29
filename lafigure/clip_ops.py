@@ -160,6 +160,8 @@ class ClipOpsMixin:
                 'series': [self._series_full_dict(s) for s in self._series_on(p)],
                 'annotations': [a.to_dict() for a in self._annotations_on(p)],
                 'groups': [g.to_dict() for g in self.groups if g.subplot is p],
+                'axes_type': getattr(p, 'axes_type', 'cartesian'),
+                'view_state': self._subplot_view_state(p),
             }
             for p in targets
         ]
@@ -182,7 +184,8 @@ class ClipOpsMixin:
             new_groups = []
             for i, data in enumerate(data_list):
                 new_plot = self._insert_subplot_at(
-                    start_row + i, col, data['title'], data['xlabel'], data['ylabel'], []
+                    start_row + i, col, data['title'], data['xlabel'], data['ylabel'], [],
+                    axes_type=data.get('axes_type', 'cartesian'), view_state=data.get('view_state'),
                 )
                 for d in data['series']:
                     self._add_series_restoring(new_plot, d)

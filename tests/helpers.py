@@ -27,6 +27,8 @@ driving handlers directly, real-event drivers (_mouse, _key) for behavior
 that depends on Qt's or pyqtgraph's own event routing, and figure
 factories. Import from here; never create a second QApplication.
 """
+import time
+
 import numpy as np
 import pyqtgraph as pg
 pg.setConfigOptions(useOpenGL=False)  # test-only; the shipped app keeps useOpenGL=True
@@ -241,9 +243,17 @@ def _mouse(f, etype, scene_pt, buttons, button=QtCore.Qt.LeftButton, mods=QtCore
 
 
 def _band_drag(f, a, b, mods=QtCore.Qt.NoModifier):
+    """Paced (found by WP-O, 2026-09-28): pyqtgraph's GraphicsScene drops a
+    mouse move closer than 1/mouseRateLimit s (10ms) to the previous one,
+    so unpaced synthetic moves risk never becoming a real drag event for
+    anything routed through pyqtgraph's own drag dispatch (e.g. RectBrush,
+    via _brush_drag below -- the rubber band itself reads raw events via
+    eventFilter and is immune, but shares this helper). 12ms mirrors
+    tests/test_3d.py's own _drag, written for the same reason."""
     L = QtCore.Qt.LeftButton
     _mouse(f, QtCore.QEvent.MouseButtonPress, a, L, mods=mods)
     for t in (0.1, 0.5, 1.0):
+        time.sleep(0.012)
         _mouse(f, QtCore.QEvent.MouseMove, a + (b - a) * t, L, button=QtCore.Qt.NoButton, mods=mods)
     _mouse(f, QtCore.QEvent.MouseButtonRelease, b, QtCore.Qt.NoButton, mods=mods)
 

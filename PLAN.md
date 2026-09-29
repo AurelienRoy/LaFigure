@@ -58,7 +58,7 @@ package-tree comment and bug #8/#9 for what it found along the way.
 | L  | Console panel + datatip + `src.filter` wiring (Phase 2) | 3 | H | sonnet | merged (00556a7) |
 | M  | HTML export via plotly + decimation popup (Phase 4) | 4 | E, I1, I2, I3 | sonnet | merged (da3fcf8); fixed 2 of its own pre-existing tests in test_export.py that asserted the pre-M placeholder state (html disabled/None) — its job was exactly to replace that; added a real file-on-disk export test |
 | N  | Controls & reactive tables in grid cells / separate window (Phase 5) | 3 | A, F | sonnet | merged (a500df0); separate-window variant fully built, grid-cell integration left as a documented layout.py hook (see controls.py docstring) for O or a later pass |
-| O  | 3D integration: `axes_type='3d'`, kinds, projected brushing (Phase 6) | 4 | A, G, H, J | opus | running (wp/O, agent a286ce6d1acdbf4e3) |
+| O  | 3D integration: `axes_type='3d'`, kinds, projected brushing (Phase 6) | 4 | A, G, H, J | opus | merged (54f49fa); **real GPU rendering confirmed working** in this environment (not just the offscreen fallback) — see CLAUDE.md bug #17. Coordinator applied its 3 cross-file diffs (clip_ops.py, view_ops.py, series.py) + 3 new tests, and hardened tests/helpers._band_drag against a real, latent pyqtgraph mouse-rate-limit bug WP-O found. **This is the last package in the plan — every WP through O is now merged.** |
 
 Waves: **0** → {A, B, C, D, E, F, G} in parallel → **H** alone →
 {I1, I2, I3, J, K1, L, N} in parallel → {K2, M, O}.

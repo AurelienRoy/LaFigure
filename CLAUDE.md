@@ -52,7 +52,10 @@ LaFigure/
                                              # module-level gca()/gcf()
     kinds/                                   # built-in SeriesKinds beyond 'line':
                                               # scatter/stairs/area/hist/bar/errorbar/imshow,
+                                              # scatter3d/line3d/surface (axes_type='3d'),
                                               # one module each, self-registering on import
+    view3d.py                                # View3DBox: a 3D cell's camera, offscreen
+                                              # GL render + QPainter fallback, mouse handling
     console.py                               # embedded Python console dock, datatip,
                                               # src.filter(...) UI wiring
     groups.py                                # Group hierarchy, common label, HSL color offsets
@@ -775,8 +778,37 @@ package lands.
       exists. GLViewWidget/GLScatterPlotItem themselves were never actually
       run (PyOpenGL unavailable) — the spike's own drawing/readback calls
       stand in, documented as unverified against pyqtgraph's real classes.
-- [ ] `axes_type='3d'`: `scatter3d`, `line3d`, `surface`; brushing via
+- [x] `axes_type='3d'`: `scatter3d`, `line3d`, `surface`; brushing via
       camera-matrix projection in numpy → rows (links with 2D plots).
+      **Built by WP-O** (2026-09-28, `lafigure/view3d.py`,
+      `lafigure/kinds/{scatter3d,line3d,surface}.py`). A 3D cell is still
+      the one `pg.PlotItem` `add_subplot` builds (2D axes hidden, its
+      `ViewBox` replaced with `View3DBox`) — so box/z-order/move/resize/
+      select/copy/delete/undo, all already generic in `layout.py`, work
+      on it unchanged; only its own mouse handling (orbit/pan/dolly, Hand/
+      Zoom-Rect mode only) and its offscreen-render-to-pixmap are new.
+      **Real GPU rendering confirmed working** (RTX 4070 SUPER, GL 4.6;
+      ≈1ms/frame at 1M points, matching the spike's estimate) — verified
+      via a child process on the native platform, since `QT_QPA_PLATFORM=
+      offscreen` still has no GL at all here (bug #10); a `QPainter`
+      fallback (same projection, drawn on the CPU) covers the offscreen
+      test suite and any environment with no GL context. Brushing reuses
+      WP-J's `rows_in_rect`/`show_rows` protocol via the kind's own hooks
+      — no change needed to `selection.py`/`brushing.py`; a rectangle
+      brushed on a 3D view links to the same `DataSource` rows on a 2D
+      plot and back. `Series.source`'s plain-array path (`series.py`) and
+      `_apply_link_x` (a 3D cell's view is its own pixels, never a Link X
+      reference or follower — `view_ops.py`) both needed small coordinator
+      diffs, applied and covered by new tests. **Known gaps**: a 3D
+      series isn't click-selectable (no `.curve`, same as bar/imshow);
+      the four brushed-point right-click actions (Delete/Transform/Stats/
+      Fit) skip 3D series; annotations anchored to a 3D cell's axes don't
+      follow the camera; brushing ignores occlusion (ray/rect-tests every
+      point, not just the frontmost); the fallback draws one flat color
+      per primitive with no depth buffer, and a `surface` over ~20k
+      triangles falls back to vertices only. `PyOpenGL` itself was never
+      installed — the renderer uses PyQt5's own raw GL bindings, per the
+      spike's own approach.
 
 ## The one thing to internalize before touching this kind of code
 
@@ -1384,6 +1416,44 @@ maintains precisely for this purpose. This is the same family as bug
 #7/#8's "an object's attribute doesn't hold what its presence/absence
 seems to suggest" — verify the actual value and its real meaning for the
 specific class, never infer meaning from a dict key merely existing.
+
+### 17. Three lessons from WP-O (3D integration, 2026-09-28)
+
+**pyqtgraph's `GraphicsScene` drops a mouse move closer than
+`1/mouseRateLimit` seconds (10ms) to the previous one.** A synthetic drag
+that fires its moves back-to-back with no real delay can silently lose
+every one of them to this rate limit — the drag never becomes a
+pyqtgraph drag event at all, with no error raised. It only "worked" in
+this project's existing `tests/helpers._band_drag`/`_brush_drag` by
+accident: enough real wall-clock time already passed between synthetic
+`QMouseEvent`s (Python call overhead, `app.processEvents()`) to clear the
+threshold on this machine. Discovered because a *second*, immediately-
+following synthetic drag in the same test — whose prior-move timestamp
+was now fresh — reliably failed where the first one hadn't. **This is
+now fixed**: `_band_drag` (and `tests/test_3d.py`'s own `_drag`) sleep
+12ms between moves. **Lesson:** a headless drag helper needs to pace its
+synthetic moves against real time, not just send them in the right
+order — and don't trust a drag helper "because the existing tests using
+it pass"; they may only be passing by the same accident bug #11's fix
+also had to correct for a different reason.
+
+**`ViewBox.addedItems` only lists items that count toward the view's
+autorange bounds.** Anything added with `plot_item.addItem(item,
+ignoreBounds=True)` — an overlay, an image, a legend — is invisible to
+that list. To find "everything actually in this ViewBox" regardless of
+bounds participation, walk `viewbox.childGroup.childItems()` instead, or
+keep your own explicit registry.
+
+**In a render-on-demand loop, profile everything the renderer touches,
+not just the draw call.** A first version of the 3D cell's per-frame
+cost was 51ms, almost all of it re-scanning a 1M-point array's min/max
+for camera-fit bounds on every single render — the actual GL draw was
+~1ms. Caching that scan (recompute only when the underlying data or
+visibility actually changes, not every frame) dropped it to the expected
+~1ms. The lesson generalizes past this one case: "redraw only when
+something changed" (as WP-G's spike itself recommended) has to apply to
+every expensive step inside the redraw, not only to the decision of
+whether to redraw at all.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 

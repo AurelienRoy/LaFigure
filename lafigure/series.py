@@ -201,7 +201,11 @@ class Series:
         x, y = self.kind_obj.get_xy(self.item)
         if self._private is None or self._private[0] is not x or self._private[1] is not y:
             empty = np.zeros(0)
-            src = DataSource({'x': empty if x is None else x, 'y': empty if y is None else y})
+            if y is None and np.ndim(x) == 2 and np.shape(x)[1] == 3:
+                # A 3D kind's get_xy: (positions (N, 3), None) -- kinds/scatter3d.py etc.
+                src = DataSource({'x': x[:, 0], 'y': x[:, 1], 'z': x[:, 2]})
+            else:
+                src = DataSource({'x': empty if x is None else x, 'y': empty if y is None else y})
             self._private = (x, y, src)
         return self._private[2]
 

@@ -491,3 +491,71 @@ def test_gl_render_matches_the_projection_on_a_real_context():
         return
     assert proc.returncode == 0, out
     assert 'GL-OK' in out, out
+
+
+# -- coordinator additions: the three cross-file diffs O reported, applied
+# after this package merged (clip_ops.py, view_ops.py, series.py) --------
+
+def test_copy_paste_a_3d_subplot_into_another_window_keeps_kind_and_camera():
+    """The clip_ops.py diff: copy_subplot/paste_subplot now carry
+    axes_type/view_state, so a pasted 3D cell stays 3D (not a plain 2D
+    PlotItem) with its camera and DataSource link intact, even across
+    separate LaFigure windows."""
+    f, p3, p2, s3, s2, src = _figure_3d_and_2d()
+    vb = _vb(p3)
+    vb.camera.orbit(15, -10)
+    vb.camera_changed()
+    state = vb.camera_state()
+    f._on_plot_clicked(p3)
+    f.copy_subplot()
+
+    f2 = m.LaFigure(empty=True)
+    f2.paste_subplot()
+    new = f2.plots[-1]
+    assert new.axes_type == '3d' and isinstance(_vb(new), View3DBox)
+    assert _vb(new).camera_state() == state
+    (pasted,) = f2._series_on(new)
+    assert pasted.kind == 'scatter3d' and pasted.source is src
+    f.close()
+    f2.close()
+
+
+def test_link_x_skips_a_3d_cell_that_is_not_the_reference():
+    """The view_ops.py diff filters 3D out of BOTH ends of _apply_link_x --
+    this specifically covers the case the merged test suite didn't yet: a
+    2D reference (plots[0]) linking a second 2D plot while a 3D cell sits
+    elsewhere in the same figure. Before the fix, the follower loop would
+    have called p.setXLink(reference) on the 3D cell too."""
+    f = m.LaFigure(empty=True)
+    f.show()
+    app.processEvents()
+    p_ref = f.add_subplot(row=0, col=0)
+    p_ref.plot([0, 10], [0, 1])
+    p_2d = f.add_subplot(row=0, col=1)
+    p_2d.plot([0, 10], [0, 1])
+    ax3 = f.subplot(1, 0, axes_type='3d', title="3D")
+    vb3 = _vb(ax3.plot_item)
+    fitted = vb3.camera_state()
+
+    f.toggle_link_x(True)
+    assert p_2d.getViewBox().state['linkedViews'][0]() is p_ref.getViewBox()
+    assert vb3.camera_state() == fitted, "the 3D cell must be untouched by linking"
+    f.toggle_link_x(False)
+    f.close()
+
+
+def test_a_plain_array_3d_series_source_has_xyz_columns():
+    """The optional series.py diff: Series.source's private-DataSource
+    branch used to hand a (N, 3) array straight to DataSource as if it
+    were a single 1-D column, which raised. A 3D kind's get_xy returns
+    (positions, None) -- now split into x/y/z columns."""
+    f = m.LaFigure(empty=True)
+    ax3 = f.subplot(0, 0, axes_type='3d')
+    xyz = np.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [6.0, 7.0, 8.0]])
+    s = ax3.scatter3d(xyz[:, 0], xyz[:, 1], z=xyz[:, 2])
+    src = s.source
+    assert set(src.columns) >= {'x', 'y', 'z'}
+    assert np.array_equal(src['x'], xyz[:, 0])
+    assert np.array_equal(src['y'], xyz[:, 1])
+    assert np.array_equal(src['z'], xyz[:, 2])
+    f.close()

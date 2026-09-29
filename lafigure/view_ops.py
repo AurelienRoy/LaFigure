@@ -229,12 +229,15 @@ class ViewOpsMixin:
 
     def _apply_link_x(self):
         """Link every subplot's X to plots[0], or unlink all. Re-run on any
-        add/remove, since plots[0] -- the reference -- can change."""
-        if not self.plots:
+        add/remove, since plots[0] -- the reference -- can change.
+        A 3D cell's view range is its own pixels (view3d.py): never a
+        reference, never linked."""
+        plots = [p for p in self.plots if getattr(p, 'axes_type', 'cartesian') != '3d']
+        if not plots:
             return
-        reference = self.plots[0]
+        reference = plots[0]
         reference.setXLink(None)
-        for p in self.plots[1:]:
+        for p in plots[1:]:
             p.setXLink(reference if self.linked_x else None)
 
     def toggle_link_x(self, checked):
