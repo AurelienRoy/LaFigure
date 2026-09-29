@@ -59,6 +59,9 @@ LaFigure/
     console.py                               # embedded Python console dock, datatip,
                                               # src.filter(...) UI wiring
     groups.py                                # Group hierarchy, common label, HSL color offsets
+    curve_style.py                           # curve line width/style, marker, color,
+                                              # z-order: the one highlight-aware,
+                                              # undoable path for style edits
     controls.py                              # ControlPanel/ControlPanelWindow: buttons,
                                               # sliders, dropdowns, checkboxes, reactive tables
     manager.py                 # FigureManager: tree of open figures/subplots,
@@ -188,14 +191,50 @@ the actual code — this list is a summary, not a substitute for checking.
         back into the grid).
 - [x] Move a subplot / swap it with another: in Select mode, drag its
       center handle onto another subplot to swap their grid positions
-- [~] Change the z-order of curves: **front/back only**, via the Curve
-      browser's Z-order buttons (`item.setZValue`, WP-K2, 2026-09-28,
-      `manager.py`) — verified live to actually change on-screen stacking
-      order, undoable. Step up/down (not just the two extremes) and
-      reordering the legend to match are **not implemented**.
+- [~] Change the z-order of curves: the Curve browser's Z-order buttons
+      (WP-K2, `manager.py`) and the curve menu's Bring to Front / Send to
+      Back (`curve_style.curves_to_front`), undoable. The subplot menu's
+      **Reorder Curves...** opens the Figure Manager on the Curve browser
+      tab for that subplot (`LaFigure.open_curve_browser` →
+      `FigureManager.show_curve_browser`; `registry.manager` is the one
+      manager, created on demand). Reordering the legend to match is
+      **not implemented**.
+- [x] **Curve display style, MATLAB-like** (2026-09-29): the curve menu's
+      Line Width / Line Style (`-` `--` `:` `-.` none) / Marker (o + * x s d
+      ^ v > < p h, none) / Marker Size submenus, acting on the curve
+      selection if the right-clicked curve is in it (one undo entry).
+      Gated by kind (`curve_style._LINE_KINDS`/`_MARKER_KINDS`). Every
+      style edit — menu and Curve browser editor alike — goes through
+      `CurveStyleMixin._edit_curve_styles`, which unhighlights, applies,
+      re-highlights: while a curve is selected `opts['pen']` is the
+      highlight and the real pen is parked in `opts['_orig_pen']` (popped
+      on deselect). Line style "none" is a transparent pen, never
+      `pen=None` (bug #15).
 - [ ] Manipulate individual numeric points (drag a sample to edit its
       value) — not implemented
-- [x] Add/remove a legend (toolbar toggle, or right-click menu)
+- [x] Add/remove a legend (toolbar toggle, or the subplot right-click
+      menu). **Selectable and movable** (2026-09-29): click it in Select
+      mode → red dashed border, exclusive like any selection
+      (`selected_legend`); drag it → one undo entry; Del hides it. Fixed
+      the same day: a legend toggled on over existing curves was **empty**
+      (zero size, invisible) — pyqtgraph enters an item in a legend only
+      from `PlotItem.addItem`, and only if the legend already exists, so
+      `_show_legend` adds the named plot-data items itself.
+- [x] **Right-click menus split by target** (2026-09-29, `menus.py`), each
+      starting with a disabled bold header ("Subplot: <title>" / "Curve:
+      <name>"). A right-click on a curve reaches the ViewBox, not the
+      curve (`PlotCurveItem.mouseClickEvent` is left-button only), so the
+      ViewBox's `raiseContextMenu` is wrapped: a hit on a curve
+      (`_curve_at`: its `mouseShape`, or a scatter point) opens the curve
+      menu, else pyqtgraph's own subplot menu. Subplot menu: View All
+      (undoable), Copy/Paste Subplot, Paste Curve (enabled only when a
+      curve is on the clipboard), Bring Subplot to Front / Send
+      Subplot to Back, Toggle Legend, Reorder Curves..., Remove Average,
+      FFT, Export to CSV, brushed-point actions, Delete/Rename Curve
+      submenus. Curve menu: Copy/Paste Curve, Bring to Front / Send to
+      Back, the four style submenus, Rename, Delete — no Toggle Legend.
+      In Brush mode a right-click always opens the subplot menu (its
+      brushed-point actions are the point there).
 - [x] Edit a legend entry's name by clicking (double-click the legend label,
       or right-click → Rename Curve)
 - [x] Edit a subplot's title by clicking (double-click it)
@@ -222,8 +261,8 @@ the actual code — this list is a summary, not a substitute for checking.
       (guarded by `test_add_subplot_is_the_only_subplot_construction_site`
       in `tests/test_layout.py`, which scans every module in the package).
       A ViewBox's mouse-enabled state has exactly one
-      writer, `_apply_mouse_enabled`: pan is off if Select mode **or**
-      brushing is on. Before 2026-09-27, Brush and Link X only reached
+      writer, `_apply_mouse_enabled`: pan is off in Select and Brush modes.
+      Before 2026-09-27, Brush and Link X only reached
       existing subplots, and turning Brush off re-enabled pan in Select mode.
 - [x] Data brushing, generalized to every kind by WP-J (2026-09-28,
       superseding the two-hardcoded-scatter-subplots `LinkedScatter`/
@@ -370,10 +409,22 @@ the actual code — this list is a summary, not a substitute for checking.
       Undo/Redo toolbar buttons are enabled/disabled to match whether
       their respective stack is non-empty (`_update_undo_redo_actions`,
       called from `_push_history`/`undo`/`redo`) — both start disabled.
-      **Not** covered by undo (deliberately — these are view/UI toggles,
-      not data edits): legend on/off, Link X, Brush mode, Pan/Select/Zoom
-      Rect mode, Grid Layout toggle, view reset, subplot move/swap
-- [x] Three interaction modes, exclusive toolbar toggle (Select is default):
+      **Zoom and pan are covered too** (2026-09-29, `view_ops.py`, "view
+      history"): every mouse gesture on the scene is bracketed press →
+      release by before/after range snapshots (an observe-only scene
+      filter, closing one event-loop turn after the release, since
+      pyqtgraph applies e.g. a rect zoom while handling it); a wheel burst
+      is one entry (closed 400 ms after the last tick, or by undo/redo);
+      Home/Fit/View All are wrapped explicitly. No entry if another entry
+      was pushed during the gesture (a resize, a legend move — that was
+      the gesture), nor for an axis auto-ranging before and after (a
+      selection border resizing the view is not a zoom). **Not** covered
+      (view/UI toggles): legend on/off, Link X, interaction mode, Grid
+      Layout toggle.
+- [x] Four interaction modes, exclusive toolbar toggle (Select is default;
+      **Brush** joined the group 2026-09-29 — choosing any mode unchecks
+      the others, and `toggle_brush(False)` returns to Select;
+      `self.brushing` is derived from the mode):
       - **Select** (mouse-pointer icon): click a subplot to select it;
         drag its border/corner handles to resize, its center handle to
         move/swap. Normal data pan/zoom is disabled while Select is
@@ -392,7 +443,11 @@ the actual code — this list is a summary, not a substitute for checking.
         _zoom_cursor`, 2026-09-29) — Qt has no built-in cursor shape for
         this, unlike Hand's `OpenHandCursor`, so it's a cached `QPixmap`
         painted once, wrapped in a `QCursor` with its hotspot at the
-        lens's center (the point actually being zoomed into).
+        lens's center (the point actually being zoomed into). During a
+        right-drag (pyqtgraph's dynamic zoom/unzoom) an override cursor
+        shows a lens with "±" and horizontal/vertical double arrows
+        (`_zoom_drag_cursor`), restored on release.
+      - **Brush**: left-drag brushes points (see Data brushing); pan off.
 - [x] **Annotations** (ellipse, rectangle, text, text+arrow, arrow, double
       arrow, line, data cursor) with a filiation (parent/child) model:
       free-floating in the figure (`anchor='figure'`), tied to a subplot's
@@ -1477,6 +1532,26 @@ visibility actually changes, not every frame) dropped it to the expected
 something changed" (as WP-G's spike itself recommended) has to apply to
 every expensive step inside the redraw, not only to the decision of
 whether to redraw at all.
+
+### 18. State parked "while X is on" must be dropped when X ends (2026-09-29)
+
+**Symptom:** a curve restyled while unselected (Curve browser width
+spin) snapped back to its old width the next time it was selected and
+deselected. Separately, the legend button did nothing visible.
+
+**Root cause:** the selection highlight parked the real pen in
+`opts['_orig_pen']` with `setdefault` and restored it on deselect with
+`get` — so the parked copy outlived the highlight, and the *next*
+highlight's `setdefault` kept the stale one. The legend: pyqtgraph
+fills a legend only as items are added *after* it exists; `addLegend()`
+over existing curves gives an empty, zero-size item — "created" and
+"visible" are different claims.
+
+**Lesson:** a value parked for the duration of a temporary state
+(highlight, drag, preview) is popped, not read, when that state ends,
+and every edit made during the state goes through one path that knows
+about it (`curve_style.py`). And test the user-visible outcome (the
+legend has items and a size), not that the object exists.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 

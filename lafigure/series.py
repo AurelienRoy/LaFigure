@@ -103,12 +103,18 @@ class LineKind(SeriesKind):
     capabilities = frozenset({'brush', 'fft', 'remove_average', 'fit', 'copy'})
 
     def create(self, plot_item, x, y, pen=None, name=None, source=None, rows=None,
-               clip_to_view=False, downsample=None):
+               clip_to_view=False, downsample=None, symbol=None, symbol_size=None,
+               symbol_brush=None, symbol_pen=None):
         """clip_to_view/downsample ('peak', 'mean', 'subsample' or None) are
-        the millions-of-points settings; clip_to_view assumes x increases."""
+        the millions-of-points settings; clip_to_view assumes x increases.
+        symbol*: an optional marker (curve_style.set_curve_marker)."""
         kwargs = {'name': name}
         if pen is not None:
             kwargs['pen'] = pen
+        if symbol is not None:
+            kwargs.update(symbol=symbol, symbolBrush=symbol_brush, symbolPen=symbol_pen)
+            if symbol_size is not None:
+                kwargs['symbolSize'] = symbol_size
         item = plot_item.plot(x, y, **kwargs)
         if clip_to_view:
             item.setClipToView(True)
@@ -117,16 +123,25 @@ class LineKind(SeriesKind):
         return item
 
     def to_dict(self, item):
+        style = {
+            'clip_to_view': bool(item.opts.get('clipToView')),
+            'downsample': item.opts.get('downsampleMethod') if item.opts.get('autoDownsample') else None,
+        }
+        if item.opts.get('symbol') is not None:
+            # Only a line that has a marker records one, so a plain line's
+            # dict keeps exactly its old shape.
+            style.update(
+                symbol=item.opts['symbol'], symbol_size=item.opts.get('symbolSize'),
+                symbol_brush=item.opts.get('symbolBrush'),
+                symbol_pen=item.opts.get('_orig_symbol_pen', item.opts.get('symbolPen')),
+            )
         return {
             'x': np.array(item.xData, copy=True),
             'y': np.array(item.yData, copy=True),
             # The pen before any selection highlight (selection_ui keeps it there).
             'pen': item.opts.get('_orig_pen', item.opts.get('pen')),
             'name': item.name(),
-            'style': {
-                'clip_to_view': bool(item.opts.get('clipToView')),
-                'downsample': item.opts.get('downsampleMethod') if item.opts.get('autoDownsample') else None,
-            },
+            'style': style,
         }
 
 

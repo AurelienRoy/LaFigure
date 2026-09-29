@@ -48,6 +48,9 @@ class ClipOpsMixin:
         being deleted are skipped: the subplot's own undo restores them,
         while their separate undo steps would target the dead PlotItem."""
         doomed_plots = list(self.selected_plots)
+        if self.selected_legend is not None and self.selected_legend.legend is not None:
+            # View state, like Toggle Legend -- not an undo entry.
+            self._hide_legend(self.selected_legend)
         with self.undo_group():
             for ann in list(self.selected_annotations):
                 if ann.anchor == 'figure' or ann.parent_plot not in doomed_plots:

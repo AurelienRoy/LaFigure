@@ -142,7 +142,7 @@ def test_million_row_series_with_brush_off_has_no_brush_overhead():
     f.brush_action.trigger()
     assert 'mouseDragEvent' in vb.__dict__, "Brush on connects the drag handler"
     assert brusher.selection == {} and brusher._bins == {}, "turning Brush on computes nothing yet"
-    f.brush_action.trigger()
+    f.select_action.trigger()  # Brush off: modes are exclusive
     assert 'mouseDragEvent' not in vb.__dict__, "Brush off disconnects it again"
     f.close()
 
@@ -237,7 +237,7 @@ def test_demo_scatters_brush_link_through_one_shared_source():
     assert np.array_equal(hx, src[s4.columns[0]][got4]) and np.array_equal(hy, src[s4.columns[1]][got4])
     # A plain (non-Shift) brush elsewhere unbrushes the linked pair.
     _brush_drag(f, p3, (-3.0, -2.0), (-2.9, -2.9))
-    f.brush_action.trigger()
+    f.select_action.trigger()
     assert all(not b.selection for b in f._brushers.values())
     f.close()
 

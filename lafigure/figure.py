@@ -48,6 +48,7 @@ behavior lives in one mixin per concern:
     series.py          series kinds, the Series wrapper, _add_series
     console.py         embedded Python console dock, datatip, filter wiring
     groups.py          Group hierarchy, common label, HSL color offsets
+    curve_style.py     curve line width/style, marker, color, z-order (undoable)
 
 The library-facing API sits on top: fig.subplot() returns an Axes
 (axes.py), whose plot() goes through _add_series.
@@ -78,6 +79,7 @@ from .export import SaveMixin
 from .series import SeriesMixin
 from .console import ConsoleMixin
 from .groups import GroupsMixin
+from .curve_style import CurveStyleMixin
 from .axes import Axes
 
 pg.setConfigOptions(antialias=False, useOpenGL=True, background='w', foreground='k')
@@ -85,7 +87,7 @@ pg.setConfigOptions(antialias=False, useOpenGL=True, background='w', foreground=
 
 class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryMixin,
                BrushingMixin, ClipOpsMixin, AnnotationOpsMixin, ViewOpsMixin, NamingMixin,
-               HelpMixin, SaveMixin, SeriesMixin, ConsoleMixin, GroupsMixin,
+               HelpMixin, SaveMixin, SeriesMixin, ConsoleMixin, GroupsMixin, CurveStyleMixin,
                QtWidgets.QMainWindow):
     # The mixins come before QMainWindow so their Qt event overrides
     # (eventFilter, resizeEvent) win, and their super() calls still reach Qt.
@@ -118,6 +120,9 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         # _rename_curve/copy_curve/copy_subplot/delete_selection).
         self.selected_plots = []
         self.selected_curves = []
+        # The subplot whose legend is selected (click it, Select mode), or
+        # None -- exclusive with every other selection (view_ops.py).
+        self.selected_legend = None
         # What the registry's selectionChanged last reported, so it only
         # fires on a real change (see _notify_selection_changed), and how
         # deep we are in nested selection_op calls (only depth 0 reports).
@@ -186,6 +191,9 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         # annotations -- see eventFilter's own docstring for why sigMouseClicked
         # alone (used above) can't do this.
         self.layout_widget.scene().installEventFilter(self)
+        # View history (zoom/pan undo): its observe-only filter must be
+        # installed after the one above, so Qt calls it first (view_ops.py).
+        self._install_view_history()
 
     def subplot(self, row, col, rowspan=1, colspan=1, title='', axes_type='cartesian'):
         """The library entry point: add_subplot, wrapped in an Axes

@@ -478,6 +478,8 @@ class LayoutMixin:
         self._brushers.pop(plot_item, None)
         if plot_item in self.selected_plots:
             self.selected_plots.remove(plot_item)
+        if self.selected_legend is plot_item:
+            self.selected_legend = None
         if self.focused_plot is plot_item:
             self.focused_plot = self.plots[0] if self.plots else None
             if self.focused_plot is not None:

@@ -30,9 +30,11 @@ import os
 import tempfile
 
 import numpy as np
+import pyqtgraph as pg
+from pyqtgraph.Qt import QtCore, QtWidgets
 
 import lafigure as m
-from tests.helpers import shown_figure, first_curve, _click_subplot, SHIFT
+from tests.helpers import app, shown_figure, first_curve, _click_subplot, SHIFT
 
 
 def _texts(menu):
@@ -52,11 +54,35 @@ BRUSH_ACTION_LABELS = (
 def test_subplot_menu_has_the_app_actions():
     f = shown_figure()
     texts = _texts(f.plots[0].getViewBox().menu)
-    for label in ("Paste Curve", "Copy Subplot", "Paste Subplot", "Toggle Legend",
+    for label in ("Copy Subplot", "Paste Subplot", "Paste Curve", "Toggle Legend",
+                  "Bring Subplot to Front", "Send Subplot to Back", "Reorder Curves...",
                   "Remove Average", "FFT -> Subplot Below", "Delete Selected Points",
                   "Transform Selected Points...", "Selection Stats...",
                   "Fit Selected Points", "Delete Curve", "Rename Curve"):
         assert label in texts, (label, texts)
+    for label in ("Copy Curve", "Bring to Front", "Send to Back"):
+        assert label not in texts, ("curve-only action in the subplot menu", label)
+    f.close()
+
+
+def test_subplot_menu_paste_curve_is_enabled_only_with_a_copied_curve_and_pastes_there():
+    f = m.LaFigure(empty=True)
+    src = f.add_subplot(row=0, col=0)
+    f._add_series(src, 'line', np.arange(5.0), np.arange(5.0), name="ramp")
+    empty = f.add_subplot(row=1, col=0)
+    f.clipboard.curve = []
+    menu = empty.getViewBox().menu
+    paste = next(a for a in menu.actions() if a.text() == "Paste Curve")
+    menu.aboutToShow.emit()
+    assert not paste.isEnabled(), "nothing copied: Paste Curve is disabled"
+    f.focused_plot = src
+    f.copy_curve()
+    menu.aboutToShow.emit()
+    assert paste.isEnabled(), "a curve copied: Paste Curve is enabled"
+    paste.trigger()
+    assert [c.name() for c in empty.listDataItems()] == ["ramp"], "pasted onto the menu's subplot"
+    f.undo()
+    assert empty.listDataItems() == [], "one undo step"
     f.close()
 
 
@@ -88,7 +114,7 @@ def test_pyqtgraph_export_and_axis_menus_are_removed():
     # pyqtgraph's own "View All" and this app's own entries stay.
     assert "View All" in texts, texts
     assert "Export to CSV..." in texts, texts
-    for label in ("Paste Curve", "Copy Subplot", "Paste Subplot", "Toggle Legend"):
+    for label in ("Copy Subplot", "Paste Subplot", "Toggle Legend"):
         assert label in texts, (label, texts)
     f.close()
 
@@ -181,4 +207,99 @@ def test_brushed_point_actions_visible_and_enabled_with_a_real_selection():
     vis = _labelled(menu)
     assert all(visible for visible, _ in vis.values()), vis
     assert all(enabled for _, enabled in vis.values()), vis
+    f.close()
+
+
+# -- headers, curve menu, Reorder Curves... ---------------------------------
+class _FakeContextEvent:
+    acceptedItem = None
+
+    def __init__(self, scene_pos):
+        self._pos = scene_pos
+
+    def scenePos(self):
+        return self._pos
+
+    def screenPos(self):
+        return QtCore.QPointF(10, 10)
+
+
+def _curve_figure():
+    f = m.LaFigure(empty=True)
+    ax = f.subplot(0, 0, title="Ramp")
+    s = ax.plot(np.linspace(0, 100, 1001), np.linspace(0, 100, 1001), name="ramp")
+    f.show()
+    app.processEvents()
+    vb = ax.plot_item.getViewBox()
+    vb.setRange(xRange=(0, 100), yRange=(0, 100), padding=0)
+    app.processEvents()
+    return f, ax.plot_item, s.item
+
+
+def test_subplot_menu_starts_with_a_header_naming_the_subplot():
+    f, p, c = _curve_figure()
+    menu = p.getViewBox().menu
+    menu.aboutToShow.emit()
+    first = menu.actions()[0]
+    assert first.text() == "Subplot: Ramp" and not first.isEnabled()
+    f.close()
+
+
+def test_right_click_on_a_curve_opens_the_curve_menu_else_the_subplot_menu():
+    f, p, c = _curve_figure()
+    vb = p.getViewBox()
+    shown = []
+    real = f._curve_context_menu
+    f._curve_context_menu = lambda plot_item, curve: shown.append(curve) or real(plot_item, curve)
+    vb.raiseContextMenu(_FakeContextEvent(vb.mapViewToScene(QtCore.QPointF(50, 50))))
+    assert shown == [c], "on the curve: the curve menu"
+    assert f.selected_curves == [c], "right-click selects the curve (Select mode)"
+    vb.raiseContextMenu(_FakeContextEvent(vb.mapViewToScene(QtCore.QPointF(20, 80))))
+    assert shown == [c], "off the curve: pyqtgraph's subplot menu, not the curve menu"
+    vb.menu.close()
+    for w in QtWidgets.QApplication.topLevelWidgets():
+        if isinstance(w, QtWidgets.QMenu):
+            w.close()
+    f.close()
+
+
+def test_curve_menu_has_curve_actions_only_and_a_header():
+    f, p, c = _curve_figure()
+    menu = f._curve_context_menu(p, c)
+    texts = _texts(menu)
+    assert texts[0] == "Curve: ramp" and not menu.actions()[0].isEnabled()
+    for label in ("Copy Curve", "Paste Curve", "Bring to Front", "Send to Back",
+                  "Rename Curve...", "Delete Curve"):
+        assert label in texts, (label, texts)
+    for label in ("Toggle Legend", "Copy Subplot", "Paste Subplot", "FFT -> Subplot Below",
+                  "Export to CSV..."):
+        assert label not in texts, (label, texts)
+    titles = _submenu_titles(menu)
+    assert titles == ["Line Width", "Line Style", "Marker", "Marker Size"], titles
+    f.close()
+
+
+def test_curve_menu_style_choice_applies_to_the_selection_as_one_undo():
+    f, p, c = _curve_figure()
+    c2 = f._add_series(p, 'line', np.arange(5.0), np.arange(5.0), name="b").item
+    f._select_curve(c)
+    f._select_curve(c2, additive=True)
+    menu = f._curve_context_menu(p, c)
+    assert _texts(menu)[0] == "Curve: ramp (+1 more)"
+    widths = {a.menu().title(): a.menu() for a in menu.actions() if a.menu() is not None}["Line Width"]
+    n = len(f.undo_stack)
+    next(a for a in widths.actions() if a.text() == "4").trigger()
+    f._deselect_curve()
+    assert all(pg.mkPen(x.opts['pen']).widthF() == 4 for x in (c, c2))
+    assert len(f.undo_stack) == n + 1
+    f.close()
+
+
+def test_reorder_curves_opens_the_manager_on_the_curve_tab():
+    f, p, c = _curve_figure()
+    mgr = f.open_curve_browser(p)
+    assert mgr.tabs.currentIndex() == 1
+    assert mgr._curve_current_fig is f and mgr._curve_current_plot is p
+    assert f.open_curve_browser(p) is mgr, "one manager, reused"
+    mgr.close()
     f.close()

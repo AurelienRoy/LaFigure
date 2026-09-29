@@ -67,6 +67,7 @@ class HistoryMixin:
         self.redo_action.setEnabled(bool(self.redo_stack))
 
     def undo(self):
+        self._close_wheel_gesture()
         if not self.undo_stack:
             return
         undo_fn, redo_fn = self.undo_stack.pop()
@@ -75,6 +76,7 @@ class HistoryMixin:
         self._update_undo_redo_actions()
 
     def redo(self):
+        self._close_wheel_gesture()
         if not self.redo_stack:
             return
         undo_fn, redo_fn = self.redo_stack.pop()

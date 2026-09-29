@@ -56,6 +56,8 @@ class FigureRegistry(QtCore.QObject):
     def __init__(self):
         super().__init__()
         self.figures = []
+        # The FigureManager window, once one exists (it sets this itself).
+        self.manager = None
 
     def register(self, figure):
         self.figures.append(figure)

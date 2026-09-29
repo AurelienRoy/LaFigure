@@ -278,7 +278,7 @@ def test_series_editor_shows_name_and_color_and_width_are_undoable():
     assert mgr.curve_name_edit.text() == 'raw'
     assert not mgr.curve_color_button.isHidden()
     assert not mgr.curve_width_spin.isHidden()
-    assert mgr.curve_marker_combo.isHidden()  # a plain line has no marker control
+    assert not mgr.curve_marker_combo.isHidden()  # a line can take markers (MATLAB-style)
 
     n_undo = len(f.undo_stack)
     old_color = pg.mkPen(s1.item.opts['pen']).color()

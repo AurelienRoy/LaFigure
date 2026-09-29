@@ -27,12 +27,15 @@ modes, Home/Fit, Zoom Rect box color, Link X, Remove Average, FFT.
 Figure-wide toggles are driven with action.trigger() -- what a real click
 does; setChecked() alone never emits `triggered`.
 """
+import time
+
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from tests.helpers import (
     app, m, has_border, shown_figure, first_curve, _mouse, _ramp_figure, _is_x_linked,
+    _band_drag, _press_escape,
 )
 
 
@@ -140,18 +143,22 @@ def test_link_x_survives_deleting_the_reference_subplot():
     f.close()
 
 
-def test_brush_off_does_not_reenable_pan_in_select_mode():
+def test_brush_is_a_mode_exclusive_with_select_hand_and_zoom():
     f = m.LaFigure()
-    f.hand_action.trigger()
     f.brush_action.trigger()
-    assert all(p.getViewBox().state['mouseEnabled'] == [False, False] for p in f.plots), \
-        "brushing must disable pan even in Hand mode"
+    assert f.interaction_mode == 'brush' and f.brushing
+    assert not f.select_action.isChecked(), "picking Brush unchecks Select"
+    assert all(p.getViewBox().state['mouseEnabled'] == [False, False] for p in f.plots),         "brushing owns left drags: no pan"
     f.select_action.trigger()
+    assert f.interaction_mode == 'select' and not f.brushing
+    assert not f.brush_action.isChecked(), "picking Select unchecks Brush"
+    assert all(p.getViewBox().state['mouseEnabled'] == [False, False] for p in f.plots),         "Brush off must not re-enable pan while Select mode forbids it"
     f.brush_action.trigger()
-    assert all(p.getViewBox().state['mouseEnabled'] == [False, False] for p in f.plots), \
-        "Brush off must not re-enable pan while Select mode forbids it"
     f.hand_action.trigger()
+    assert not f.brushing and not f.brush_action.isChecked()
     assert all(p.getViewBox().state['mouseEnabled'] == [True, True] for p in f.plots)
+    f.toggle_brush(True)
+    assert f.brush_action.isChecked() and not f.hand_action.isChecked(), "the API syncs the toolbar"
     f.close()
 
 
@@ -260,4 +267,171 @@ def test_home_and_fit_toolbar_buttons_act_on_the_hovered_subplot():
     actions["Home"].trigger()
     (x0, x1), (y0, y1) = vb.viewRange()
     assert x0 <= 0 and x1 >= 100 and y0 <= 0 and y1 >= 100, "Home autoranges to all the data"
+    f.close()
+
+
+# -- legend: visible, selectable, movable ------------------------------------
+class _FakeLegendClick:
+    def __init__(self):
+        self.accepted = False
+
+    def button(self):
+        return QtCore.Qt.LeftButton
+
+    def accept(self):
+        self.accepted = True
+
+
+def _legend_figure():
+    f = m.LaFigure(empty=True)
+    ax = f.subplot(0, 0, title="L")
+    ax.plot(np.arange(10.0), np.arange(10.0), name="one")
+    ax.plot(np.arange(10.0), -np.arange(10.0), name="two")
+    f.show()
+    app.processEvents()
+    f._on_plot_clicked(ax.plot_item)
+    return f, ax.plot_item
+
+
+def test_legend_toggled_on_over_existing_curves_lists_them():
+    f, p = _legend_figure()
+    f.toggle_legend()
+    app.processEvents()
+    assert p.legend is not None
+    assert [label.text for _, label in p.legend.items] == ["one", "two"]
+    assert not p.legend.boundingRect().isEmpty(), "a non-empty legend has a size"
+    f.toggle_legend()
+    assert p.legend is None
+    f.close()
+
+
+def test_legend_click_selects_it_and_escape_or_del_deselects():
+    f, p = _legend_figure()
+    f.toggle_legend()
+    orig_pen = p.legend.opts['pen']
+    ev = _FakeLegendClick()
+    p.legend.mouseClickEvent(ev)
+    assert ev.accepted and f.selected_legend is p
+    assert f.selected_plots == [] and f.selected_curves == [], "exclusive, like any plain click"
+    assert pg.mkPen(p.legend.opts['pen']).color().red() == 220
+    _press_escape(f)
+    assert f.selected_legend is None and p.legend.opts['pen'] is orig_pen, "original pen back"
+    p.legend.mouseClickEvent(_FakeLegendClick())
+    f.delete_selection()
+    assert p.legend is None and f.selected_legend is None, "Del hides the selected legend"
+    f.close()
+
+
+def test_legend_drag_moves_it_as_one_undo_entry():
+    f, p = _legend_figure()
+    f.toggle_legend()
+    app.processEvents()
+    legend = p.legend
+    start = QtCore.QPointF(legend.pos())
+    a = legend.sceneBoundingRect().center()
+    n = len(f.undo_stack)
+    _band_drag(f, a, a + QtCore.QPointF(60, 40))
+    app.processEvents()
+    moved = QtCore.QPointF(legend.pos())
+    assert (moved - start).manhattanLength() > 50, (start, moved)
+    assert len(f.undo_stack) == n + 1, "the move only -- no view entry for the same gesture"
+    f.undo()
+    assert (QtCore.QPointF(legend.pos()) - start).manhattanLength() < 1
+    f.redo()
+    assert (QtCore.QPointF(legend.pos()) - moved).manhattanLength() < 1
+    f.close()
+
+
+# -- view history: zoom/pan are undoable -------------------------------------
+def test_home_fit_and_view_all_are_undoable():
+    f, vb = _ramp_figure()
+    vb.setRange(xRange=(10, 20), yRange=(10, 20), padding=0)
+    before = vb.viewRange()
+    f.reset_view()
+    assert vb.viewRange() != before
+    f.undo()
+    assert np.allclose(vb.viewRange(), before)
+    f.redo()
+    assert not np.allclose(vb.viewRange(), before)
+    f.undo()
+    f.fit_view_vertical()
+    f.undo()
+    assert np.allclose(vb.viewRange(), before)
+    vb.menu.viewAll.trigger()
+    assert not np.allclose(vb.viewRange(), before)
+    f.undo()
+    assert np.allclose(vb.viewRange(), before)
+    f.close()
+
+
+def test_zoom_rect_drag_is_one_undo_entry():
+    f, vb = _ramp_figure()
+    f.show()
+    app.processEvents()
+    vb.setRange(xRange=(0, 100), yRange=(0, 100), padding=0)
+    f.zoom_action.trigger()
+    before = vb.viewRange()
+    n = len(f.undo_stack)
+    _band_drag(f, vb.mapViewToScene(QtCore.QPointF(20, 80)), vb.mapViewToScene(QtCore.QPointF(60, 40)))
+    app.processEvents()
+    assert not np.allclose(vb.viewRange(), before), "control: the drag zoomed"
+    assert len(f.undo_stack) == n + 1
+    f.undo()
+    assert np.allclose(vb.viewRange(), before)
+    f.close()
+
+
+def test_a_wheel_burst_is_one_undo_entry():
+    f, vb = _ramp_figure()
+    f.show()
+    app.processEvents()
+    vb.setRange(xRange=(0, 100), yRange=(0, 100), padding=0)
+    f.hand_action.trigger()
+    before = vb.viewRange()
+    view = f.layout_widget
+    local = QtCore.QPointF(view.mapFromScene(vb.sceneBoundingRect().center()))
+    glob = QtCore.QPointF(view.viewport().mapToGlobal(local.toPoint()))
+    n = len(f.undo_stack)
+    for _ in range(3):
+        ev = QtGui.QWheelEvent(local, glob, QtCore.QPoint(0, 0), QtCore.QPoint(0, 120),
+                               QtCore.Qt.NoButton, QtCore.Qt.NoModifier, QtCore.Qt.NoScrollPhase, False)
+        QtWidgets.QApplication.sendEvent(view.viewport(), ev)
+        app.processEvents()
+    assert not np.allclose(vb.viewRange(), before), "control: the wheel zoomed"
+    f.undo()   # closes the still-open burst first, then undoes it whole
+    assert len(f.undo_stack) == n
+    assert np.allclose(vb.viewRange(), before)
+    f.close()
+
+
+def test_a_plain_click_pushes_no_view_entry():
+    f, vb = _ramp_figure()
+    f.show()
+    app.processEvents()
+    n = len(f.undo_stack)
+    pt = vb.sceneBoundingRect().center()
+    _mouse(f, QtCore.QEvent.MouseButtonPress, pt, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, pt, QtCore.Qt.NoButton)
+    app.processEvents()
+    assert len(f.undo_stack) == n
+    f.close()
+
+
+def test_zoom_right_drag_shows_the_zoom_drag_cursor_only_during_the_drag():
+    f, vb = _ramp_figure()
+    f.show()
+    app.processEvents()
+    f.zoom_action.trigger()
+    R = QtCore.Qt.RightButton
+    a = vb.sceneBoundingRect().center()
+    _mouse(f, QtCore.QEvent.MouseButtonPress, a, R, button=R)
+    time.sleep(0.012)
+    _mouse(f, QtCore.QEvent.MouseMove, a + QtCore.QPointF(30, -20), R, button=QtCore.Qt.NoButton)
+    over = QtWidgets.QApplication.overrideCursor()
+    assert over is not None and over.shape() == QtCore.Qt.BitmapCursor
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, a + QtCore.QPointF(30, -20), QtCore.Qt.NoButton, button=R)
+    assert QtWidgets.QApplication.overrideCursor() is None
+    for w in QtWidgets.QApplication.topLevelWidgets():
+        if isinstance(w, QtWidgets.QMenu):
+            w.close()
     f.close()

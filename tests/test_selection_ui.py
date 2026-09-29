@@ -321,7 +321,7 @@ def test_band_never_starts_while_brushing_or_outside_select_mode():
     inside = _vb_center(f.plots[2])
     f.brush_action.trigger()
     assert not f._can_start_band_at(inside), "brushing owns drags in the data area"
-    f.brush_action.trigger()
+    f.select_action.trigger()
     f.hand_action.trigger()
     _band_drag(f, QtCore.QPointF(2, 2), f.plots[0].getViewBox().sceneBoundingRect().bottomRight()
                + QtCore.QPointF(3, 3))

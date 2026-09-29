@@ -65,5 +65,5 @@ def test_brushing_works_in_a_figure_without_the_demo_scatters():
     assert len(items) == 1 and items[0][0] is curve, "control: the real drag brushed the curve"
     brushed_x = curve.xData[items[0][1]]
     assert brushed_x.min() >= 20 - 0.2 and brushed_x.max() <= 40 + 0.2, (brushed_x.min(), brushed_x.max())
-    f.brush_action.trigger()  # Brush off
+    f.select_action.trigger()  # Brush off (Select replaces it)
     f.close()

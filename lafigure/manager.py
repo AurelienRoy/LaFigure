@@ -80,6 +80,7 @@ from .registry import get_registry
 from .annotations import AnnotationItem, SHAPE_LABELS
 from .series import Series
 from .groups import Group, _ungroup_one
+from .curve_style import CurveStyleMixin, line_options_apply, marker_options_apply
 
 
 @contextmanager
@@ -109,6 +110,9 @@ class FigureManager(QtWidgets.QMainWindow):
         self.resize(360, 520)
 
         self.registry = get_registry()
+        # One manager per process, reachable from any figure ("Reorder
+        # Curves...", LaFigure.open_curve_browser).
+        self.registry.manager = self
         # Keep our own open LaFigure instances alive -- nothing else
         # holds a strong reference to a figure created here once its local
         # variable goes out of scope.
@@ -811,7 +815,10 @@ class FigureManager(QtWidgets.QMainWindow):
                 return
 
             series = obj if kind == 'series' else None
-            opts = getattr(series.item, 'opts', None) if series is not None else None
+            opts = None
+            if series is not None and hasattr(series.item, 'opts'):
+                # The real style, not the selection highlight (curve_style.py).
+                opts = CurveStyleMixin._curve_style_state(series.item)
 
             self._curve_set_row_visible(self.curve_name_edit, kind == 'series')
             if kind == 'series':
@@ -827,7 +834,7 @@ class FigureManager(QtWidgets.QMainWindow):
             if has_color:
                 self.curve_alpha_spin.setValue(self._curve_series_color(series).alpha())
 
-            is_line = kind == 'series' and series.kind == 'line' and opts is not None
+            is_line = kind == 'series' and line_options_apply(series.kind) and opts is not None
             self._curve_set_row_visible(self.curve_width_spin, is_line)
             self._curve_set_row_visible(self.curve_style_combo, is_line)
             if is_line:
@@ -838,10 +845,10 @@ class FigureManager(QtWidgets.QMainWindow):
                 self.curve_style_combo.setCurrentIndex(style_index)
 
             # PlotDataItem.opts always has a 'symbol' key (default None) even
-            # for a plain line -- gate on the kind itself (currently only
-            # 'scatter' is marker-capable), not key presence, or a line
-            # would wrongly get a marker control too.
-            supports_marker = kind == 'series' and series.kind == 'scatter'
+            # for kinds that can't draw one -- gate on the kind itself, the
+            # same rule as the curve right-click menu (curve_style.py).
+            supports_marker = (kind == 'series' and opts is not None
+                               and marker_options_apply(series.kind))
             self._curve_set_row_visible(self.curve_marker_combo, supports_marker)
             if supports_marker:
                 sym = opts.get('symbol')
@@ -859,7 +866,7 @@ class FigureManager(QtWidgets.QMainWindow):
         """The series' own "real" color: its line pen if it actually draws
         one (a plain line), else its symbol brush/pen (a scatter's own line
         pen is fully transparent by construction -- see kinds/scatter.py)."""
-        opts = series.item.opts
+        opts = CurveStyleMixin._curve_style_state(series.item)
         pen = opts.get('pen')
         if pen is not None:
             c = pg.mkPen(pen).color()
@@ -873,42 +880,11 @@ class FigureManager(QtWidgets.QMainWindow):
             return pg.mkPen(symbol_pen).color()
         return QtGui.QColor('black')
 
-    @staticmethod
-    def _curve_snapshot_style(series):
-        opts = series.item.opts
-        return {k: opts.get(k) for k in ('pen', 'symbolBrush', 'symbolPen')}
-
-    @staticmethod
-    def _curve_restore_style(series, snapshot):
-        item = series.item
-        if snapshot.get('pen') is not None:
-            item.setPen(snapshot['pen'])
-        if snapshot.get('symbolBrush') is not None:
-            item.setSymbolBrush(snapshot['symbolBrush'])
-        if snapshot.get('symbolPen') is not None:
-            item.setSymbolPen(snapshot['symbolPen'])
-
     def _curve_recolor(self, fig, series, rgba):
-        """Apply `rgba` to whichever of pen/symbolBrush/symbolPen the item
-        actually uses (see _curve_series_color), undoably. Shared by the
-        color picker and the alpha spinbox."""
-        item = series.item
-        opts = item.opts
-        old_snapshot = self._curve_snapshot_style(series)
-
-        def apply(rgba_):
-            if opts.get('pen') is not None and pg.mkPen(opts.get('pen')).color().alpha() > 0:
-                old_pen = pg.mkPen(opts.get('pen'))
-                item.setPen(pg.mkPen(color=rgba_, width=old_pen.widthF()))
-            if opts.get('symbolBrush') is not None:
-                item.setSymbolBrush(pg.mkBrush(rgba_))
-            if opts.get('symbolPen') is not None:
-                item.setSymbolPen(pg.mkPen(rgba_))
-
-        apply(rgba)
-        new_snapshot = self._curve_snapshot_style(series)
-        fig._push_history(lambda: self._curve_restore_style(series, old_snapshot),
-                          lambda: self._curve_restore_style(series, new_snapshot))
+        """Apply `rgba` to whatever the item draws (line and/or markers),
+        undoably, through the figure's highlight-aware style path
+        (curve_style.py). Shared by the color picker and the alpha spinbox."""
+        fig.set_curve_color([series.item], rgba)
 
     def _on_curve_name_edited(self):
         if self._curve_editor_updating:
@@ -947,20 +923,9 @@ class FigureManager(QtWidgets.QMainWindow):
         kind, obj = self._curve_editor_target
         if kind != 'series':
             return
-        fig = self._curve_current_fig
-        item = obj.item
-        old_pen = pg.mkPen(item.opts.get('pen')) if item.opts.get('pen') is not None else pg.mkPen('k')
-        old_width = old_pen.widthF()
-        new_width = self.curve_width_spin.value()
-        if abs(new_width - old_width) < 1e-9:
-            return
+        self._curve_current_fig.set_curve_line_width([obj.item], self.curve_width_spin.value())
 
-        def apply(width):
-            p = pg.mkPen(item.opts.get('pen')) if item.opts.get('pen') is not None else pg.mkPen('k')
-            item.setPen(pg.mkPen(color=p.color(), width=width))
-
-        apply(new_width)
-        fig._push_history(lambda: apply(old_width), lambda: apply(new_width))
+    _STYLE_CODES = ['-', '--', ':', '-.']
 
     def _on_curve_style_edited(self, index):
         if self._curve_editor_updating:
@@ -968,23 +933,7 @@ class FigureManager(QtWidgets.QMainWindow):
         kind, obj = self._curve_editor_target
         if kind != 'series':
             return
-        fig = self._curve_current_fig
-        item = obj.item
-        styles = [QtCore.Qt.SolidLine, QtCore.Qt.DashLine, QtCore.Qt.DotLine, QtCore.Qt.DashDotLine]
-        old_pen = pg.mkPen(item.opts.get('pen')) if item.opts.get('pen') is not None else pg.mkPen('k')
-        old_style = old_pen.style()
-        new_style = styles[index]
-        if old_style == new_style:
-            return
-
-        def apply(style):
-            p = pg.mkPen(item.opts.get('pen')) if item.opts.get('pen') is not None else pg.mkPen('k')
-            new_pen = pg.mkPen(color=p.color(), width=p.widthF())
-            new_pen.setStyle(style)
-            item.setPen(new_pen)
-
-        apply(new_style)
-        fig._push_history(lambda: apply(old_style), lambda: apply(new_style))
+        self._curve_current_fig.set_curve_line_style([obj.item], self._STYLE_CODES[index])
 
     def _on_curve_marker_edited(self, index):
         if self._curve_editor_updating:
@@ -992,19 +941,8 @@ class FigureManager(QtWidgets.QMainWindow):
         kind, obj = self._curve_editor_target
         if kind != 'series':
             return
-        fig = self._curve_current_fig
-        item = obj.item
-        old_symbol = item.opts.get('symbol')
         text = self.curve_marker_combo.currentText()
-        new_symbol = None if text == 'None' else text
-        if old_symbol == new_symbol:
-            return
-
-        def apply(symbol):
-            item.setSymbol(symbol)
-
-        apply(new_symbol)
-        fig._push_history(lambda: apply(old_symbol), lambda: apply(new_symbol))
+        self._curve_current_fig.set_curve_marker([obj.item], None if text == 'None' else text)
 
     def _on_curve_alpha_edited(self):
         if self._curve_editor_updating:
@@ -1074,9 +1012,13 @@ class FigureManager(QtWidgets.QMainWindow):
         kind, obj = self._curve_editor_target
         if kind != 'series':
             return
-        fig, plot_item = self._curve_current_fig, self._curve_current_plot
-        ordered = self._curve_ordered_series(plot_item)
-        zs = [s.item.zValue() for s in ordered] or [0]
-        new_z = (max(zs) + 1) if front else (min(zs) - 1)
-        old_z = obj.item.zValue()
-        self._curve_set_z(fig, obj, old_z, new_z)
+        self._curve_current_fig.curves_to_front([obj.item], front)
+
+    # -- "Reorder Curves..." (a subplot's right-click menu) -----------------
+    def show_curve_browser(self, fig, plot_item):
+        """Raise this window on the Curve Browser tab, showing plot_item."""
+        self.tabs.setCurrentIndex(1)
+        self._curve_touch(fig, plot_item)
+        self.show()
+        self.raise_()
+        self.activateWindow()

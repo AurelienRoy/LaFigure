@@ -97,11 +97,13 @@ def _write_back(full, shown, drawn):
 
 class BrushingMixin:
     def toggle_brush(self, checked):
-        self.brushing = checked
-        for brusher in self._brushers.values():
-            brusher.set_brushing(checked)
-        for p in self.plots:
-            self._apply_mouse_enabled(p.getViewBox())
+        """Brush is an exclusive interaction mode (view_ops.
+        set_interaction_mode, since 2026-09-29): on = Brush mode, off =
+        back to Select. Kept as the API/test entry point it always was."""
+        if checked:
+            self.set_interaction_mode('brush')
+        elif self.interaction_mode == 'brush':
+            self.set_interaction_mode('select')
 
     # -- the figure-wide, row-linked selection -------------------------------
     @staticmethod

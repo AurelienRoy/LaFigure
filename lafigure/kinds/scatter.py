@@ -75,13 +75,15 @@ class ScatterKind(SeriesKind):
             # The symbol's own pen (its outline color), reused by create()
             # as the `pen` override that derives symbolBrush/symbolPen --
             # NOT the item's actual (always-transparent) line pen.
-            'pen': item.opts.get('symbolPen'),
+            # _orig_symbol_pen while selected: the highlight replaces the
+            # outline (selection_ui._highlight_curve_pen), not the style.
+            'pen': item.opts.get('_orig_symbol_pen', item.opts.get('symbolPen')),
             'name': item.name(),
             'style': {
                 'size': item.opts.get('symbolSize', DEFAULT_SIZE),
                 'symbol': item.opts.get('symbol', DEFAULT_SYMBOL),
                 'symbolBrush': item.opts.get('symbolBrush'),
-                'symbolPen': item.opts.get('symbolPen'),
+                'symbolPen': item.opts.get('_orig_symbol_pen', item.opts.get('symbolPen')),
             },
         }
 

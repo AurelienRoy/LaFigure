@@ -23,12 +23,41 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 """Right-click menus: the per-subplot menu (extending pyqtgraph's own
-ViewBox menu) and the minimal empty-space menu (Paste Subplot).
+ViewBox menu), the per-curve menu, and the minimal empty-space menu
+(Paste Subplot).
+
+A right-click on a curve reaches the ViewBox, not the curve
+(PlotCurveItem.mouseClickEvent handles the left button only), so
+_wire_context_menu wraps the ViewBox's raiseContextMenu: when the click
+hit-tests onto a curve, that curve's own menu opens instead. Each menu
+starts with a disabled header naming what it acts on. Subplot-level
+actions (copy/paste subplot, FFT, CSV, z-order of the subplot) live only
+in the subplot menu; curve-level ones (copy/paste curve, curve z-order,
+display style) only in the curve menu.
 """
 import csv
 
 from pyqtgraph.Qt import QtGui, QtWidgets
 import pyqtgraph as pg
+
+from .curve_style import (LINE_STYLES, LINE_WIDTHS, MARKERS, MARKER_SIZES,
+                          line_options_apply, marker_options_apply, pen_style_of)
+
+
+def _menu_header(menu, text, before=None):
+    """A disabled, bold first entry naming what the menu acts on."""
+    header = QtGui.QAction(text, menu)
+    header.setEnabled(False)
+    font = header.font()
+    font.setBold(True)
+    header.setFont(font)
+    if before is None:
+        menu.addAction(header)
+        menu.addSeparator()
+    else:
+        menu.insertAction(before, header)
+        menu.insertSeparator(before)
+    return header
 
 
 class MenusMixin:
@@ -56,17 +85,28 @@ class MenusMixin:
             )
             if stale is not None:
                 menu.removeAction(stale)
+        header = _menu_header(menu, "Subplot", before=menu.actions()[0])
+        # pyqtgraph's View All is a zoom like Home: make it undoable too.
+        vb = plot_item.getViewBox()
+        menu.viewAll.triggered.disconnect()
+        menu.viewAll.triggered.connect(lambda: self._undoable_view_change(vb.autoRange))
         menu.addSeparator()
 
         def bound(fn):
             return lambda: (self._on_plot_context(plot_item), fn())
 
-        menu.addAction("Paste Curve").triggered.connect(bound(self.paste_curve))
         menu.addAction("Copy Subplot").triggered.connect(bound(self.copy_subplot))
         menu.addAction("Paste Subplot").triggered.connect(bound(self.paste_subplot))
-        menu.addAction("Bring to Front").triggered.connect(bound(lambda: self.bring_to_front(plot_item)))
-        menu.addAction("Send to Back").triggered.connect(bound(lambda: self.send_to_back(plot_item)))
+        # Pastes onto this subplot -- the only menu path onto an empty one.
+        paste_curve_action = menu.addAction("Paste Curve")
+        paste_curve_action.triggered.connect(bound(self.paste_curve))
+        menu.addAction("Bring Subplot to Front").triggered.connect(
+            bound(lambda: self.bring_to_front(plot_item)))
+        menu.addAction("Send Subplot to Back").triggered.connect(
+            bound(lambda: self.send_to_back(plot_item)))
         menu.addAction("Toggle Legend").triggered.connect(bound(self.toggle_legend))
+        menu.addAction("Reorder Curves...").triggered.connect(
+            bound(lambda: self.open_curve_browser(plot_item)))
         menu.addAction("Remove Average").triggered.connect(bound(self.remove_average))
         menu.addAction("FFT -> Subplot Below").triggered.connect(bound(self.fft_below))
         menu.addAction("Export to CSV...").triggered.connect(
@@ -134,11 +174,134 @@ class MenusMixin:
 
         def on_about_to_show():
             self._on_plot_context(plot_item)
+            header.setText("Subplot: " + (self.subplot_name(plot_item) or "(untitled)"))
+            paste_curve_action.setEnabled(bool(self.clipboard.curve))
             rebuild_curve_menus()
             update_brush_actions()
             prune_pyqtgraph_export()
 
         menu.aboutToShow.connect(on_about_to_show)
+
+        native_raise = vb.raiseContextMenu
+
+        def raise_context_menu(ev):
+            # Brush mode keeps the subplot menu everywhere: its brushed-point
+            # actions are what a right-click on brushed points is for.
+            curve = None
+            if self.interaction_mode != 'brush' and self._placing_kind is None:
+                curve = self._curve_at(plot_item, ev.scenePos())
+            if curve is None:
+                native_raise(ev)
+                return
+            self._curve_context_menu(plot_item, curve).popup(ev.screenPos().toPoint())
+
+        vb.raiseContextMenu = raise_context_menu
+
+    # -- the curve menu ----------------------------------------------------
+    def _curve_at(self, plot_item, scene_pos):
+        """The topmost clickable curve under scene_pos, or None. Same hit
+        area as a left click (the curve's mouseShape), plus a scatter's
+        markers."""
+        items = [c for c in plot_item.listDataItems()
+                 if isinstance(c, pg.PlotDataItem) and c.isVisible()]
+        order = {c: i for i, c in enumerate(items)}
+        for c in sorted(items, key=lambda c: (c.zValue(), order[c]), reverse=True):
+            if c.curve.mouseShape().contains(c.curve.mapFromScene(scene_pos)):
+                return c
+            if (c.opts.get('symbol') is not None
+                    and len(c.scatter.pointsAt(c.scatter.mapFromScene(scene_pos)))):
+                return c
+        return None
+
+    def _curve_menu_targets(self, plot_item, curve):
+        """Right-click on a curve: keep a curve selection containing it (the
+        menu acts on the whole set), else select just this curve (Select
+        mode) -- same rule as right-clicking a subplot."""
+        self.focused_plot = plot_item
+        if curve in self.selected_curves:
+            return list(self.selected_curves)
+        if self.interaction_mode == 'select':
+            self._select_curve(curve)
+            self._mark_active(plot_item, keep_selection=True)
+        return [curve]
+
+    def _curve_context_menu(self, plot_item, curve):
+        """Build (not show) the right-click menu of `curve`."""
+        targets = self._curve_menu_targets(plot_item, curve)
+        menu = QtWidgets.QMenu(self)
+        label = curve.name() or "(unnamed curve)"
+        if len(targets) > 1:
+            label += f" (+{len(targets) - 1} more)"
+        _menu_header(menu, "Curve: " + label)
+
+        def paste():
+            self.focused_plot = plot_item
+            self.paste_curve()
+
+        menu.addAction("Copy Curve").triggered.connect(lambda: self.copy_curve())
+        paste_action = menu.addAction("Paste Curve")
+        paste_action.setEnabled(bool(self.clipboard.curve))
+        paste_action.triggered.connect(paste)
+        menu.addAction("Bring to Front").triggered.connect(lambda: self.curves_to_front(targets, True))
+        menu.addAction("Send to Back").triggered.connect(lambda: self.curves_to_front(targets, False))
+        menu.addSeparator()
+
+        state = self._curve_style_state(curve)
+        kind = self._curve_kind(curve)
+        has_line = line_options_apply(kind)
+        has_marker = marker_options_apply(kind)
+        pen = pg.mkPen(state['pen']) if state['pen'] is not None else None
+
+        def choices(title, entries, current, setter, enabled=True):
+            sub_menu = menu.addMenu(title)
+            sub_menu.setEnabled(enabled)
+            group = QtWidgets.QActionGroup(sub_menu)
+            for text, value in entries:
+                act = sub_menu.addAction(text)
+                act.setCheckable(True)
+                act.setChecked(value == current)
+                group.addAction(act)
+                act.triggered.connect(lambda checked=False, v=value: setter(targets, v))
+            return sub_menu
+
+        width = pen.widthF() if pen is not None else None
+        choices("Line Width", [(f"{w:g}", w) for w in LINE_WIDTHS], width,
+                self.set_curve_line_width, has_line)
+        choices("Line Style", [(f"{text}  ({code})" if code != 'none' else text, code)
+                               for text, code, _ in LINE_STYLES],
+                pen_style_of(state['pen']), self.set_curve_line_style, has_line)
+        choices("Marker", [(f"{text}  ({code})" if code != 'none' else text, symbol)
+                           for text, code, symbol in MARKERS],
+                state['symbol'], self.set_curve_marker, has_marker)
+        choices("Marker Size", [(f"{s:g}", s) for s in MARKER_SIZES], state['symbolSize'],
+                self.set_curve_marker_size, has_marker and state['symbol'] is not None)
+        menu.addSeparator()
+
+        menu.addAction("Rename Curve...").triggered.connect(
+            lambda: self._rename_curve(plot_item, curve))
+
+        def delete():
+            with self.undo_group():
+                for c in targets:
+                    self.delete_curve(c)
+
+        menu.addAction("Delete Curve" if len(targets) == 1 else "Delete Curves").triggered.connect(delete)
+        return menu
+
+    # -- Reorder Curves... -------------------------------------------------
+    def open_curve_browser(self, plot_item=None):
+        """Bring the Figure Manager forward on its Curve Browser tab, showing
+        plot_item (default: the focused subplot) -- creating the manager if
+        none is open."""
+        from .manager import FigureManager   # manager imports figures' modules
+        plot_item = plot_item if plot_item is not None else self.focused_plot
+        if plot_item is not None:
+            self.focused_plot = plot_item
+        manager = getattr(self.registry, 'manager', None)
+        if manager is None:
+            manager = FigureManager()
+        manager.show_curve_browser(self, plot_item)
+        return manager
 
     def _export_subplot_csv(self, plot_item, path):
         """Write plot_item's curves to a CSV file: two columns per curve,

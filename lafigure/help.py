@@ -87,6 +87,11 @@ class HelpMixin:
 - **Tab / Shift+Tab** to cycle through items
 - **Esc** to deselect everything or cancel operations
 - **Double-click** a subplot/curve/annotation to edit or deselect
+- **Click a legend** to select it; drag it to move it (undoable); Del hides it
+- **Right-click a curve** for its own menu: copy/paste, front/back, line width,
+  line style, marker, marker size, rename, delete
+- **Right-click a subplot** (off any curve) for the subplot menu: copy/paste
+  subplot, paste curve, front/back, legend, Reorder Curves..., Remove Average, FFT, CSV
 
 ### Hand Mode
 - **Pan and zoom** the subplot under the cursor
@@ -95,12 +100,20 @@ class HelpMixin:
 
 ### Zoom Rect Mode
 - **Drag a rectangle** to zoom into that area
+- **Right-drag** to zoom/unzoom dynamically (per axis)
 - **No selection** borders or handles shown
+
+### Brush Mode
+- **Drag a rectangle** to brush points; **Shift+drag** adds to the brushed set
+- **Right-click** for the brushed-point actions (delete, transform, stats, fit, hide)
+- A mode like Select/Hand/Zoom Rect: choosing one unchecks the others
+
+Every zoom and pan (rectangle, wheel, drag, Home, Fit, View All) is one
+**Ctrl+Z / Ctrl+Y** step.
 
 ## Other Features
 
 - **Toggle Legend** to show/hide curve names
-- **Data Brushing** to select and analyze points (right-click for options)
 - **Link X** to link X axes across all subplots
 - **FFT** to compute and display FFT of the selected curve
 - **Remove Average** to subtract the mean from all curves on the active subplot

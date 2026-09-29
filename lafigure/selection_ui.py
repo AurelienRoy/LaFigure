@@ -223,6 +223,7 @@ class SelectionUIMixin:
         focused_plot is left alone; it is the toolbar target, not a selection."""
         self._deselect_curve()
         self._deselect_annotation()
+        self._deselect_legend()
         self.selected_plots = []
 
     @selection_op
@@ -275,8 +276,17 @@ class SelectionUIMixin:
         curve.curve.sigClicked.connect(handler)
 
     def _highlight_curve_pen(self, curve):
+        """Selection highlight. The un-highlighted style is parked in
+        opts['_orig_pen'] / opts['_orig_symbol_pen'], present exactly while
+        the curve is highlighted (_unhighlight_curve_pen pops them) -- so a
+        style edited while unselected is never overwritten by a stale copy
+        on the next deselect, and "the curve's real style" is always
+        opts.get('_orig_pen', opts['pen']) (curve_style.py relies on it)."""
         orig_pen = curve.opts.get('pen')
-        no_line = orig_pen is None or pg.mkPen(orig_pen).style() == QtCore.Qt.NoPen
+        # "No line": none, NoPen, or fully transparent -- the scatter kind's
+        # pen (kinds/scatter.py), which must stay non-None for hit-testing.
+        no_line = (orig_pen is None or pg.mkPen(orig_pen).style() == QtCore.Qt.NoPen
+                   or pg.mkPen(orig_pen).color().alpha() == 0)
         if no_line and curve.opts.get('symbol') is not None:
             # Dots without a line (e.g. the demo's scatters): outline the
             # dots -- giving them a pen would draw a line through every point.
@@ -306,11 +316,13 @@ class SelectionUIMixin:
 
     @staticmethod
     def _unhighlight_curve_pen(curve):
-        orig_pen = curve.opts.get('_orig_pen')
+        # Pop, not get: the parked style must not outlive the highlight
+        # (see _highlight_curve_pen).
+        orig_pen = curve.opts.pop('_orig_pen', None)
         if orig_pen is not None:
             curve.setPen(orig_pen)
         if '_orig_symbol_pen' in curve.opts:
-            curve.setSymbolPen(curve.opts['_orig_symbol_pen'])
+            curve.setSymbolPen(curve.opts.pop('_orig_symbol_pen'))
 
     @selection_op
     def _deselect_curve(self):

@@ -23,11 +23,12 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 """View state and per-subplot data actions: interaction mode
-(Select/Hand/Zoom Rect), Home / Fit Vertical / Fit Horizontal, legend,
-Link X, Remove Average, FFT -> subplot below.
+(Select/Hand/Zoom Rect/Brush), Home / Fit Vertical / Fit Horizontal,
+legend (show/hide, select, move), view history (every zoom/pan gesture is
+one undo entry), Link X, Remove Average, FFT -> subplot below.
 """
 import numpy as np
-from pyqtgraph.Qt import QtCore, QtGui
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
 from .datasource import DataSource
@@ -67,7 +68,67 @@ def _zoom_cursor():
     return _ZOOM_CURSOR
 
 
+_ZOOM_DRAG_CURSOR = None
+
+
+def _zoom_drag_cursor():
+    """Shown during a right-button drag in Zoom Rect mode -- pyqtgraph's
+    dynamic zoom, which scales each axis by the drag (right/up = in,
+    left/down = out). A lens with "±" inside, plus small horizontal and
+    vertical double arrows for the two axes being scaled."""
+    global _ZOOM_DRAG_CURSOR
+    if _ZOOM_DRAG_CURSOR is None:
+        size = 32
+        pix = QtGui.QPixmap(size, size)
+        pix.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(pix)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        ink = QtGui.QColor(40, 40, 40)
+        painter.setPen(QtGui.QPen(ink, 1.6))
+        cx, cy, r = 11, 11, 7
+        painter.drawEllipse(QtCore.QPointF(cx, cy), r, r)
+        # "±": a plus above a minus.
+        painter.drawLine(QtCore.QPointF(cx - 2.5, cy - 2), QtCore.QPointF(cx + 2.5, cy - 2))
+        painter.drawLine(QtCore.QPointF(cx, cy - 4.5), QtCore.QPointF(cx, cy + 0.5))
+        painter.drawLine(QtCore.QPointF(cx - 2.5, cy + 3), QtCore.QPointF(cx + 2.5, cy + 3))
+        painter.setPen(QtGui.QPen(ink, 2.2))
+        painter.drawLine(QtCore.QPointF(cx + 5, cy + 5), QtCore.QPointF(20, 20))
+        painter.setPen(QtGui.QPen(ink, 1.3))
+
+        def double_arrow(x0, y0, x1, y1):
+            painter.drawLine(QtCore.QPointF(x0, y0), QtCore.QPointF(x1, y1))
+            for (ax, ay), (bx, by) in (((x0, y0), (x1, y1)), ((x1, y1), (x0, y0))):
+                dx, dy = bx - ax, by - ay
+                n = max((dx * dx + dy * dy) ** 0.5, 1e-9)
+                ux, uy = dx / n, dy / n
+                for sx, sy in ((uy, -ux), (-uy, ux)):
+                    painter.drawLine(QtCore.QPointF(ax, ay),
+                                     QtCore.QPointF(ax + 3 * ux + 2.5 * sx, ay + 3 * uy + 2.5 * sy))
+
+        double_arrow(2, 28, 14, 28)     # horizontal, bottom-left
+        double_arrow(28, 2, 28, 14)     # vertical, top-right
+        painter.end()
+        _ZOOM_DRAG_CURSOR = QtGui.QCursor(pix, cx, cy)
+    return _ZOOM_DRAG_CURSOR
+
+
+class _ViewHistoryFilter(QtCore.QObject):
+    """Observe-only scene event filter for view history (never consumes).
+    Installed after LaFigure's own scene filter, so Qt calls it first and
+    it sees every press/move/release/wheel before anything can consume one."""
+
+    def __init__(self, figure):
+        super().__init__(figure)
+        self.figure = figure
+
+    def eventFilter(self, obj, ev):
+        self.figure._view_history_event(ev)
+        return False
+
+
 class ViewOpsMixin:
+    WHEEL_SETTLE_MS = 400   # wheel ticks closer than this are one zoom gesture
+
     # -- interaction mode ------------------------------------------------
     @staticmethod
     def _cursor_for_mode(mode):
@@ -75,6 +136,8 @@ class ViewOpsMixin:
             return QtCore.Qt.OpenHandCursor
         if mode == 'zoom':
             return _zoom_cursor()
+        if mode == 'brush':
+            return QtCore.Qt.CrossCursor
         return QtCore.Qt.ArrowCursor
 
     def _apply_view_mouse_mode(self, vb):
@@ -97,22 +160,43 @@ class ViewOpsMixin:
 
     @selection_op
     def set_interaction_mode(self, mode):
-        """'select': click-to-select + move/resize handles, dragging inside
+        """The four exclusive toolbar modes.
+        'select': click-to-select + move/resize handles, dragging inside
         a subplot does nothing (freed up for the handles).
-        'hand': plain pan, no selection. 'zoom': drag-to-zoom, no selection."""
+        'hand': plain pan, no selection. 'zoom': drag-to-zoom, no selection.
+        'brush': rectangular data brushing (brushing.py), no selection, no
+        pan. Brush used to be a separate on/off toggle stacked on the other
+        modes; it's exclusive since 2026-09-29 (user request) -- it already
+        took over the left drag and disabled pan/wheel, so no combination
+        was lost. self.brushing stays, derived from the mode."""
         self.interaction_mode = mode
+        brushing = mode == 'brush'
+        if brushing != self.brushing:
+            self.brushing = brushing
+            for brusher in self._brushers.values():
+                brusher.set_brushing(brushing)
         cursor = self._cursor_for_mode(mode)
         for p in self.plots:
             vb = p.getViewBox()
             self._apply_view_mouse_mode(vb)
             self._apply_mouse_enabled(vb)
             vb.setCursor(cursor)
+        self._sync_mode_actions()
         if mode != 'select':
             self._deselect_curve()
+            self._deselect_legend()
         if self.focused_plot is not None:
             self._mark_active(self.focused_plot, keep_selection=True)
         else:
             self._hide_handles()
+
+    def _sync_mode_actions(self):
+        """Keep the toolbar's exclusive mode buttons in step with a mode set
+        from code (toggle_brush, tests, the API), not just from a click."""
+        action = getattr(self, {'select': 'select_action', 'hand': 'hand_action',
+                                'zoom': 'zoom_action', 'brush': 'brush_action'}[self.interaction_mode], None)
+        if action is not None and not action.isChecked():
+            action.setChecked(True)
 
     # -- Home / Fit Vertical / Fit Horizontal ------------------------------
     def reset_view(self):
@@ -124,7 +208,7 @@ class ViewOpsMixin:
         p = self._hover_plot or self.focused_plot
         if p is None:
             return
-        p.getViewBox().autoRange()
+        self._undoable_view_change(p.getViewBox().autoRange)
 
     def fit_view_vertical(self):
         """Stretch Y to the min/max of the data whose x lies in the current
@@ -165,14 +249,17 @@ class ViewOpsMixin:
         if not np.isfinite(lo):
             return
         if axis == 1:
-            vb.setYRange(lo, hi)
+            self._undoable_view_change(lambda: vb.setYRange(lo, hi))
         else:
-            vb.setXRange(lo, hi)
+            self._undoable_view_change(lambda: vb.setXRange(lo, hi))
 
+    # -- legend ----------------------------------------------------------
     def toggle_legend(self):
         """Toggles independently on every selected subplot (Shift+click to
         select more than one) -- each subplot's legend flips its own
-        current on/off state rather than being forced to match the others."""
+        current on/off state rather than being forced to match the others.
+        A selected legend's own subplot counts as selected. View state, not
+        an undo entry (CLAUDE.md, "Not covered by undo")."""
         targets = self.selected_plots if self.selected_plots else (
             [self.focused_plot] if self.focused_plot is not None else []
         )
@@ -180,11 +267,202 @@ class ViewOpsMixin:
             return
         for p in targets:
             if p.legend is None:
-                legend = p.addLegend()
-                wire_legend_editable(legend)
+                self._show_legend(p)
             else:
-                p.legend.scene().removeItem(p.legend)
-                p.legend = None
+                self._hide_legend(p)
+
+    def _show_legend(self, p):
+        legend = p.addLegend()
+        # pyqtgraph enters an item in the legend only as PlotItem.addItem
+        # adds it, and only if a legend already exists -- so a legend
+        # toggled on over existing curves was empty: zero size, invisible.
+        # Enter them now by addItem's own rule: named plot-data items.
+        for item in p.listDataItems():
+            implements = getattr(item, 'implements', None)
+            if implements is not None and implements('plotData') and item.name():
+                legend.addItem(item, item.name())
+        wire_legend_editable(legend)
+        self._wire_legend_interaction(p, legend)
+        return legend
+
+    def _hide_legend(self, p):
+        if self.selected_legend is p:
+            self._deselect_legend()
+        legend = p.legend
+        if legend.scene() is not None:
+            legend.scene().removeItem(legend)
+        p.legend = None
+
+    def _wire_legend_interaction(self, p, legend):
+        """A click selects the legend (Select mode); a drag moves it -- that
+        part is pyqtgraph's own LegendItem.mouseDragEvent -- and each move
+        is one undo entry. Both are pyqtgraph's Python-level event
+        protocol, so instance attributes override them (unlike a Qt
+        virtual such as wheelEvent)."""
+        native_drag = legend.mouseDragEvent
+
+        def drag(ev, p=p, legend=legend):
+            left = ev.button() == QtCore.Qt.LeftButton
+            if left and ev.isStart():
+                # isStart() comes with the first *move* (CLAUDE.md bug #14),
+                # but pos() is only changed by native_drag, below.
+                legend._lafigure_drag_from = QtCore.QPointF(legend.pos())
+            native_drag(ev)
+            if left and ev.isFinish():
+                start = getattr(legend, '_lafigure_drag_from', None)
+                end = QtCore.QPointF(legend.pos())
+                legend._lafigure_drag_from = None
+                if start is not None and start != end:
+                    self._push_history(lambda: self._place_legend(p, legend, start),
+                                       lambda: self._place_legend(p, legend, end))
+
+        def click(ev, p=p):
+            if ev.button() != QtCore.Qt.LeftButton or self.interaction_mode != 'select':
+                return
+            ev.accept()
+            self._select_legend(p)
+
+        legend.mouseDragEvent = drag
+        legend.mouseClickEvent = click
+
+    @staticmethod
+    def _place_legend(p, legend, pos):
+        if p.legend is legend:
+            legend.autoAnchor(pos)
+
+    @selection_op
+    def _select_legend(self, p):
+        """Exclusive, like any plain click: every other selection goes."""
+        self._clear_selection()
+        self.selected_legend = p
+        legend = p.legend
+        legend._lafigure_pen = legend.opts.get('pen')
+        legend.setPen(pg.mkPen((220, 0, 0), width=1.5, style=QtCore.Qt.DashLine))
+        self.focused_plot = p
+        self._mark_active(p, keep_selection=True)
+
+    def _deselect_legend(self):
+        p, self.selected_legend = self.selected_legend, None
+        if p is not None and p.legend is not None:
+            # Straight into opts: setPen(None) would store a NoPen QPen, not
+            # the legend's original None (same trap as CLAUDE.md bug #15).
+            p.legend.opts['pen'] = getattr(p.legend, '_lafigure_pen', None)
+            p.legend.update()
+
+    # -- view history: every zoom/pan gesture is one undo entry ----------------
+    # A view change is snapshot as {plot: range} (a 3D cell: its camera)
+    # before and after a gesture; unchanged -> no entry. Gestures:
+    #  * any mouse gesture on the scene, press to release (rect zoom,
+    #    right-drag zoom, pan, axis drags, pyqtgraph's "A" button...) --
+    #    unless another undo entry was pushed meanwhile (a subplot resize,
+    #    an annotation drag, a legend move...), whose gesture it then was;
+    #  * a burst of wheel ticks, closed WHEEL_SETTLE_MS after the last one;
+    #  * Home / Fit / View All, wrapped explicitly (not scene events).
+    # Scene-level, not per-ViewBox: wheelEvent is a Qt virtual, which PyQt
+    # doesn't let an instance attribute override, unlike pyqtgraph's own
+    # mouseDragEvent (that RectBrush wraps).
+    def _install_view_history(self):
+        self._view_gesture = None   # (before snapshot, undo top) while a mouse gesture is open
+        self._wheel_gesture = None
+        self._wheel_timer = QtCore.QTimer(self)
+        self._wheel_timer.setSingleShot(True)
+        self._wheel_timer.timeout.connect(self._close_wheel_gesture)
+        self._right_drag = None     # Zoom Rect right-drag: {'pos', 'active'}
+        self._view_history_filter = _ViewHistoryFilter(self)
+        self.layout_widget.scene().installEventFilter(self._view_history_filter)
+
+    def _view_snapshot(self):
+        snap = {}
+        for p in self.plots:
+            if getattr(p, 'axes_type', 'cartesian') == '3d':
+                snap[p] = ('3d', self._subplot_view_state(p))
+            else:
+                vb = p.getViewBox()
+                auto = tuple(bool(a) for a in vb.state['autoRange'])
+                snap[p] = ('2d', (tuple(vb.viewRange()[0]), tuple(vb.viewRange()[1]), auto))
+        return snap
+
+    @staticmethod
+    def _view_changed(before, after):
+        """An axis still auto-ranging on both sides moved by itself (a
+        resize, a selection border, new data) -- not a user zoom."""
+        if before[0] != after[0] or before[0] == '3d':
+            return before != after
+        (bx, by, bauto), (ax, ay, aauto) = before[1], after[1]
+        return any(not (bauto[i] and aauto[i]) and (b != a or bauto[i] != aauto[i])
+                   for i, (b, a) in enumerate(((bx, ax), (by, ay))))
+
+    def _restore_view_snapshot(self, snap):
+        for p, (kind, state) in snap.items():
+            if p not in self.plots:
+                continue
+            if kind == '3d':
+                self._apply_subplot_view_state(p, state)
+            else:
+                x_range, y_range, auto = state
+                vb = p.getViewBox()
+                vb.setRange(xRange=x_range, yRange=y_range, padding=0)
+                for axis, on in zip((vb.XAxis, vb.YAxis), auto):
+                    if on:
+                        vb.enableAutoRange(axis)
+
+    def _push_view_change(self, before, after):
+        changed = [p for p, v in after.items() if p in before and self._view_changed(before[p], v)]
+        if not changed:
+            return
+        old = {p: before[p] for p in changed}
+        new = {p: after[p] for p in changed}
+        self._push_history(lambda: self._restore_view_snapshot(old),
+                           lambda: self._restore_view_snapshot(new))
+
+    def _undoable_view_change(self, fn):
+        before = self._view_snapshot()
+        fn()
+        self._push_view_change(before, self._view_snapshot())
+
+    def _undo_top(self):
+        return self.undo_stack[-1] if self.undo_stack else None
+
+    def _view_history_event(self, ev):
+        t = ev.type()
+        if t == QtCore.QEvent.GraphicsSceneMousePress:
+            self._close_wheel_gesture()
+            if self._view_gesture is None:
+                self._view_gesture = (self._view_snapshot(), self._undo_top())
+            if ev.button() == QtCore.Qt.RightButton and self.interaction_mode == 'zoom':
+                self._right_drag = {'pos': QtCore.QPointF(ev.screenPos()), 'active': False}
+        elif t == QtCore.QEvent.GraphicsSceneMouseMove:
+            rd = self._right_drag
+            if (rd is not None and not rd['active'] and ev.buttons() & QtCore.Qt.RightButton
+                    and (QtCore.QPointF(ev.screenPos()) - rd['pos']).manhattanLength() > 3):
+                rd['active'] = True
+                QtWidgets.QApplication.setOverrideCursor(_zoom_drag_cursor())
+        elif t == QtCore.QEvent.GraphicsSceneMouseRelease:
+            if ev.button() == QtCore.Qt.RightButton and self._right_drag is not None:
+                if self._right_drag['active']:
+                    QtWidgets.QApplication.restoreOverrideCursor()
+                self._right_drag = None
+            if self._view_gesture is not None and not ev.buttons():
+                # After, not now: this filter runs before pyqtgraph handles
+                # the release, which is when e.g. a rect zoom is applied.
+                QtCore.QTimer.singleShot(0, self._close_view_gesture)
+        elif t == QtCore.QEvent.GraphicsSceneWheel:
+            if self._wheel_gesture is None:
+                self._wheel_gesture = (self._view_snapshot(), self._undo_top())
+            self._wheel_timer.start(self.WHEEL_SETTLE_MS)
+
+    def _close_view_gesture(self):
+        gesture, self._view_gesture = self._view_gesture, None
+        if gesture is not None and self._undo_top() is gesture[1]:
+            self._push_view_change(gesture[0], self._view_snapshot())
+
+    def _close_wheel_gesture(self):
+        """Also called before undo/redo, so a still-open wheel burst becomes
+        its own entry first (history.py)."""
+        self._wheel_timer.stop()
+        gesture, self._wheel_gesture = self._wheel_gesture, None
+        if gesture is not None and self._undo_top() is gesture[1]:
+            self._push_view_change(gesture[0], self._view_snapshot())
 
     def remove_average(self):
         """Subtract the mean of what's drawn. A series whose y is a column
@@ -258,9 +536,9 @@ class ViewOpsMixin:
         self._push_history(undo_fn, redo_fn)
 
     def _apply_mouse_enabled(self, vb):
-        """The only writer of a ViewBox's mouse-enabled state: Select mode
-        and brushing both disable pan, so neither may re-enable it alone."""
-        enabled = self.interaction_mode != 'select' and not self.brushing
+        """The only writer of a ViewBox's mouse-enabled state: Select and
+        Brush modes both disable pan (and the wheel)."""
+        enabled = self.interaction_mode not in ('select', 'brush')
         vb.setMouseEnabled(x=enabled, y=enabled)
 
     def _apply_link_x(self):

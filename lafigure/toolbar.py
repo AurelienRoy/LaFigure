@@ -133,11 +133,14 @@ class ToolbarMixin:
             ("Y Label", lambda: self.set_axis_label('left')),
         ])
 
+        # Brush is an interaction mode like Select/Hand/Zoom Rect: it joins
+        # their exclusive group below, so picking one unchecks the other.
         self.brush_action = action(
-            "Brush", self.toggle_brush, checkable=True,
+            "Brush", lambda checked: self.set_interaction_mode('brush'), checkable=True,
             icon='tool_data_brush.png',
-            tooltip="Brush: rectangular data brushing on any subplot -- right-click a "
-                     "selection to delete/transform/fit/stat it",
+            tooltip="Brush (a mode, exclusive with Select/Hand/Zoom Rect): rectangular "
+                    "data brushing on any subplot -- right-click a selection to "
+                    "delete/transform/fit/stat it",
         )
         action("Hide Brushed Points", self.hide_brushed_points, icon=SP.SP_DialogDiscardButton,
                tooltip="Hide Brushed Points: stop drawing the brushed points, in every "
@@ -168,6 +171,7 @@ class ToolbarMixin:
         mode_group.addAction(self.select_action)
         mode_group.addAction(self.hand_action)
         mode_group.addAction(self.zoom_action)
+        mode_group.addAction(self.brush_action)
         self.select_action.setChecked(True)
         action("Home", self.reset_view, icon='ico_breadcrumb_home_on.png',
                tooltip="Home: reset the subplot's view to show all its data (autorange)")
