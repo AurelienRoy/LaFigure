@@ -94,6 +94,8 @@ LaFigure/
   run_tests.py             # plain runner (no pytest): `python run_tests.py`
                             # imports every tests/test_*.py and runs its
                             # test_* functions, prints ALL OK
+  examples/                # runnable, customer-facing scripts -- see
+                            # "Example scripts" below
 ```
 
 Run it with `python3 -m lafigure` (not `python3 lafigure.py`
@@ -130,6 +132,35 @@ doc from before the library refactor, superseded by this file once
 annotations (its "next planned piece") were implemented. **This file's
 feature list below is the source of truth**, together with the phased
 **Roadmap** section after it (the agreed next work).
+
+## Example scripts (`examples/`, added 2026-09-29)
+
+Four standalone, runnable scripts, each coded the way a library customer
+would (`import lafigure`, `fig.subplot(...)`, `ax.plot`/`ax.scatter`/
+`ax.bar`/etc.), one per broad slice of the public API:
+`line_signal_annotations.py` (a line plot + textarrow/cursor/rect
+annotations), `series_kinds_gallery.py` (bar/errorbar/area/stairs/hist/
+imshow, one subplot each), `linked_brushing_scatter.py` (two scatters +
+a histogram sharing one `DataSource`, annotated, with a comment on how
+to try Brush mode live), and `three_d_scene.py` (scatter3d/line3d/
+surface). Run any of them with `python examples/<name>.py` from
+anywhere — each inserts the repo root into `sys.path` itself at the top
+(`lafigure` isn't pip-installed; there's no `setup.py`/`pyproject.toml`),
+so no `PYTHONPATH` or `-m` gymnastics are needed.
+
+**Annotations have no public, non-interactive constructor yet.**
+Normally a user picks a shape from the toolbar's "Annotate" dropdown and
+clicks/drags it into place (`annotation_ops.py`'s `start_placing_
+annotation` + `eventFilter`). A script that wants one without a mouse
+calls `LaFigure._create_annotation(kind, anchor, parent_plot, p0,
+p1_local, text=...)` directly — underscore-prefixed (no dedicated public
+wrapper exists), but it's the one real, undoable annotation-creation
+path in the app; this project's own test suite uses it exactly this way
+(grep `_create_annotation` under `tests/`). `p0`/`p1_local` are in the
+anchor's own coordinate space: DATA units for `anchor='axes'` (so the
+shape pans/zooms with the subplot), scene PIXELS for `anchor='figure'`/
+`'border'`. If a future session builds a real public wrapper for
+non-interactive placement, update these four scripts to use it instead.
 
 ## Full feature list (the durable backlog)
 
