@@ -228,6 +228,33 @@ class CurveStyleMixin:
             return s
         self._edit_curve_styles(items, change)
 
+    def set_curve_line_color(self, items, rgba):
+        """Recolor only the line pen, keeping width/style (incl. 'none'
+        invisibility -- the chosen alpha is discarded, the pen's own is
+        kept, so picking a color while Line Style is 'none' doesn't make
+        the line reappear)."""
+        def change(item, s):
+            if not line_options_apply(self._curve_kind(item)):
+                return None
+            pen = pg.mkPen(s['pen']) if s['pen'] is not None else pg.mkPen('k')
+            color = pg.mkColor(rgba)
+            color.setAlpha(pen.color().alpha())
+            pen.setColor(color)
+            s['pen'] = pen
+            return s
+        self._edit_curve_styles(items, change)
+
+    def set_curve_marker_color(self, items, rgba):
+        """Recolor only the marker fill/outline, leaving the line alone."""
+        def change(item, s):
+            if not marker_options_apply(self._curve_kind(item)):
+                return None
+            color = pg.mkColor(rgba)
+            s['symbolBrush'] = pg.mkBrush(color)
+            s['symbolPen'] = pg.mkPen(color)
+            return s
+        self._edit_curve_styles(items, change)
+
     def _curve_kind(self, item):
         series = self._series_of(item)
         return series.kind if series is not None else 'line'

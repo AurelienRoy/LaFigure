@@ -104,6 +104,9 @@ class ToolbarMixin:
 
         SP = QtWidgets.QStyle
 
+        action("Figure Manager", self.open_figure_manager, icon=SP.SP_FileDialogDetailedView,
+               tooltip="Figure Manager: browse open figures, subplots, curves and annotations")
+
         action("Save", self.show_save_dialog, icon=SP.SP_DialogSaveButton,
                tooltip="Save: export the figure as PNG/JPG/SVG/PDF, with a "
                        "customizable header (Ctrl+S)")

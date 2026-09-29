@@ -31,7 +31,7 @@ import tempfile
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 import lafigure as m
 from tests.helpers import app, shown_figure, first_curve, _click_subplot, SHIFT
@@ -292,6 +292,33 @@ def test_curve_menu_style_choice_applies_to_the_selection_as_one_undo():
     f._deselect_curve()
     assert all(pg.mkPen(x.opts['pen']).widthF() == 4 for x in (c, c2))
     assert len(f.undo_stack) == n + 1
+    f.close()
+
+
+def test_curve_menu_line_and_marker_color_pick_independent_colors():
+    f, p, c = _curve_figure()
+    f.set_curve_marker([c], 'o')
+    menu = f._curve_context_menu(p, c)
+    line_color = next(a for a in menu.actions() if a.text() == "Line Color...")
+    marker_color = next(a for a in menu.actions() if a.text() == "Marker Color...")
+    assert line_color.isEnabled() and marker_color.isEnabled()
+
+    real_get_color = QtWidgets.QColorDialog.getColor
+    QtWidgets.QColorDialog.getColor = staticmethod(lambda *a, **k: QtGui.QColor(0, 255, 0))
+    try:
+        marker_color.trigger()
+    finally:
+        QtWidgets.QColorDialog.getColor = real_get_color
+    assert pg.mkBrush(c.opts['symbolBrush']).color().getRgb()[:3] == (0, 255, 0)
+    assert pg.mkPen(c.opts['pen']).color().getRgb()[:3] != (0, 255, 0), "line untouched by marker color"
+    f.close()
+
+
+def test_curve_menu_marker_color_disabled_without_a_marker():
+    f, p, c = _curve_figure()
+    menu = f._curve_context_menu(p, c)
+    marker_color = next(a for a in menu.actions() if a.text() == "Marker Color...")
+    assert not marker_color.isEnabled(), "no marker on this curve yet"
     f.close()
 
 

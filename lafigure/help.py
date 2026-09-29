@@ -93,7 +93,7 @@ class HelpMixin:
 - **Double-click** a subplot/curve/annotation to edit or deselect
 - **Click a legend** to select it; drag it to move it (undoable); Del hides it
 - **Right-click a curve** for its own menu: copy/paste, front/back, line width,
-  line style, marker, marker size, rename, delete
+  line style, line color, marker, marker size, marker color, rename, delete
 - **Right-click a subplot** (off any curve or annotation) for the subplot
   menu: copy/paste subplot, paste curve, front/back, legend, Reorder
   Curves..., Remove Average, FFT, CSV
@@ -141,6 +141,8 @@ Every zoom and pan (rectangle, wheel, drag, Home, Fit, View All) is one
 
 ## Other Features
 
+- **Figure Manager** (toolbar, leftmost) to open the Figure Browser /
+  Curve Browser window
 - **Toggle Legend** to show/hide curve names
 - **Link X** to link X axes across all subplots
 - **FFT** to compute and display FFT of the selected curve

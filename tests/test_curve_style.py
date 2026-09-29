@@ -110,6 +110,50 @@ def test_scatter_marker_edits_apply_and_line_edits_do_not():
     f.close()
 
 
+def test_line_color_and_marker_color_are_independent():
+    f, p, c = _line_figure()
+    f.set_curve_marker([c], 'o')
+    line_before = pg.mkPen(c.opts['pen']).color().getRgb()[:3]
+    f.set_curve_marker_color([c], (0, 255, 0))
+    assert pg.mkBrush(c.opts['symbolBrush']).color().getRgb()[:3] == (0, 255, 0)
+    assert pg.mkPen(c.opts['symbolPen']).color().getRgb()[:3] == (0, 255, 0)
+    assert pg.mkPen(c.opts['pen']).color().getRgb()[:3] == line_before, "line untouched"
+    f.set_curve_line_color([c], (0, 0, 255))
+    assert pg.mkPen(c.opts['pen']).color().getRgb()[:3] == (0, 0, 255)
+    assert pg.mkBrush(c.opts['symbolBrush']).color().getRgb()[:3] == (0, 255, 0), "marker untouched"
+    f.undo()   # line color
+    assert pg.mkPen(c.opts['pen']).color().getRgb()[:3] == line_before
+    f.undo()   # marker color
+    assert pg.mkBrush(c.opts['symbolBrush']).color().getRgb()[:3] == (200, 50, 50), \
+        "back to the marker's original auto-color"
+    f.close()
+
+
+def test_line_color_on_a_none_style_line_stays_invisible():
+    f, p, c = _line_figure()
+    f.set_curve_line_style([c], 'none')
+    f.set_curve_line_color([c], (0, 255, 0))
+    pen = pg.mkPen(c.opts['pen'])
+    assert pen.color().alpha() == 0, "still invisible: 'none' style isn't undone by recoloring"
+    assert pen.color().getRgb()[:3] == (0, 255, 0), "but the color underneath did change"
+    f.set_curve_line_style([c], '-')
+    assert pg.mkPen(c.opts['pen']).color().getRgb()[:3] == (0, 255, 0), "the new color shows once visible"
+    f.close()
+
+
+def test_scatter_marker_color_applies_line_color_does_not():
+    f = m.LaFigure(empty=True)
+    ax = f.subplot(0, 0)
+    s = ax.scatter(np.arange(5.0), np.arange(5.0), size=4)
+    n = len(f.undo_stack)
+    f.set_curve_line_color([s.item], (255, 0, 0))
+    assert len(f.undo_stack) == n, "a scatter has no line: nothing to undo"
+    f.set_curve_marker_color([s.item], (255, 0, 0))
+    assert pg.mkBrush(s.item.opts['symbolBrush']).color().getRgb()[:3] == (255, 0, 0)
+    assert len(f.undo_stack) == n + 1
+    f.close()
+
+
 def test_curves_to_front_and_back_are_undoable():
     f, p, c = _line_figure()
     c2 = f._add_series(p, 'line', np.arange(10.0), np.arange(10.0), name="lin").item

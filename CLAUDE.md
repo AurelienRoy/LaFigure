@@ -215,7 +215,12 @@ the actual code — this list is a summary, not a substitute for checking.
       `FigureRegistry` signals (`registry.py`). Double-clicking a tree row
       raises/focuses that figure window. This is what makes the
       whole-subplot-copy-paste item above actually testable: without a
-      second window there's nothing to paste into.
+      second window there's nothing to paste into. **Toolbar button**
+      (2026-09-29, `toolbar.py`/`menus.py`'s `open_figure_manager`): the
+      leftmost toolbar action, just before Save, opens/raises the Figure
+      Manager on its Figure Browser tab (`FigureManager.show_figure_browser`,
+      mirroring `show_curve_browser`'s create-if-none-open pattern) — no
+      subplot right-click needed just to see the manager.
 - [x] Add a new, empty subplot via a toolbar button (always a new row)
 - [x] Delete a subplot (right-click, or Del key when no curve is selected) —
       removes only that subplot's own cell, never a sibling's
@@ -255,7 +260,18 @@ the actual code — this list is a summary, not a substitute for checking.
       re-highlights: while a curve is selected `opts['pen']` is the
       highlight and the real pen is parked in `opts['_orig_pen']` (popped
       on deselect). Line style "none" is a transparent pen, never
-      `pen=None` (bug #15).
+      `pen=None` (bug #15). **Line Color.../Marker Color...** added to the
+      curve menu (2026-09-29): `set_curve_line_color`/`set_curve_marker_color`
+      (`curve_style.py`) recolor only their own target — unlike the
+      pre-existing `set_curve_color` (still used by the Curve Browser's
+      single color swatch, which recolors "whatever the curve draws" as
+      one field), these are two independent menu entries, each gated
+      the same way its sibling submenu is (Line Color enabled whenever
+      the kind has a line; Marker Color only once a marker is actually
+      set, mirroring Marker Size). Recoloring a line kept invisible by
+      Line Style "none" preserves the alpha-0 invisibility (keeps the
+      new color parked underneath, same trick as bug #15) rather than
+      making it reappear.
 - [ ] Manipulate individual numeric points (drag a sample to edit its
       value) — not implemented
 - [x] Add/remove a legend (toolbar toggle, or the subplot right-click

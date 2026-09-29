@@ -44,6 +44,18 @@ from .curve_style import (LINE_STYLES, LINE_WIDTHS, MARKERS, MARKER_SIZES,
                           line_options_apply, marker_options_apply, pen_style_of)
 
 
+def _marker_color(state):
+    """The marker's own current color: its brush, else its outline pen,
+    else black -- mirrors CurveStyleMixin._line_color but for markers."""
+    brush = state.get('symbolBrush')
+    if brush is not None:
+        return pg.mkBrush(brush).color()
+    pen = state.get('symbolPen')
+    if pen is not None:
+        return pg.mkPen(pen).color()
+    return QtGui.QColor('black')
+
+
 def _menu_header(menu, text, before=None):
     """A disabled, bold first entry naming what the menu acts on."""
     header = QtGui.QAction(text, menu)
@@ -291,6 +303,23 @@ class MenusMixin:
                 state['symbol'], self.set_curve_marker, has_marker)
         choices("Marker Size", [(f"{s:g}", s) for s in MARKER_SIZES], state['symbolSize'],
                 self.set_curve_marker_size, has_marker and state['symbol'] is not None)
+
+        def pick_line_color():
+            color = QtWidgets.QColorDialog.getColor(self._line_color(state), self, "Line Color")
+            if color.isValid():
+                self.set_curve_line_color(targets, (color.red(), color.green(), color.blue()))
+
+        def pick_marker_color():
+            color = QtWidgets.QColorDialog.getColor(_marker_color(state), self, "Marker Color")
+            if color.isValid():
+                self.set_curve_marker_color(targets, (color.red(), color.green(), color.blue()))
+
+        line_color_action = menu.addAction("Line Color...")
+        line_color_action.setEnabled(has_line)
+        line_color_action.triggered.connect(pick_line_color)
+        marker_color_action = menu.addAction("Marker Color...")
+        marker_color_action.setEnabled(has_marker and state['symbol'] is not None)
+        marker_color_action.triggered.connect(pick_marker_color)
         menu.addSeparator()
 
         menu.addAction("Rename Curve...").triggered.connect(
@@ -317,6 +346,16 @@ class MenusMixin:
         if manager is None:
             manager = FigureManager()
         manager.show_curve_browser(self, plot_item)
+        return manager
+
+    def open_figure_manager(self):
+        """Bring the Figure Manager forward on its Figure Browser tab --
+        creating it if none is open (the toolbar's Figure Manager button)."""
+        from .manager import FigureManager   # manager imports figures' modules
+        manager = getattr(self.registry, 'manager', None)
+        if manager is None:
+            manager = FigureManager()
+        manager.show_figure_browser()
         return manager
 
     def _export_subplot_csv(self, plot_item, path):

@@ -1022,3 +1022,11 @@ class FigureManager(QtWidgets.QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def show_figure_browser(self):
+        """Raise this window on the Figure Browser tab (the toolbar's
+        Figure Manager button)."""
+        self.tabs.setCurrentIndex(0)
+        self.show()
+        self.raise_()
+        self.activateWindow()

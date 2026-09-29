@@ -24,9 +24,23 @@
 
 """Toolbar buttons and keyboard shortcuts (toolbar.py). Keys are real
 QTest key clicks: shortcut routing is Qt's, which a direct call skips."""
-from pyqtgraph.Qt import QtCore
+from pyqtgraph.Qt import QtCore, QtWidgets
 
 from tests.helpers import shown_figure, _click_subplot, _key
+
+
+def test_figure_manager_button_is_leftmost_before_save_and_opens_the_manager():
+    f = shown_figure()
+    tb = f.findChildren(QtWidgets.QToolBar)[0]
+    labels = [a.text() for a in tb.actions() if a.text()]
+    assert labels[0] == "Figure Manager" and labels[1] == "Save", labels
+    manager_action = tb.actions()[0]
+    manager_action.trigger()
+    mgr = f.registry.manager
+    assert mgr is not None and mgr.tabs.currentIndex() == 0
+    assert f.open_figure_manager() is mgr, "one manager, reused"
+    mgr.close()
+    f.close()
 
 
 def test_undo_redo_buttons_follow_the_stacks():
