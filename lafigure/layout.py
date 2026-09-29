@@ -53,9 +53,12 @@ from .handles import ResizeHandle, MoveHandle, GutterHandle, GUIDES_Z
 from .editable_text import wire_plot_labels_editable
 from .annotations import AnnotationItem
 from .selection_ui import selection_op
+from .view3d import View3DBox
 
 
-AXES_TYPES = ('cartesian',)
+# 'cartesian': a 2D pg.PlotItem. '3d': the same PlotItem with a View3DBox as
+# its ViewBox (view3d.py) -- to this module, just another subplot with a box.
+AXES_TYPES = ('cartesian', '3d')
 
 
 class _ViewportWatcher(QtCore.QObject):
@@ -306,13 +309,14 @@ class LayoutMixin:
 
         The new subplot's box is the cells (row, col) .. (row + rowspan,
         col + colspan); the grid grows (new rows/columns appended) to fit
-        it. axes_type is part of the frozen interface for later work
-        packages; only 'cartesian' exists so far, and it is recorded on the
-        PlotItem as `plot_item.axes_type`."""
+        it. axes_type ('cartesian' or '3d', see AXES_TYPES) is recorded on
+        the PlotItem as `plot_item.axes_type`; a 3D cell is still this one
+        PlotItem, with a View3DBox for ViewBox and no 2D axes."""
         if axes_type not in AXES_TYPES:
             raise NotImplementedError(f"axes_type={axes_type!r} is not implemented yet "
                                       f"(available: {', '.join(AXES_TYPES)})")
-        plot_item = pg.PlotItem(title=title)
+        is_3d = axes_type == '3d'
+        plot_item = pg.PlotItem(title=title, viewBox=View3DBox() if is_3d else None)
         # Its geometry is ours (_apply_layout); its own size hints must not clamp it.
         plot_item.setMinimumSize(1, 1)
         self.layout_widget.scene().addItem(plot_item)
@@ -328,7 +332,13 @@ class LayoutMixin:
         self.z_order.append(plot_item)
 
         plot_item.axes_type = axes_type
-        plot_item.showGrid(x=True, y=True, alpha=0.2)
+        if is_3d:
+            # The view's coordinates are the rendered image's pixels: no
+            # 2D axis or grid means anything there.
+            plot_item.hideAxis('left')
+            plot_item.hideAxis('bottom')
+        else:
+            plot_item.showGrid(x=True, y=True, alpha=0.2)
         wire_plot_labels_editable(plot_item)
         self._wire_context_menu(plot_item)
         vb = plot_item.getViewBox()
@@ -396,12 +406,15 @@ class LayoutMixin:
         self.registry.notify_subplots_changed(self)
         return row, col
 
-    def _insert_subplot_at(self, row, col, title, xlabel, ylabel, series_data, box=None):
+    def _insert_subplot_at(self, row, col, title, xlabel, ylabel, series_data, box=None,
+                           axes_type='cartesian', view_state=None):
         """Place a new subplot in cell (row, col) -- or exactly at `box`,
         when restoring a deleted one -- without shifting anything. Inverse
         of _remove_subplot. series_data: BrushingMixin._series_full_dict
-        outputs (Series.to_dict plus hidden/not-currently-drawn rows)."""
-        new_plot = self.add_subplot(row=row, col=col, title=title)
+        outputs (Series.to_dict plus hidden/not-currently-drawn rows).
+        axes_type/view_state: what _subplot_view_state captured (a 3D
+        cell's camera), so a 3D subplot comes back as one."""
+        new_plot = self.add_subplot(row=row, col=col, title=title, axes_type=axes_type)
         if box is not None:
             self.boxes[new_plot] = box
             self._apply_layout()
@@ -411,7 +424,22 @@ class LayoutMixin:
             new_plot.setLabel('left', ylabel)
         for d in series_data:
             self._add_series_restoring(new_plot, d)
+        self._apply_subplot_view_state(new_plot, view_state)
         return new_plot
+
+    @staticmethod
+    def _subplot_view_state(plot_item):
+        """What a subplot's view needs beyond its series to come back the
+        same (delete + undo, copy + paste): a 3D cell's camera; None for 2D,
+        whose range is view state that isn't kept."""
+        vb = plot_item.getViewBox()
+        return {'camera': vb.camera_state()} if isinstance(vb, View3DBox) else None
+
+    @staticmethod
+    def _apply_subplot_view_state(plot_item, view_state):
+        vb = plot_item.getViewBox()
+        if view_state and isinstance(vb, View3DBox) and 'camera' in view_state:
+            vb.set_camera_state(view_state['camera'])
 
     def insert_subplot_below(self, reference_plot, title=""):
         """FFT -> subplot below: insert a new grid row right under the
@@ -498,6 +526,8 @@ class LayoutMixin:
         annotations_data = [a.to_dict() for a in self._annotations_on(plot_item)]
         box = self.boxes.get(plot_item)
         z_index = self.z_order.index(plot_item) if plot_item in self.z_order else None
+        axes_type = getattr(plot_item, 'axes_type', 'cartesian')
+        view_state = self._subplot_view_state(plot_item)
         row, col = self._remove_subplot(plot_item, restore_grid=False)
         if row is None:
             # _remove_subplot's defensive fallback -- append a new row
@@ -507,7 +537,8 @@ class LayoutMixin:
         holder = {}
 
         def undo_fn():
-            new_plot = self._insert_subplot_at(row, col, title, xlabel, ylabel, series_data, box=box)
+            new_plot = self._insert_subplot_at(row, col, title, xlabel, ylabel, series_data, box=box,
+                                               axes_type=axes_type, view_state=view_state)
             if z_index is not None:
                 self.z_order.remove(new_plot)
                 self.z_order.insert(min(z_index, len(self.z_order)), new_plot)
