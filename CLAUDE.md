@@ -188,8 +188,11 @@ the actual code — this list is a summary, not a substitute for checking.
         back into the grid).
 - [x] Move a subplot / swap it with another: in Select mode, drag its
       center handle onto another subplot to swap their grid positions
-- [ ] Change the z-order of curves (bring to front/back, reorder legend) —
-      not implemented
+- [~] Change the z-order of curves: **front/back only**, via the Curve
+      browser's Z-order buttons (`item.setZValue`, WP-K2, 2026-09-28,
+      `manager.py`) — verified live to actually change on-screen stacking
+      order, undoable. Step up/down (not just the two extremes) and
+      reordering the legend to match are **not implemented**.
 - [ ] Manipulate individual numeric points (drag a sample to edit its
       value) — not implemented
 - [x] Add/remove a legend (toolbar toggle, or right-click menu)
@@ -447,53 +450,68 @@ package lands.
       `fit_view_vertical`, `fit_view_horizontal`, `_fit_view`. Full data,
       never the downsampled display; hidden items ignored. Verified by
       WP-01; `tests/test_view_ops.py`.
-- [ ] **Subplot right-click menu slimmed down**: remove pyqtgraph's
+- [x] **Subplot right-click menu slimmed down**: remove pyqtgraph's
       "Export..." (export becomes the figure-wide toolbar Save, Phase 4),
       "X axis", "Y axis" and "Mouse Mode"; add **"Export to CSV..."** (the
       subplot's curves, full data); the brushed-point actions (Delete /
       Transform / Fit Selected Points, and Selection Stats with them) are
       **shown only while Brush mode is on**, and **disabled when no point
-      is brushed**.
+      is brushed**. **Built by WP-B** (2026-09-28, `menus.py`).
 
 ### Phase 1 — free layout on a fractional grid (replaces QGraphicsGridLayout)
-- [ ] Drop `QGraphicsGridLayout` entirely. Subplots are positioned directly
-      (`setGeometry`), recomputed on window resize. This deletes the float/
-      placeholder/reattach code, stretch factors, the private
-      `GraphicsLayout.layout` access, and the bug #5 guard — and the
-      "one thing to internalize" section below then describes history.
-- [ ] Figure owns a **grid**: column and row boundaries as figure fractions.
-      Every subplot edge is a **fractional grid coordinate** (`left=1.5` =
-      halfway between column lines 1 and 2), mapped piecewise-linearly
-      through the boundaries. Spans = integer ranges > 1; free sizes and
-      insets = any fraction. Dragging a grid line therefore rescales every
-      edge referencing it, insets included.
-- [ ] Positions are the subplot's **outer box** (axes/labels included), not
-      MATLAB's inner data-area Position. "Align data areas" may come later.
-- [ ] Overlap allowed; per-subplot z-order (Bring to Front / Send to Back);
-      a subplot above another gets an opaque background (insets).
-- [ ] Select mode: drag a **gutter on a grid line** = move that row/column
-      line (all attached subplots follow); drag a selected subplot's
-      **border/corner handle** = resize that subplot only; drag its **move
-      handle** = move it; **Ctrl+drop onto another subplot = swap** (plain
-      drop just moves).
-- [ ] **Magnetic sub-grid shown only during a drag**: snaps to grid lines,
-      cell subdivisions (½/¼, configurable), other subplots' edges
-      (alignment guides) and figure margins; ~8 px threshold; **Alt**
-      disables snapping.
-- [ ] Mouse cursor changes on hover in Select mode: split cursors over
+**Built by WP-A** (2026-09-28, `lafigure/grid.py`, `lafigure/layout.py`) —
+every bullet below verified against the shipped code and its tests, not
+assumed. (This whole roadmap section's checkboxes went un-ticked for
+several sessions after WP-A actually merged — caught and fixed in this
+pass; a reminder that "done" here means confirmed against code, not
+against memory of having launched the package.)
+- [x] Dropped `QGraphicsGridLayout` entirely. Subplots are positioned
+      directly (`setGeometry`/box math), recomputed on window resize. The
+      float/placeholder/reattach code, stretch factors, the private
+      `GraphicsLayout.layout` access, and the bug #5 guard are all gone —
+      see "The one thing to internalize" section below, now historical.
+- [x] Figure owns a **grid**: column and row boundaries as figure
+      fractions (`self.grid_cols`/`grid_rows`). Every subplot edge is a
+      **fractional grid coordinate** (`self.boxes[plot_item] = (left, top,
+      right, bottom)`; `left=1.5` = halfway between column lines 1 and 2),
+      mapped piecewise-linearly through the boundaries (`grid.py`). Spans
+      = integer ranges > 1; free sizes and insets = any fraction. Dragging
+      a grid line rescales every edge referencing it, insets included.
+- [x] Positions are the subplot's **outer box** (axes/labels included),
+      per the user's explicit choice over MATLAB's inner data-area
+      Position. "Align data areas" not built (may come later).
+- [x] Overlap allowed; per-subplot z-order via `self.z_order`,
+      `bring_to_front`/`send_to_back` (also on the subplot's right-click
+      menu, WP-A's diff to `menus.py`); a subplot above another gets an
+      opaque background.
+- [x] Select mode: drag a **gutter on a grid line** (a `GutterHandle`,
+      `handles.py`) = move that row/column line, rescaling every attached
+      edge; drag a selected subplot's border/corner handle = resize that
+      subplot only; drag its move handle = move it; **Ctrl+drop onto
+      another subplot = swap** (plain drop just moves).
+- [x] **Magnetic sub-grid shown only during a drag** (`SnapGuides`): snaps
+      to grid lines, cell subdivisions (`self.snap_subdivisions`, default
+      halves), other subplots' edges, and figure margins; `SNAP_PX = 8`;
+      **Alt** disables snapping.
+- [x] Mouse cursor changes on hover in Select mode: split cursors over
       draggable gutters, resize cursors over handles, move cursor over the
       move handle.
-- [ ] Gutter right-click: insert/delete row/column, equalize rows/columns.
-      Add Subplot fills the first empty cell, else appends a row. Delete
-      leaves a hole, never shifts (bug #1 lesson).
-- [ ] **FFT → subplot** adds a new grid row right under the time plot's row;
-      the result is an ordinary, freely movable subplot.
-- [ ] Layout changes (move/resize/swap/grid-line drag) **go through undo**
-      (a layout is a few numbers — snapshot it).
-- [ ] `'border'` annotation offset becomes a fraction of the subplot box
-      (fixes Annotations simplification #5).
-- [ ] **"?" toolbar button**: popup with explained controls (mouse/keys per
-      mode), version, and credits.
+- [x] Gutter right-click: insert/delete row/column, equalize
+      rows/columns. Add Subplot fills the first empty cell, else appends a
+      row. Delete leaves a hole, never shifts (bug #1's lesson).
+- [x] **FFT → subplot** adds a new grid row right under the time plot's
+      row (`insert_subplot_below`); the result is an ordinary, freely
+      movable subplot, undo/redo included.
+- [x] Layout changes (move/resize/swap/grid-line drag, insert/delete/
+      equalize a track) **go through undo** — a layout snapshot is just a
+      few numbers.
+- [x] `'border'` annotation offset is a fraction of the subplot box
+      (`_box_fraction`/`_box_point`, applied via WP-A's diff to
+      `annotation_ops.py`/`annotations.py`), fixing Annotations
+      simplification #5.
+- [x] **"?" toolbar button**: popup with explained controls (mouse/keys
+      per mode), version, and credits. **Built by WP-C** (2026-09-28,
+      `lafigure/help.py`).
 
 ### Phase 2 — data model: DataSource + Series kinds + console API
 - [x] `DataSource`: shared columnar table (dict of numpy arrays, or from a
