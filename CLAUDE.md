@@ -135,18 +135,29 @@ feature list below is the source of truth**, together with the phased
 
 ## Example scripts (`examples/`, added 2026-09-29)
 
-Four standalone, runnable scripts, each coded the way a library customer
+Seven standalone, runnable scripts, each coded the way a library customer
 would (`import lafigure`, `fig.subplot(...)`, `ax.plot`/`ax.scatter`/
 `ax.bar`/etc.), one per broad slice of the public API:
 `line_signal_annotations.py` (a line plot + textarrow/cursor/rect
 annotations), `series_kinds_gallery.py` (bar/errorbar/area/stairs/hist/
 imshow, one subplot each), `linked_brushing_scatter.py` (two scatters +
 a histogram sharing one `DataSource`, annotated, with a comment on how
-to try Brush mode live), and `three_d_scene.py` (scatter3d/line3d/
-surface). Run any of them with `python examples/<name>.py` from
-anywhere — each inserts the repo root into `sys.path` itself at the top
-(`lafigure` isn't pip-installed; there's no `setup.py`/`pyproject.toml`),
-so no `PYTHONPATH` or `-m` gymnastics are needed.
+to try Brush mode live), `three_d_scene.py` (scatter3d/line3d/surface),
+`interactive_controls.py` (a scatter cross-filtered live by a slider/
+checkbox in a separate `ControlPanelWindow`, plus a reactive table —
+needs `console.watch_source(source)` armed explicitly, since nothing
+opened the console dock, which is what normally arms it),
+`groups_and_style.py` (`raw_filtered_preset`/`sensor_family_preset`,
+registered on `fig.groups`), and `copy_paste_across_figures.py` (two
+LaFigure windows; a whole subplot and a single curve copied from one
+into the other through the shared, process-wide `Clipboard`, by setting
+`fig.focused_plot`/`fig.active_curve` the way a click would before
+calling the same `copy_subplot`/`copy_curve`/`paste_subplot`/
+`paste_curve` the toolbar/menu actions call). Run any of them with
+`python examples/<name>.py` from anywhere — each inserts the repo root
+into `sys.path` itself at the top (`lafigure` isn't pip-installed;
+there's no `setup.py`/`pyproject.toml`), so no `PYTHONPATH` or `-m`
+gymnastics are needed.
 
 **Annotations have no public, non-interactive constructor yet.**
 Normally a user picks a shape from the toolbar's "Annotate" dropdown and
