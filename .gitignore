@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+count_python_lines.bat
 
 # Per-agent git worktrees created for parallel PLAN.md work packages
 /.claude/worktrees/
