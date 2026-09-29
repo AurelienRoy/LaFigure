@@ -36,6 +36,7 @@ replaced the object once -- pair every undo with its matching redo (or a
 fresh delete_annotation call on whatever is *currently* live).
 """
 import math
+import time
 
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
@@ -358,8 +359,8 @@ def test_shift_rotate_snaps_to_45_degrees():
     f, curve, rect, ellipse = _two_annotation_figure()
     center = rect.mapToScene(rect._shape_center_local())
     rect._on_rotate_drag(center + QtCore.QPointF(60, -55), modifiers=SHIFT)
-    ratio = rect.rotation() / 45.0
-    assert abs(ratio - round(ratio)) < 1e-6, rect.rotation()
+    ratio = rect.screen_rotation() / 45.0
+    assert abs(ratio - round(ratio)) < 1e-6, rect.screen_rotation()
     f.close()
 
 
@@ -367,7 +368,7 @@ def test_plain_rotate_is_not_constrained():
     f, curve, rect, ellipse = _two_annotation_figure()
     center = rect.mapToScene(rect._shape_center_local())
     rect._on_rotate_drag(center + QtCore.QPointF(60, -55))
-    ratio = rect.rotation() / 45.0
+    ratio = rect.screen_rotation() / 45.0
     assert abs(ratio - round(ratio)) > 1e-3, "control: this angle should NOT land on a 45-degree step"
     f.close()
 
@@ -416,12 +417,19 @@ def test_oriented_outline_for_a_diagonal_arrow_is_tight_in_scene_space():
     f.close()
 
 
-def test_rect_selection_outline_is_unrotated():
+def test_rect_selection_outline_hugs_the_rect_in_screen_pixels():
+    """Was: the outline equals boundingRect() inset by 4 local units (a
+    ~16px margin, per-axis data units on an 'axes' anchor). WP-P1: it
+    hugs the drawn rect by OUTLINE_PAD_PX screen pixels on every side."""
     f, curve, rect, ellipse = _two_annotation_figure()
-    poly = rect._selection_outline_polygon()
-    inset = rect._px_to_local(4)
-    expected = QtGui.QPolygonF(rect.boundingRect().adjusted(inset, inset, -inset, -inset))
-    assert poly == expected
+    poly = [rect.mapToScene(pt) for pt in rect._selection_outline_polygon()]
+    assert len(poly) == 4
+    drawn = QtGui.QPolygonF(_scene_corners(rect)).boundingRect()
+    outline = QtGui.QPolygonF(poly).boundingRect()
+    pad = rect.OUTLINE_PAD_PX
+    for got, want in ((outline.left(), drawn.left() - pad), (outline.right(), drawn.right() + pad),
+                      (outline.top(), drawn.top() - pad), (outline.bottom(), drawn.bottom() + pad)):
+        assert abs(got - want) < 0.5, (outline, drawn)
     f.close()
 
 
@@ -550,4 +558,326 @@ def test_link_to_subplot_actions_only_offered_for_an_unlinked_annotation():
 
     assert any(t.startswith("Link to subplot") for t in free_texts), free_texts
     assert not any(t.startswith("Link to subplot") for t in linked_texts), linked_texts
+    f.close()
+
+
+# -- WP-P1: tight hit-test shape(), scene-space rotation, textarrow label ----
+# Every check below measures SCENE (screen-pixel) geometry -- see the
+# lafigure-axes-geometry skill: on a subplot whose X/Y data-per-pixel isn't
+# 1:1, local (data) numbers say nothing about what the user sees.
+
+def _dist(a, b):
+    return math.hypot(a.x() - b.x(), a.y() - b.y())
+
+
+def _angle_deg(vec):
+    return math.degrees(math.atan2(vec.y(), vec.x()))
+
+
+def _hits(ann, scene_pt):
+    """Qt's own hit-test: QGraphicsItem.contains() reads shape()."""
+    return ann.contains(ann.mapFromScene(scene_pt))
+
+
+def _one_subplot_figure(x_range=None, y_range=None):
+    """One subplot, shown; optionally with a fixed (non-1:1) view."""
+    f = m.LaFigure(empty=True)
+    p = f.add_subplot(row=0, col=0)
+    f._add_series(p, 'line', [0, 1], [0, 1], name='_bg')
+    f.show()
+    app.processEvents()
+    if x_range is not None:
+        p.getViewBox().setRange(xRange=x_range, yRange=y_range, padding=0)
+        app.processEvents()
+    return f, p
+
+
+def _skewed_axes_rect(kind='rect'):
+    """An 'axes'-anchored `kind` on a subplot spanning 1000 data units in X
+    but 1 in Y -- about as far from 1:1 as a real plot gets. Its screen box
+    is 120 x 60 px, starting at the view's center."""
+    f, p = _one_subplot_figure(x_range=(0, 1000), y_range=(0, 1))
+    vb = p.getViewBox()
+    start_scene = vb.sceneBoundingRect().center()
+    p0 = vb.mapSceneToView(start_scene)
+    p1 = vb.mapSceneToView(start_scene + QtCore.QPointF(120, -60)) - p0
+    ann = f._create_annotation(kind, 'axes', p, p0, p1)
+    f._deselect_all()
+    return f, p, ann
+
+
+def _scene_corners(ann):
+    p1 = ann.p1_local
+    return [ann.mapToScene(QtCore.QPointF(x, y))
+            for x, y in ((0, 0), (p1.x(), 0), (p1.x(), p1.y()), (0, p1.y()))]
+
+
+def _assert_screen_rectangle(ann, width, height, angle):
+    """The shape's four corners form, ON SCREEN, a width x height rectangle
+    whose local-x edge points at `angle` degrees -- i.e. a true rotation,
+    not a skewed parallelogram."""
+    c0, c1, c2, c3 = _scene_corners(ann)
+    e0, e1 = c1 - c0, c3 - c0
+    dot = e0.x() * e1.x() + e0.y() * e1.y()
+    assert abs(dot) < 1.0, ("edges must be perpendicular on screen", dot, e0, e1)
+    assert abs(math.hypot(e0.x(), e0.y()) - width) < 0.5, (e0, width)
+    assert abs(math.hypot(e1.x(), e1.y()) - height) < 0.5, (e1, height)
+    diff = (_angle_deg(e0) - angle + 180) % 360 - 180
+    assert abs(diff) < 0.5, ("on-screen angle", _angle_deg(e0), angle)
+
+
+def test_rect_shape_hugs_the_rect_in_screen_pixels():
+    """shape() is the dashed outline (a few screen px around the rect), not
+    boundingRect()'s 20px-padded box: 3px past an edge still hits, 12px
+    past no longer does (the old padded box did)."""
+    f, p = _one_subplot_figure()
+    start = p.getViewBox().sceneBoundingRect().center() - QtCore.QPointF(40, 30)
+    rect = f._create_annotation('rect', 'figure', None, start, QtCore.QPointF(80, 50))
+    right_mid = start + QtCore.QPointF(80, 25)
+    top_mid = start + QtCore.QPointF(40, 0)
+    assert _hits(rect, right_mid + QtCore.QPointF(3, 0))
+    assert _hits(rect, top_mid + QtCore.QPointF(0, -3))
+    far = right_mid + QtCore.QPointF(12, 0)
+    assert rect.boundingRect().contains(rect.mapFromScene(far)), "control: the old padded box reached it"
+    assert not _hits(rect, far)
+    assert not _hits(rect, top_mid + QtCore.QPointF(0, -12))
+    f.close()
+
+
+def test_ellipse_shape_is_a_bounding_ellipse():
+    """A click in the bounding box's corner, a few px past the ellipse's
+    own edge, no longer hits it; just past the edge on an axis still does."""
+    f, p = _one_subplot_figure()
+    center = p.getViewBox().sceneBoundingRect().center()
+    a, b = 40, 25
+    ell = f._create_annotation('ellipse', 'figure', None, center - QtCore.QPointF(a, b),
+                               QtCore.QPointF(2 * a, 2 * b))
+    corner = center + QtCore.QPointF(a - 3, -(b - 3))  # inside the box, outside the ellipse
+    assert ell.boundingRect().contains(ell.mapFromScene(corner)), "control: the old box reached it"
+    assert not _hits(ell, corner)
+    assert _hits(ell, center + QtCore.QPointF(a + 2, 0))
+    assert _hits(ell, center + QtCore.QPointF(0, b + 2))
+    assert _hits(ell, center)
+    # The drawn outline is the same bounding ellipse, not a box.
+    poly = ell._selection_outline_polygon()
+    assert len(poly) > 8, "an ellipse outline, not a 4-corner box"
+    for pt in poly:
+        s = ell.mapToScene(pt) - center
+        assert (s.x() / a) ** 2 + (s.y() / b) ** 2 > 1.0, "outline sits outside the drawn ellipse"
+        assert abs(s.x()) <= a + 8 and abs(s.y()) <= b + 8, "only a few px outside it"
+    f.close()
+
+
+def test_shape_padding_is_screen_pixels_on_a_non_square_axes_subplot():
+    """Same few-px margin on X and Y, even though one data unit is ~0.4px
+    in X and ~300px in Y: built in scene space, never per-axis local pad."""
+    f, p, rect = _skewed_axes_rect()
+    c0, c1, c2, c3 = _scene_corners(rect)
+    right_mid = (c1 + c2) / 2
+    top_mid = (c2 + c3) / 2  # p1.y is "up" on screen here (negative scene dy)
+    scene = f.layout_widget.scene()
+    for edge_mid, out in ((right_mid, QtCore.QPointF(1, 0)), (top_mid, QtCore.QPointF(0, -1))):
+        assert _hits(rect, edge_mid + out * 3), edge_mid
+        assert not _hits(rect, edge_mid + out * 12), edge_mid
+        # Qt's own item picking agrees: an item under a clipping ancestor
+        # (the ViewBox) is picked by clipPath(), not shape(), unless
+        # contains() is overridden -- see AnnotationItem.contains.
+        assert rect in scene.items(edge_mid + out * 3)
+        assert rect not in scene.items(edge_mid + out * 12)
+    f.close()
+
+
+def test_oriented_kinds_shape_hugs_the_segment():
+    f, p = _one_subplot_figure()
+    start = p.getViewBox().sceneBoundingRect().center() - QtCore.QPointF(50, 0)
+    arrow = f._create_annotation('arrow', 'figure', None, start, QtCore.QPointF(100, 60))
+    mid = start + QtCore.QPointF(50, 30)
+    n_unit = QtCore.QPointF(-60, 100) * (1 / math.hypot(60, 100))
+    assert _hits(arrow, mid)
+    assert _hits(arrow, mid + n_unit * 4)
+    # 15px perpendicular to the segment: inside the old axis-aligned box.
+    assert arrow.boundingRect().contains(arrow.mapFromScene(mid + n_unit * 15)), "control"
+    assert not _hits(arrow, mid + n_unit * 15)
+    f.close()
+
+
+def test_textarrow_shape_includes_its_text_label():
+    f, p = _one_subplot_figure()
+    start = p.getViewBox().sceneBoundingRect().center() - QtCore.QPointF(60, 0)
+    ta = f._create_annotation('textarrow', 'figure', None, start, QtCore.QPointF(100, 0), text='hello')
+    label_center = ta._text_scene_rect().center()
+    assert _hits(ta, label_center)
+    assert _hits(ta, start + QtCore.QPointF(50, 0))
+    f.close()
+
+
+def test_real_click_selects_near_the_rect_edge_but_not_in_the_ellipse_corner():
+    """Through Qt's own item picking (a real QMouseEvent to the viewport),
+    not just contains(): what the user actually clicks."""
+    from tests.helpers import _mouse
+    f, p = _one_subplot_figure()
+    f.set_interaction_mode('select')
+    center = p.getViewBox().sceneBoundingRect().center()
+    rect = f._create_annotation('rect', 'figure', None, center + QtCore.QPointF(20, -40),
+                                QtCore.QPointF(80, 60))
+    ell = f._create_annotation('ellipse', 'figure', None, center - QtCore.QPointF(120, 40),
+                               QtCore.QPointF(80, 60))
+    f._deselect_all()
+    L, N = QtCore.Qt.LeftButton, QtCore.Qt.NoButton
+    press, release = QtCore.QEvent.MouseButtonPress, QtCore.QEvent.MouseButtonRelease
+
+    corner = center - QtCore.QPointF(120, 40) + QtCore.QPointF(3, 3)
+    _mouse(f, press, corner, L)
+    _mouse(f, release, corner, N)
+    assert ell not in f.selected_annotations, "the ellipse's box corner is no longer the ellipse"
+
+    f._deselect_all()
+    time.sleep(1.1)  # past the click-cycle timeout, so this is a fresh click
+    near_edge = center + QtCore.QPointF(20 + 80 + 3, -10)
+    _mouse(f, press, near_edge, L)
+    _mouse(f, release, near_edge, N)
+    assert rect in f.selected_annotations, "3px past the rect's edge still grabs it"
+    f.close()
+
+
+def test_real_click_just_above_an_axes_rect_on_a_skewed_subplot_misses_it():
+    """The 'axes' case through real events: the old padded box reached
+    thousands of px in Y here (a 20px pad converted with the X/Y-averaged
+    data-per-pixel), and Qt's clip-based contains() kept using it."""
+    from tests.helpers import _mouse
+    f, p, rect = _skewed_axes_rect()
+    f.set_interaction_mode('select')
+    c0, c1, c2, c3 = _scene_corners(rect)
+    L, N = QtCore.Qt.LeftButton, QtCore.Qt.NoButton
+    above = (c2 + c3) / 2 + QtCore.QPointF(0, -12)
+    _mouse(f, QtCore.QEvent.MouseButtonPress, above, L)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, above, N)
+    assert rect not in f.selected_annotations
+    time.sleep(1.1)  # past the click-cycle timeout
+    inside_edge = (c2 + c3) / 2 + QtCore.QPointF(0, -3)
+    _mouse(f, QtCore.QEvent.MouseButtonPress, inside_edge, L)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, inside_edge, N)
+    assert rect in f.selected_annotations
+    f.close()
+
+
+def test_rotation_is_applied_in_screen_space_on_a_non_square_axes_subplot():
+    """setRotation() on an 'axes' annotation rotated in DATA space, which
+    renders as a skewed parallelogram at some other angle. Now: the rotate
+    handle asks for 30 degrees on screen, and the shape IS a 120x60px
+    rectangle at 30 degrees on screen."""
+    f, p, rect = _skewed_axes_rect()
+    center = rect.mapToScene(rect._shape_center_local())
+    # Handle rests straight above center; +30 deg turns it clockwise on screen.
+    target = center + QtCore.QPointF(math.sin(math.radians(30)), -math.cos(math.radians(30))) * 80
+    rect._on_rotate_drag(target)
+    assert abs(rect.screen_rotation() - 30) < 1e-6, rect.screen_rotation()
+    _assert_screen_rectangle(rect, 120, 60, 30)
+    assert _dist(rect.mapToScene(rect._shape_center_local()), center) < 0.5, "pivot stays put"
+    f.close()
+
+
+def test_rotated_axes_annotation_stays_a_true_rotation_after_zoom():
+    """The data->screen scale changes on every zoom, so the screen-space
+    rotation has to be rebuilt then, or the shape skews again."""
+    f, p, rect = _skewed_axes_rect()
+    rect._apply_rotation(30)
+    vb = p.getViewBox()
+    vb.setRange(xRange=(0, 1000), yRange=(0, 3), padding=0)  # Y squeezed 3x on screen
+    app.processEvents()
+    c0, c1, c2, c3 = _scene_corners(rect)
+    e0, e1 = c1 - c0, c3 - c0
+    assert abs(e0.x() * e1.x() + e0.y() * e1.y()) < 1.0, (e0, e1)
+    assert abs(_angle_deg(e0) - 30) < 0.5, _angle_deg(e0)
+    f.close()
+
+
+def test_rotated_axes_annotation_survives_delete_and_undo():
+    """from_dict applies the rotation before the item has its ViewBox
+    parent; re-parenting must rebuild the screen-space transform."""
+    f, p, rect = _skewed_axes_rect()
+    rect._apply_rotation(30)
+    f.delete_annotation(rect)
+    f.undo()
+    restored = f.annotations[-1]
+    assert abs(restored.screen_rotation() - 30) < 1e-6
+    _assert_screen_rectangle(restored, 120, 60, 30)
+    f.close()
+
+
+def test_shift_rotate_snaps_to_screen_45_on_a_non_square_axes_subplot():
+    f, p, rect = _skewed_axes_rect()
+    center = rect.mapToScene(rect._shape_center_local())
+    rect._on_rotate_drag(center + QtCore.QPointF(60, -35), modifiers=SHIFT)
+    assert abs(rect.screen_rotation() - 45) < 1e-6, rect.screen_rotation()
+    _assert_screen_rectangle(rect, 120, 60, 45)
+    f.close()
+
+
+def test_real_shift_drag_of_the_rotate_handle_snaps_on_screen():
+    """The rotate handle driven by real QMouseEvents (Qt picks the handle
+    from the event's global position -- CLAUDE.md bug #11)."""
+    from tests.helpers import _mouse
+    f, p, rect = _skewed_axes_rect()
+    f.set_interaction_mode('select')
+    f._select_annotation(rect)
+    app.processEvents()
+    handle_scene = rect._rotate_handle.scenePos()
+    center = rect.mapToScene(rect._shape_center_local())
+    assert abs(_angle_deg(handle_scene - center) + 90) < 0.5, "control: handle rests straight above center"
+    L, N = QtCore.Qt.LeftButton, QtCore.Qt.NoButton
+    target = center + QtCore.QPointF(70, -20)  # ~74 deg from "up": snaps to 90
+    _mouse(f, QtCore.QEvent.MouseButtonPress, handle_scene, L)
+    time.sleep(0.012)
+    _mouse(f, QtCore.QEvent.MouseMove, (handle_scene + target) / 2, L, button=N, mods=SHIFT)
+    time.sleep(0.012)
+    _mouse(f, QtCore.QEvent.MouseMove, target, L, button=N, mods=SHIFT)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, target, N, mods=SHIFT)
+    assert abs(rect.screen_rotation() - 90) < 1e-6, rect.screen_rotation()
+    _assert_screen_rectangle(rect, 120, 60, 90)
+    f.close()
+
+
+def _label_checks(ta):
+    """The label sits beside p1 (the arrowhead) -- off to the side of the
+    segment, clear of it and of the tip, but close -- and nowhere near p0:
+    the old fixed offset hung it off p0."""
+    p0 = ta.mapToScene(QtCore.QPointF(0, 0))
+    p1 = ta.mapToScene(ta.p1_local)
+    box = ta._text_scene_rect()
+    for t in (0.0, 0.1, 0.5, 0.9, 1.0):
+        assert not box.contains(p0 + (p1 - p0) * t), ("the label covers the arrow", t, box)
+    nearest = QtCore.QPointF(min(max(p1.x(), box.left()), box.right()),
+                             min(max(p1.y(), box.top()), box.bottom()))
+    assert _dist(nearest, p1) < ta.LABEL_GAP_PX + max(box.width(), box.height()) / 2, (box, p1)
+    assert _dist(box.center(), p1) < _dist(box.center(), p0) - 30, (box, p0, p1)
+
+
+def test_textarrow_label_sits_beside_p1_at_any_angle():
+    f, p = _one_subplot_figure()
+    start = p.getViewBox().sceneBoundingRect().center() - QtCore.QPointF(60, 0)
+    ta = f._create_annotation('textarrow', 'figure', None, start, QtCore.QPointF(120, 0), text='label')
+    for vec in ((120, 0), (0, -120), (-90, 90), (100, 70), (-120, 0)):
+        ta.p1_local = QtCore.QPointF(*vec)
+        _label_checks(ta)
+    f.close()
+
+
+def test_textarrow_label_follows_p1_on_a_non_square_axes_subplot():
+    f, p = _one_subplot_figure(x_range=(0, 1000), y_range=(0, 1))
+    vb = p.getViewBox()
+    start_scene = vb.sceneBoundingRect().center()
+    p0 = vb.mapSceneToView(start_scene)
+    p1 = vb.mapSceneToView(start_scene + QtCore.QPointF(100, -80)) - p0
+    ta = f._create_annotation('textarrow', 'axes', p, p0, p1, text='label')
+    _label_checks(ta)
+    # Dragging the end handle moves the label along with the tip.
+    ta._on_endpoint_press(None)
+    ta._on_endpoint_drag(start_scene + QtCore.QPointF(-90, 60))
+    ta._on_endpoint_release(None)
+    _label_checks(ta)
+    # So does a zoom (the tip moves on screen, the data doesn't).
+    vb.setRange(xRange=(0, 2000), yRange=(0, 1), padding=0)
+    app.processEvents()
+    _label_checks(ta)
     f.close()

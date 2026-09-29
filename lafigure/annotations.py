@@ -46,7 +46,11 @@ handle positions) is expressed in "whatever coordinate space its parent
 puts it in" -- scene pixels for figure/border, data units for axes. This
 is what lets one class's drag/resize/rotate math work unmodified across
 all three anchor kinds: the *meaning* of a unit differs, but the Qt API
-calls (setPos/setRotation/mapFromScene) are identical either way.
+calls (setPos/mapFromScene) are identical either way. Anything meant to
+look a certain way ON SCREEN -- rotation, outline/hit-test margins,
+arrowheads, the textarrow label's offset -- is instead built in scene
+space and mapped back (see the lafigure-axes-geometry skill), since an
+'axes' anchor's data->pixel scale is rarely 1:1.
 
 Filiation is shown, in Select mode, as a colored dashed outline around the
 annotation using filiation_color(parent_plot, figure.plots) -- the same
@@ -211,6 +215,13 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
 
     def __init__(self, figure, kind, anchor, parent_plot, pen, brush=None, text='', point_ref=None):
         super().__init__()
+        self._text_item = None
+        self._rotate_handle = None
+        # On-screen rotation in degrees (Qt's convention: clockwise, since
+        # scene Y points down) -- see _update_rotation_transform for why
+        # this is NOT QGraphicsItem.rotation(), which stays 0.
+        self._angle = 0.0
+        self._watched_vb = None  # the ancestor ViewBox whose zoom we follow, if any
         self.figure = figure
         self.kind = kind
         self.anchor = anchor          # 'figure' | 'border' | 'axes'
@@ -249,7 +260,6 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         else:
             self.p1_local = None
 
-        self._text_item = None
         if kind in ('text', 'textarrow'):
             self._text_item = QtWidgets.QGraphicsTextItem(self)
             self._text_item.setPlainText(text or SHAPE_LABELS[kind])
@@ -257,13 +267,12 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             self._text_item.setDefaultTextColor(pen.color())
             self._text_item.setAcceptedMouseButtons(QtCore.Qt.NoButton)
             # Without this flag, an 'axes'-anchored text would be scaled/mirrored
-            # by the ViewBox transform. It also cancels inherited ancestor
-            # rotation (this item's own self.rotation()), so _apply_rotation
-            # below re-applies rotation directly on the text item to keep it
-            # turning together with the shape despite the flag.
+            # by the ViewBox transform. It also cancels this item's own
+            # rotation transform (see _update_rotation_transform), so
+            # _apply_rotation re-applies the screen angle directly on the
+            # text item to keep it turning together with the shape.
             self._text_item.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations)
-            if kind == 'textarrow':
-                self._text_item.setPos(self._px_to_local(8), self._px_to_local(-10))
+            self._layout_label()  # 'textarrow': beside p1 -- see _layout_label
 
         self._end_handle = None
         if has_p1_handle:
@@ -289,7 +298,6 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             self._start_handle.setParentItem(self)
             self._start_handle.setPos(0, 0)
 
-        self._rotate_handle = None
         if kind not in NO_ROTATE_KINDS:
             self._rotate_handle = AnnotationHandle(
                 self.HANDLE_SIZE, on_press=lambda pos: None,
@@ -355,39 +363,164 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             return self.p1_local * self.END_HANDLE_PULLBACK
         return QtCore.QPointF(self.p1_local)
 
-    def _position_rotate_handle(self):
-        center = self._shape_center_local()
-        self.setTransformOriginPoint(center)
-        self._rotate_handle.setPos(
-            center.x(), center.y() - self._px_to_local(self.ROTATE_OFFSET),
-        )
+    @property
+    def p1_local(self):
+        return self._p1_local
 
-    def boundingRect(self):
-        pad = self._px_to_local(20)
+    @p1_local.setter
+    def p1_local(self, pt):
+        """Every write of p1 (handle drags, undo/redo, from_dict, a direct
+        assignment from _create_annotation) re-lays the 'textarrow' label
+        out beside it, so no call site can forget to."""
+        self.prepareGeometryChange()
+        self._p1_local = pt
+        self._layout_label()
+
+    def _parent_linear(self):
+        """The 2x2 linear part (a, b, c, d) of this item's parent -> scene
+        map, as x' = a*x + c*y, y' = b*x + d*y (QTransform's m11/m12/m21/
+        m22). Identity for 'figure'/'border' (the parent frame IS scene
+        pixels); the ViewBox's data->pixel scale for 'axes', usually with
+        Y mirrored and nowhere near 1:1."""
+        parent = self.parentItem()
+        t = parent.sceneTransform() if parent is not None else QtGui.QTransform()
+        return t.m11(), t.m12(), t.m21(), t.m22()
+
+    def _scene_vec_to_parent(self, vec):
+        """A scene (screen-pixel) vector expressed in the parent frame --
+        e.g. "34px straight up on screen" in data units, per axis."""
+        a, b, c, d = self._parent_linear()
+        det = a * d - c * b
+        if det == 0:
+            return QtCore.QPointF(vec)
+        return QtCore.QPointF((d * vec.x() - c * vec.y()) / det, (-b * vec.x() + a * vec.y()) / det)
+
+    def _position_rotate_handle(self):
+        """Rest the rotate handle ROTATE_OFFSET screen px straight above the
+        shape's center ON SCREEN (before rotation) -- converted into local
+        units through the parent's real per-axis scale, not _px_to_local's
+        averaged one, which on an 'axes' anchor with a mirrored Y put it
+        below the center and at a data-scale-dependent distance. Also
+        re-pivots the rotation on the (possibly moved) center."""
+        self._update_rotation_transform()
+        if self._rotate_handle is None:
+            return
+        center = self._shape_center_local()
+        self._rotate_handle.setPos(center + self._scene_vec_to_parent(QtCore.QPointF(0, -self.ROTATE_OFFSET)))
+
+    def _view_transform(self):
+        """Scene -> viewport-pixel transform of the view showing this item
+        (identity for LaFigure's own layout_widget, but read rather than
+        assumed). ItemIgnoresTransformations children (the text item) and
+        the cursor's QPainter-drawn label live in those device pixels."""
+        scene = self.scene()
+        views = scene.views() if scene is not None else []
+        return views[0].viewportTransform() if views else QtGui.QTransform()
+
+    def _text_scene_quad(self):
+        """The text item's box as 4 scene points, rotation included.
+        Its own boundingRect() is in device pixels (ItemIgnoresTransformations),
+        so it's mapped through deviceTransform -- sceneTransform() is not
+        meaningful for such an item -- and back out of the view transform."""
+        vt = self._view_transform()
+        dt = self._text_item.deviceTransform(vt)
+        inv = vt.inverted()[0]
+        r = self._text_item.boundingRect()
+        return [inv.map(dt.map(pt)) for pt in (r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft())]
+
+    def _text_scene_rect(self):
+        """Axis-aligned scene rect of the text item's box."""
+        return QtGui.QPolygonF(self._text_scene_quad()).boundingRect()
+
+    LABEL_GAP_PX = 6  # 'textarrow': screen px between the arrow tip and its label
+
+    def _layout_label(self):
+        """'textarrow' only: put the label BESIDE p1 (the arrowhead), on
+        the side of the segment facing up on screen (right, for a vertical
+        segment), LABEL_GAP_PX clear of the line -- at any angle, any
+        anchor. Computed in scene space and mapped back (the text item
+        draws in screen pixels, see the lafigure-axes-geometry skill);
+        rerun whenever p0/p1 or the data->screen scale changes. It used to
+        sit at a fixed (8, -10) local offset from p0, the tail."""
+        if self.kind != 'textarrow' or self._text_item is None or self.p1_local is None:
+            return
+        p0 = self.mapToScene(QtCore.QPointF(0, 0))
+        p1 = self.mapToScene(self.p1_local)
+        vec = p1 - p0
+        length = math.hypot(vec.x(), vec.y())
+        ux, uy = (vec.x() / length, vec.y() / length) if length else (1.0, 0.0)
+        nx, ny = -uy, ux
+        if ny > 1e-9 or (abs(ny) <= 1e-9 and nx < 0):
+            nx, ny = -nx, -ny
+        tb = self._text_item.boundingRect()
+        w, h = tb.width(), tb.height()
+        # How far the box reaches toward the line from its own center.
+        support = abs(nx) * w / 2 + abs(ny) * h / 2
+        center = p1 + QtCore.QPointF(nx, ny) * (self.LABEL_GAP_PX + support)
+        self._text_item.setPos(self.mapFromScene(center - QtCore.QPointF(w / 2, h / 2)))
+
+    def _base_local_rect(self):
+        """The drawn shape's own extent in local coordinates, no padding
+        (None for a kind with nothing to measure)."""
         if self.kind == 'cursor':
             end = self.p1_local if self.p1_local is not None else QtCore.QPointF(50, -30)
-            rect = QtCore.QRectF(QtCore.QPointF(0, 0), end).normalized()
-        elif self.p1_local is not None:
-            rect = QtCore.QRectF(QtCore.QPointF(0, 0), self.p1_local).normalized()
-        elif self._text_item is not None:
-            # self._text_item has ItemIgnoresTransformations (see __init__),
-            # so its own boundingRect() is in constant-screen-pixel units,
-            # not this item's local units (data units for 'axes' anchor) --
-            # convert its width/height before treating it as a rect in our
-            # own coordinate space, or it renders wildly wrong-sized (only
-            # its position, already in local units, needs no conversion).
-            tb = self._text_item.boundingRect()
-            size = QtCore.QSizeF(self._px_to_local(tb.width()), self._px_to_local(tb.height()))
-            rect = QtCore.QRectF(self._text_item.pos(), size)
-        else:
+            return QtCore.QRectF(QtCore.QPointF(0, 0), end).normalized()
+        if self.p1_local is not None:
+            return QtCore.QRectF(QtCore.QPointF(0, 0), self.p1_local).normalized()
+        if self._text_item is not None:
+            return QtGui.QPolygonF([self.mapFromScene(q) for q in self._text_scene_quad()]).boundingRect()
+        return None
+
+    def boundingRect(self):
+        """The shape padded by 20px (handles and the dashed stroke need the
+        room), and never smaller than shape() -- which reaches the text
+        label/bubble -- or Qt's item index would skip hits on it."""
+        pad = self._px_to_local(20)
+        rect = self._base_local_rect()
+        if rect is None:
             rect = QtCore.QRectF(-pad, -pad, 2 * pad, 2 * pad)
-        return rect.adjusted(-pad, -pad, pad, pad)
+        return rect.adjusted(-pad, -pad, pad, pad).united(self.shape().boundingRect())
+
+    def shape(self):
+        """What Qt hit-tests a click against (QGraphicsItem.contains, scene
+        item picking): the dashed selection outline itself, a few screen px
+        around the drawn shape -- not the padded boundingRect(), which for
+        every kind was a 20px axis-aligned box, far looser than what's
+        drawn. See _outline_scene_polygons for the per-kind geometry."""
+        return self._selection_outline_path()
+
+    def contains(self, point):
+        """shape(), also for an 'axes' annotation. Qt's own contains() --
+        which scene item picking calls too -- tests clipPath() instead of
+        shape() for any item under a clipping ancestor, and a ViewBox clips
+        its children; clipPath() starts from boundingRect() and only
+        intersects shape() when the item ITSELF has ItemClipsToShape. So
+        without this, every 'axes' annotation kept the padded box."""
+        if not self.shape().contains(point):
+            return False
+        return not self.isClipped() or self.clipPath().contains(point)
+
+    def collidesWithPath(self, path, mode=QtCore.Qt.IntersectsItemShape):
+        """Same fix as contains(), for the other half of Qt's hit-testing:
+        a real mouse press picks its item with a 1x1 px rect through
+        collidesWithPath(), whose default also swaps shape() for the
+        boundingRect()-based clipPath() under a clipping ancestor."""
+        if mode in (QtCore.Qt.IntersectsItemBoundingRect, QtCore.Qt.ContainsItemBoundingRect):
+            return super().collidesWithPath(path, mode)
+        shape = self.shape()
+        if self.isClipped():
+            shape = shape.intersected(self.clipPath())
+        if mode == QtCore.Qt.ContainsItemShape:
+            return path.contains(shape)
+        return path.intersects(shape)
 
     def shape_scene_rect(self):
         """The shape's own extent in scene coordinates, without the
         boundingRect's handle padding -- what a rubber band must enclose."""
-        pad = self._px_to_local(20)
-        return self.mapRectToScene(self.boundingRect().adjusted(pad, pad, -pad, -pad))
+        rect = self._base_local_rect()
+        if rect is None:
+            return QtCore.QRectF(self.scenePos(), QtCore.QSizeF(0, 0))
+        return self.mapRectToScene(rect)
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
@@ -415,22 +548,25 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             painter.setBrush(QtGui.QBrush(self.pen.color()))
             self._draw_arrowhead(painter, self.p1_local, p0)
         elif self.kind == 'cursor':
-            painter.setBrush(QtGui.QBrush(self.pen.color()))
-            marker_r = self._px_to_local(4)
-            painter.drawEllipse(p0, marker_r, marker_r)
             label_pos = self.p1_local if self.p1_local is not None else QtCore.QPointF(50, -30)
             painter.drawLine(p0, label_pos)
-            label = f"({self.text})" if self.text else ""
+            # Can't use ItemIgnoresTransformations here (raw QPainter draw) --
+            # map to device pos and reset transform so the marker stays a
+            # round 4px dot (a local-space radius is an ellipse on a
+            # non-1:1 'axes' subplot) and the text upright/constant-size.
+            painter.save()
+            marker_pos = painter.transform().map(p0)
+            painter.resetTransform()
+            painter.setBrush(QtGui.QBrush(self.pen.color()))
+            painter.drawEllipse(marker_pos, self.CURSOR_MARKER_PX, self.CURSOR_MARKER_PX)
+            painter.restore()
+            label = self._cursor_label()
             if label:
-                # Can't use ItemIgnoresTransformations here (raw QPainter draw) --
-                # map to device pos and reset transform so text stays upright/constant-size.
                 painter.save()
                 device_pos = painter.transform().map(label_pos)
                 painter.resetTransform()
+                box = self._cursor_bubble_device_rect(label, device_pos)
                 painter.setFont(QtWidgets.QApplication.font())
-                metrics = QtGui.QFontMetricsF(painter.font())
-                box = metrics.boundingRect(label).adjusted(-4, -2, 4, 2)
-                box.moveCenter(device_pos)
                 painter.setBrush(QtGui.QBrush(QtGui.QColor(255, 255, 255, 220)))
                 painter.setPen(QtCore.Qt.NoPen)
                 painter.drawRect(box)
@@ -446,39 +582,135 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             outline_pen.setCosmetic(True)  # constant on-screen width/dash length, not data-scaled
             painter.setPen(outline_pen)
             painter.setBrush(QtCore.Qt.NoBrush)
-            painter.drawPolygon(self._selection_outline_polygon())
+            painter.drawPath(self._selection_outline_path())
 
-    OUTLINE_END_PAD_PX = 4      # along the segment, past each end -- matches boundingRect()'s own pad
+    CURSOR_MARKER_PX = 4        # 'cursor': radius of the dot on the data point, screen px
+    OUTLINE_END_PAD_PX = 4      # along the segment, past each end
     OUTLINE_PERP_PAD_PX = 6     # perpendicular to it -- 1.5x END_PAD, so the box reads clearly
+    OUTLINE_PAD_PX = 4          # around a rect / ellipse / text box / label bubble
+    ELLIPSE_OUTLINE_POINTS = 48
 
-    def _selection_outline_polygon(self):
-        """4 local-space corners of the dashed selection outline drawn
-        above. ORIENTED_OUTLINE_KINDS get a box hugging p0->p1, built in
-        SCENE (screen-pixel) space and mapped back to local coordinates --
-        same reasoning as _draw_arrowhead's own docstring: a box computed
-        (and, in an earlier version of this, rotated) purely in local
-        (data) space isn't shape- or size-preserving on screen when an
-        'axes' anchor's X/Y data-per-pixel ratio isn't 1:1. Everything
-        else keeps today's padded, axis-aligned boundingRect() as a
-        (degenerate, unrotated) polygon -- these kinds have no meaningful
-        "along the shape" direction, or (rect/ellipse) already rotate as a
-        whole via self.rotation() when selected, so their own
-        boundingRect() is already tight for their own local frame."""
+    def _cursor_label(self):
+        return f"({self.text})" if self.text else ""
+
+    @staticmethod
+    def _cursor_bubble_device_rect(label, device_center):
+        """The cursor label's white bubble, in device pixels -- shared by
+        paint() and the hit-test so both agree on where it is."""
+        metrics = QtGui.QFontMetricsF(QtWidgets.QApplication.font())
+        box = metrics.boundingRect(label).adjusted(-4, -2, 4, 2)
+        box.moveCenter(device_center)
+        return box
+
+    @staticmethod
+    def _unit(vec, fallback):
+        length = math.hypot(vec.x(), vec.y())
+        return (QtCore.QPointF(vec.x() / length, vec.y() / length), length) if length else (fallback, 0.0)
+
+    @classmethod
+    def _quad_axes(cls, quad):
+        """Unit vectors along a scene quad's c0->c1 and c0->c3 edges, and
+        their lengths -- falling back to a perpendicular (or screen X/Y)
+        when an edge is degenerate (a zero-width rect)."""
+        c0, c1, _, c3 = quad
+        u, lu = cls._unit(c1 - c0, None)
+        v, lv = cls._unit(c3 - c0, None)
+        if u is None and v is None:
+            u, v = QtCore.QPointF(1, 0), QtCore.QPointF(0, 1)
+        elif u is None:
+            u = QtCore.QPointF(v.y(), -v.x())
+        elif v is None:
+            v = QtCore.QPointF(-u.y(), u.x())
+        return u, lu, v, lv
+
+    @classmethod
+    def _pad_quad(cls, quad, pad):
+        """A scene quad (c0, c1, c2, c3 around a rectangle) grown by `pad`
+        screen px on every side, along its own edges (so a rotated
+        rectangle stays that rectangle, just larger)."""
+        u, _, v, _ = cls._quad_axes(quad)
+        du, dv = u * pad, v * pad
+        c0, c1, c2, c3 = quad
+        return QtGui.QPolygonF([c0 - du - dv, c1 + du - dv, c2 + du + dv, c3 - du + dv])
+
+    @classmethod
+    def _padded_ellipse(cls, quad, pad, n):
+        """The ellipse inscribed in a scene quad, with each semi-axis grown
+        by `pad` screen px: a bounding ellipse, not a box."""
+        u, lu, v, lv = cls._quad_axes(quad)
+        center = (quad[0] + quad[2]) / 2
+        a, b = lu / 2 + pad, lv / 2 + pad
+        return QtGui.QPolygonF([
+            center + u * (a * math.cos(t)) + v * (b * math.sin(t))
+            for t in (2 * math.pi * i / n for i in range(n))
+        ])
+
+    def _outline_scene_polygons(self):
+        """The dashed selection outline -- also the hit-test shape() -- as
+        polygons in SCENE (screen-pixel) space, every margin a literal
+        screen-pixel count, whatever the anchor or the subplot's X/Y data
+        scale (see the lafigure-axes-geometry skill; a per-axis
+        _px_to_local margin is wildly uneven on a non-1:1 'axes' subplot).
+        The first polygon is the main one; 'textarrow'/'cursor' add their
+        text label / bubble:
+          - ORIENTED_OUTLINE_KINDS: a box hugging the p0->p1 segment;
+          - 'rect': the drawn rect, OUTLINE_PAD_PX larger on each side;
+          - 'ellipse': a bounding ellipse OUTLINE_PAD_PX larger;
+          - 'text': the text box, padded the same."""
+        pad = self.OUTLINE_PAD_PX
+        polys = []
         if self.kind in ORIENTED_OUTLINE_KINDS and self.p1_local is not None:
             p0_scene = self.mapToScene(QtCore.QPointF(0, 0))
             p1_scene = self.mapToScene(self.p1_local)
-            vec = p1_scene - p0_scene
-            length = math.hypot(vec.x(), vec.y())
-            ux, uy = (vec.x() / length, vec.y() / length) if length else (1.0, 0.0)
-            along = QtCore.QPointF(ux, uy) * self.OUTLINE_END_PAD_PX
-            perp = QtCore.QPointF(-uy, ux) * self.OUTLINE_PERP_PAD_PX
-            corners_scene = [
+            u, _ = self._unit(p1_scene - p0_scene, QtCore.QPointF(1, 0))
+            along = u * self.OUTLINE_END_PAD_PX
+            perp = QtCore.QPointF(-u.y(), u.x()) * self.OUTLINE_PERP_PAD_PX
+            polys.append(QtGui.QPolygonF([
                 p0_scene - along - perp, p0_scene - along + perp,
                 p1_scene + along + perp, p1_scene + along - perp,
-            ]
-            return QtGui.QPolygonF([self.mapFromScene(c) for c in corners_scene])
-        inset = self._px_to_local(4)
-        return QtGui.QPolygonF(self.boundingRect().adjusted(inset, inset, -inset, -inset))
+            ]))
+            if self.kind == 'textarrow' and self._text_item is not None:
+                polys.append(self._pad_quad(self._text_scene_quad(), pad))
+            label = self._cursor_label() if self.kind == 'cursor' else ""
+            if label:
+                vt = self._view_transform()
+                bubble = self._cursor_bubble_device_rect(label, vt.map(p1_scene))
+                inv = vt.inverted()[0]
+                polys.append(self._pad_quad(
+                    [inv.map(pt) for pt in (bubble.topLeft(), bubble.topRight(),
+                                            bubble.bottomRight(), bubble.bottomLeft())], pad))
+        elif self.kind in ('rect', 'ellipse') and self.p1_local is not None:
+            p1 = self.p1_local
+            quad = [self.mapToScene(QtCore.QPointF(x, y))
+                    for x, y in ((0, 0), (p1.x(), 0), (p1.x(), p1.y()), (0, p1.y()))]
+            if self.kind == 'rect':
+                polys.append(self._pad_quad(quad, pad))
+            else:
+                polys.append(self._padded_ellipse(quad, pad, self.ELLIPSE_OUTLINE_POINTS))
+        elif self._text_item is not None:
+            polys.append(self._pad_quad(self._text_scene_quad(), pad))
+        else:
+            o = self.mapToScene(QtCore.QPointF(0, 0))
+            polys.append(QtGui.QPolygonF(QtCore.QRectF(o.x() - pad, o.y() - pad, 2 * pad, 2 * pad)))
+        return polys
+
+    def _selection_outline_polygon(self):
+        """The main outline polygon (see _outline_scene_polygons) in local
+        coordinates: 4 corners for a segment/rect/text box, many points for
+        an ellipse. Built in scene space, then mapped back -- same reasoning
+        as _draw_arrowhead's own docstring."""
+        return QtGui.QPolygonF([self.mapFromScene(pt) for pt in self._outline_scene_polygons()[0]])
+
+    def _selection_outline_path(self):
+        """Every outline polygon, united, in local coordinates: what paint()
+        strokes when selected, and what shape() returns."""
+        path = QtGui.QPainterPath()
+        for poly in self._outline_scene_polygons():
+            sub = QtGui.QPainterPath()
+            sub.addPolygon(QtGui.QPolygonF([self.mapFromScene(pt) for pt in poly]))
+            sub.closeSubpath()
+            path = sub if path.isEmpty() else path.united(sub)
+        return path
 
     ARROWHEAD_PX = 10  # a literal on-screen pixel size -- see _draw_arrowhead
 
@@ -656,9 +888,11 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         ev.accept()
 
     def _apply_text(self, text):
+        self.prepareGeometryChange()  # the label's size feeds shape()/boundingRect()
         self.text = text
         if self._text_item is not None:
             self._text_item.setPlainText(text)
+        self._layout_label()
 
     def _push_move_history(self, origin, moved_to):
         def set_pos(pos):
@@ -775,59 +1009,112 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     # -- rotate handle -----------------------------------------------
     def _on_rotate_drag(self, scene_pos, modifiers=QtCore.Qt.NoModifier):
         """Angle the shape so its "up" direction (the rotate handle's
-        resting position, straight above center) points at the mouse.
-        Both points are converted into the item's *parent* frame (fixed
-        during the drag) before computing the angle, matching the
-        approach used for whole-body drag above. Shift snaps to
-        SHIFT_SNAP_DEG steps, LibreOffice-Draw style."""
-        cursor = self._parent_point(scene_pos)
-        center = self.mapToParent(self._shape_center_local())
-        vec = cursor - center
+        resting position, straight above center ON SCREEN) points at the
+        mouse. Measured in SCENE space, so the angle -- and Shift's
+        SHIFT_SNAP_DEG steps, LibreOffice-Draw style -- are what the user
+        sees, whatever the anchor or the subplot's X/Y data scale. (It was
+        measured in the parent frame: data units for 'axes', where "45
+        degrees" means nothing on screen.)"""
+        center = self.mapToScene(self._shape_center_local())
+        vec = scene_pos - center
         angle = math.degrees(math.atan2(vec.y(), vec.x())) + 90
         if modifiers & QtCore.Qt.ShiftModifier:
             angle = round(angle / self.SHIFT_SNAP_DEG) * self.SHIFT_SNAP_DEG
         self._apply_rotation(angle)
 
+    def screen_rotation(self):
+        """The on-screen rotation in degrees (clockwise, Qt's convention).
+        Use this, not QGraphicsItem.rotation(), which is always 0 -- see
+        _update_rotation_transform."""
+        return self._angle
+
     def _apply_rotation(self, angle):
-        """Set this item's rotation, and keep the child text item (if any)
-        turning with it. self._text_item has ItemIgnoresTransformations
-        (see __init__) so it doesn't inherit this item's rotation the way
-        a normal child would -- it must be told explicitly, which is fine
-        because ItemIgnoresTransformations only cancels *inherited*
-        ancestor transforms, not the item's own rotation/transform
-        properties.
-
-        For 'axes' anchor, `angle` lives in DATA space -- it was computed
-        in _on_rotate_drag via _parent_point, i.e. relative to the
-        ViewBox's own (data<->pixel) transform, which for a typical plot
-        mirrors one axis (Y increases upward in data but downward on
-        screen). The shape itself (painted directly under that same
-        mirrored ancestor transform) rotates correctly on screen as a
-        result, but the text item bypasses that ancestor transform
-        entirely (that's the whole point of ItemIgnoresTransformations),
-        so handing it the same raw angle spins it the opposite screen
-        direction from the shape. _rotation_mirror_sign() detects that
-        mirroring (empirically, not by assuming Y-is-always-inverted) and
-        negates the angle to compensate."""
-        self.setRotation(angle)
+        """Rotate the shape by `angle` degrees ON SCREEN, and the child text
+        item (if any) with it. self._text_item has ItemIgnoresTransformations
+        (see __init__), so it ignores this item's transform the way it
+        ignores the ViewBox's -- it must be told explicitly, and since it
+        draws in screen pixels, the screen angle is exactly right for it
+        (no more mirror-sign correction for an inverted-Y axis)."""
+        self._angle = float(angle)
+        self._update_rotation_transform()
         if self._text_item is not None:
-            self._text_item.setRotation(self._rotation_mirror_sign() * angle)
+            self._text_item.setRotation(self._angle)
+        self._layout_label()
+        self.update()
 
-    def _rotation_mirror_sign(self):
-        """+1 normally; -1 if this item's 'axes' ViewBox transform mirrors
-        (an odd number of axis flips -- e.g. the default inverted-Y plot
-        axis). Detected empirically by mapping two unit vectors through
-        the ViewBox's own view<->scene mapping and checking whether their
-        cross product flips sign, rather than relying on any specific
-        pyqtgraph flag name/version."""
-        if self.anchor != 'axes' or self.parent_plot is None:
-            return 1
-        vb = self.parent_plot.getViewBox()
-        origin = vb.mapViewToScene(QtCore.QPointF(0, 0))
-        vx = vb.mapViewToScene(QtCore.QPointF(1, 0)) - origin
-        vy = vb.mapViewToScene(QtCore.QPointF(0, 1)) - origin
-        cross = vx.x() * vy.y() - vx.y() * vy.x()
-        return -1 if cross < 0 else 1
+    def _update_rotation_transform(self):
+        """Apply self._angle as a rotation in SCREEN space, around the
+        shape's center.
+
+        QGraphicsItem.setRotation() rotates in the item's own local frame,
+        which for an 'axes' anchor is DATA units: the ViewBox's per-axis
+        data->pixel scale A is applied on top of it afterward, so a
+        non-1:1 A turns the rotated rect into a skewed parallelogram at
+        some other angle. Instead this sets the item's transform() to
+        L = A^-1 R A (plus the translation keeping the center fixed): the
+        full local->scene map then has linear part A L = R A, i.e. "draw
+        the shape as usual, then rotate it by R on screen". For
+        'figure'/'border' A is the identity and L is just R. Depends on A,
+        so it's rebuilt on every zoom/resize of the watched ViewBox and on
+        every reparent (see itemChange) -- rotation() itself stays 0."""
+        if not self._angle:
+            if not self.transform().isIdentity():
+                self.setTransform(QtGui.QTransform())
+            return
+        a, b, c, d = self._parent_linear()
+        det = a * d - c * b
+        if det == 0:
+            return  # a collapsed view (zero-size ViewBox): keep the last good transform
+        th = math.radians(self._angle)
+        cs, sn = math.cos(th), math.sin(th)
+        # Column-vector form: A = [[a, c], [b, d]], R = [[cs, -sn], [sn, cs]].
+        ra = ((cs * a - sn * b, cs * c - sn * d),
+              (sn * a + cs * b, sn * c + cs * d))
+        l00 = (d * ra[0][0] - c * ra[1][0]) / det
+        l01 = (d * ra[0][1] - c * ra[1][1]) / det
+        l10 = (-b * ra[0][0] + a * ra[1][0]) / det
+        l11 = (-b * ra[0][1] + a * ra[1][1]) / det
+        ctr = self._shape_center_local()
+        tx = ctr.x() - (l00 * ctr.x() + l01 * ctr.y())
+        ty = ctr.y() - (l10 * ctr.x() + l11 * ctr.y())
+        self.setTransform(QtGui.QTransform(l00, l10, l01, l11, tx, ty))
+
+    # -- following the parent's data->screen scale ('axes' anchor) ---------
+    def itemChange(self, change, value):
+        if change == QtWidgets.QGraphicsItem.ItemParentHasChanged:
+            self._watch_view()
+            self._refresh_screen_geometry()
+        return super().itemChange(change, value)
+
+    def _watch_view(self):
+        """Follow the zoom/resize of the ViewBox this item now sits in (if
+        any): everything built in screen space (rotation, rotate handle,
+        textarrow label) depends on its data->pixel scale."""
+        vb = self.parentItem()
+        while vb is not None and not isinstance(vb, pg.ViewBox):
+            vb = vb.parentItem()
+        if vb is self._watched_vb:
+            return
+        if self._watched_vb is not None:
+            try:
+                self._watched_vb.sigTransformChanged.disconnect(self._on_view_transform_changed)
+            except (TypeError, RuntimeError):
+                pass
+        self._watched_vb = vb
+        if vb is not None:
+            vb.sigTransformChanged.connect(self._on_view_transform_changed)
+
+    def _on_view_transform_changed(self, *args):
+        try:
+            self._refresh_screen_geometry()
+        except RuntimeError:
+            pass  # the C++ item is already gone
+
+    def _refresh_screen_geometry(self):
+        self.prepareGeometryChange()
+        self._position_rotate_handle()  # also rebuilds the rotation transform
+        self._layout_label()
+        self.update()
 
     # -- serialization (clipboard / subplot copy-paste) -------------------
     def to_dict(self):
@@ -840,7 +1127,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             'text': self.text,
             'pen': _pen_to_tuple(self.pen),
             'brush': _brush_to_tuple(self.brush),
-            'rotation': self.rotation(),
+            'rotation': self._angle,  # on-screen degrees -- see screen_rotation()
             'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
         }
 
