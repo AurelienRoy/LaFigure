@@ -103,10 +103,11 @@ class FakeSceneEvent:
     feeding eventFilter raw press/release events like this, not
     FakeClickEvent."""
 
-    def __init__(self, etype, pos, button=QtCore.Qt.LeftButton):
+    def __init__(self, etype, pos, button=QtCore.Qt.LeftButton, modifiers=QtCore.Qt.NoModifier):
         self._type = etype
         self._pos = pos
         self._button = button
+        self._modifiers = modifiers
 
     def type(self):
         return self._type
@@ -116,6 +117,9 @@ class FakeSceneEvent:
 
     def button(self):
         return self._button
+
+    def modifiers(self):
+        return self._modifiers
 
 
 def _is_x_linked(plot_item):

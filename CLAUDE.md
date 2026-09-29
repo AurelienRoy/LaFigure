@@ -484,6 +484,29 @@ the actual code — this list is a summary, not a substitute for checking.
       described here; that description was corrected once a session could
       actually run Qt and catch the mismatch via a failing smoke-test
       assertion.
+- [x] **Shift constrains annotation move/resize/rotate/placement**
+      (2026-09-29), LibreOffice-Draw style — user-specified behavior, not a
+      default: holding Shift while dragging a shape body, an end-point
+      handle, a rotate handle, or while placing a new extent shape,
+      constrains it. `rect`/`ellipse` become a screen-square/circle;
+      every directional shape (`line`/`arrow`/`doublearrow`/`textarrow`,
+      and `cursor`'s label line) snaps its angle to 45°; whole-body move
+      (single or grouped) locks to a 45° screen direction; rotation snaps
+      to 45° steps — the user's own explicit choice, even though real
+      LibreOffice Draw's actual default rotation snap is 15°.
+      `AnnotationItem.SHIFT_SNAP_DEG` (`annotations.py`) is the one place
+      to change the step. The constraint is always computed in **scene
+      (screen-pixel) space**, never local/data space — deliberate, so it
+      looks the same on screen regardless of anchor (`figure`/`border`/
+      `axes`) or a subplot's data scale; see `constrain_extent_vector`'s
+      own docstring. Implementation: `AnnotationHandle`'s `on_move`
+      callbacks (`handles.py`-built, wired in `AnnotationItem.__init__`)
+      now pass the handle's live `.modifiers` through to
+      `_on_endpoint_drag`/`_on_start_drag`/`_on_rotate_drag`, mirroring
+      the pattern `ResizeHandle`/`MoveHandle` already used; whole-body
+      drag reads `ev.modifiers()` directly in `mouseMoveEvent`. Covered
+      by `tests/test_annotation_ops.py`'s `test_shift_*`/`test_plain_*`
+      pairs (one shift-held, one unconstrained control, per gesture).
 
 ## Roadmap (agreed with the user 2026-09-28) — live backlog
 

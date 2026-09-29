@@ -31,7 +31,7 @@ import numpy as np
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
-from .annotations import AnnotationItem, TWO_CLICK_KINDS
+from .annotations import AnnotationItem, TWO_CLICK_KINDS, constrain_extent_vector
 from .console import datatip_text
 
 
@@ -187,12 +187,20 @@ class AnnotationOpsMixin:
             if etype == QtCore.QEvent.GraphicsSceneMouseRelease and self._placing_state is not None:
                 state = self._placing_state
                 anchor, parent_plot, p0 = state['anchor'], state['parent_plot'], state['p0']
-                delta = event.scenePos() - state['press_scene_pos']
-                if abs(delta.x()) < 3 and abs(delta.y()) < 3:
+                scene_delta = event.scenePos() - state['press_scene_pos']
+                if abs(scene_delta.x()) < 3 and abs(scene_delta.y()) < 3:
                     p1_local = None
                 else:
-                    p1 = (parent_plot.getViewBox().mapSceneToView(event.scenePos()) if anchor == 'axes'
-                          else QtCore.QPointF(event.scenePos()))
+                    # Shift constrains the just-drawn shape the same way an
+                    # existing one is constrained while being resized (see
+                    # constrain_extent_vector) -- computed here, in scene
+                    # space, before mapping into the anchor's own space.
+                    if event.modifiers() & QtCore.Qt.ShiftModifier:
+                        scene_delta = constrain_extent_vector(
+                            self._placing_kind, scene_delta, AnnotationItem.SHIFT_SNAP_DEG)
+                    end_scene_pos = state['press_scene_pos'] + scene_delta
+                    p1 = (parent_plot.getViewBox().mapSceneToView(end_scene_pos) if anchor == 'axes'
+                          else QtCore.QPointF(end_scene_pos))
                     p1_local = p1 - p0
                 kind = self._placing_kind
                 text = ''

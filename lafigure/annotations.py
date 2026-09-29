@@ -129,6 +129,36 @@ def _brush_from_tuple(t):
     return pg.mkBrush(*t)
 
 
+def _snap_vector_angle(vec, step_deg=45):
+    """`vec` rotated to the nearest multiple of `step_deg`, same length."""
+    length = math.hypot(vec.x(), vec.y())
+    if length == 0:
+        return QtCore.QPointF(vec)
+    step = math.radians(step_deg)
+    angle = round(math.atan2(vec.y(), vec.x()) / step) * step
+    return QtCore.QPointF(length * math.cos(angle), length * math.sin(angle))
+
+
+def constrain_extent_vector(kind, vec, step_deg=45):
+    """Shift-constrained version of a resize/placement vector (the offset
+    from a shape's fixed point to the one being dragged), LibreOffice Draw
+    style: 'rect'/'ellipse' become a square/circle (equal |dx|/|dy|,
+    signs preserved), every other extent kind (line-like shapes, and
+    'cursor's label line) snaps its angle to the nearest `step_deg`. Always
+    called with `vec` in SCENE (screen-pixel) space, never local/data
+    space, so the constraint looks the same on screen regardless of an
+    annotation's anchor, subplot data scale, or own rotation -- matching
+    how the analogous move-direction constraint (AnnotationItem.
+    mouseMoveEvent) also works in scene space."""
+    if kind in ('rect', 'ellipse'):
+        dx, dy = vec.x(), vec.y()
+        m = max(abs(dx), abs(dy))
+        sx = 1 if dx >= 0 else -1
+        sy = 1 if dy >= 0 else -1
+        return QtCore.QPointF(sx * m, sy * m)
+    return _snap_vector_angle(vec, step_deg)
+
+
 def _draw_arrowhead(painter, tip, tail, size=10):
     """Draw a filled triangular arrowhead at `tip`, pointing away from
     `tail` -- shared by 'arrow' (one head) and 'doublearrow' (two)."""
@@ -175,6 +205,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     """
     HANDLE_SIZE = 8
     ROTATE_OFFSET = 34  # constant on-screen px above the shape's center, pre-rotation
+    SHIFT_SNAP_DEG = 45  # LibreOffice-Draw-style constraint step while Shift is held
 
     def __init__(self, figure, kind, anchor, parent_plot, pen, brush=None, text=''):
         super().__init__()
@@ -189,6 +220,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         self.anchor_offset = QtCore.QPointF(0, 0)
 
         self._group_drag = None            # [(annotation, origin_pos, start_pt)] while dragging
+        self._group_drag_origin_scene = None  # press point, for the Shift move constraint
         self._collapse_on_release = False
         self._end_drag_start_local = None
         self._start_drag_origin_pos = None
@@ -228,7 +260,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         if has_p1_handle:
             self._end_handle = AnnotationHandle(
                 self.HANDLE_SIZE, on_press=self._on_endpoint_press,
-                on_move=self._on_endpoint_drag, on_release=self._on_endpoint_release,
+                on_move=lambda pos: self._on_endpoint_drag(pos, self._end_handle.modifiers),
+                on_release=self._on_endpoint_release,
             )
             self._end_handle.setParentItem(self)
             self._end_handle.setPos(self.p1_local)
@@ -241,7 +274,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         if kind in TWO_ENDPOINT_KINDS:
             self._start_handle = AnnotationHandle(
                 self.HANDLE_SIZE, on_press=self._on_start_press,
-                on_move=self._on_start_drag, on_release=self._on_start_release,
+                on_move=lambda pos: self._on_start_drag(pos, self._start_handle.modifiers),
+                on_release=self._on_start_release,
             )
             self._start_handle.setParentItem(self)
             self._start_handle.setPos(0, 0)
@@ -250,7 +284,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         if kind not in NO_ROTATE_KINDS:
             self._rotate_handle = AnnotationHandle(
                 self.HANDLE_SIZE, on_press=lambda pos: None,
-                on_move=self._on_rotate_drag, on_release=lambda pos: None,
+                on_move=lambda pos: self._on_rotate_drag(pos, self._rotate_handle.modifiers),
+                on_release=lambda pos: None,
                 brush_color=(90, 220, 120, 230), cursor=QtCore.Qt.PointingHandCursor,
                 round_shape=True,
             )
@@ -393,6 +428,15 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         parent = self.parentItem()
         return parent.mapFromScene(scene_pt) if parent is not None else scene_pt
 
+    def _parent_to_scene(self, parent_pt):
+        """Inverse of _parent_point: a point in this item's parent frame
+        (data units for 'axes', scene pixels for 'figure'/'border') back
+        into scene pixels -- used to constrain a resize vector in scene
+        space (see constrain_extent_vector) starting from a parent-frame
+        fixed point."""
+        parent = self.parentItem()
+        return parent.mapToScene(parent_pt) if parent is not None else parent_pt
+
     def mousePressEvent(self, ev):
         """LibreOffice Draw / MATLAB style: Shift toggles this annotation in
         or out of the selection; a plain press on an already-selected one
@@ -418,12 +462,21 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         # different subplots (data units) or the figure (pixels).
         self._group_drag = [(a, a.pos(), a._parent_point(ev.scenePos()))
                             for a in fig.selected_annotations]
+        self._group_drag_origin_scene = QtCore.QPointF(ev.scenePos())
 
     def mouseMoveEvent(self, ev):
         if self._group_drag is None:
             return
+        scene_pos = ev.scenePos()
+        if ev.modifiers() & QtCore.Qt.ShiftModifier:
+            # Movement is constrained to a screen-relative 0/45/90...
+            # direction -- unlike resize, this doesn't depend on any
+            # member's kind, so it's the plain angle snap, not
+            # constrain_extent_vector's square/circle branch.
+            delta = _snap_vector_angle(scene_pos - self._group_drag_origin_scene, self.SHIFT_SNAP_DEG)
+            scene_pos = self._group_drag_origin_scene + delta
         for a, origin, start in self._group_drag:
-            a.setPos(origin + (a._parent_point(ev.scenePos()) - start))
+            a.setPos(origin + (a._parent_point(scene_pos) - start))
         ev.accept()
 
     def mouseReleaseEvent(self, ev):
@@ -474,8 +527,15 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     def _on_endpoint_press(self, scene_pos):
         self._end_drag_start_local = QtCore.QPointF(self.p1_local)
 
-    def _on_endpoint_drag(self, scene_pos):
+    def _on_endpoint_drag(self, scene_pos, modifiers=QtCore.Qt.NoModifier):
         self.prepareGeometryChange()
+        if modifiers & QtCore.Qt.ShiftModifier:
+            # p0 (this item's own origin) is the fixed point; constrain in
+            # scene space -- see constrain_extent_vector's own docstring
+            # for why scene space, not local space.
+            origin_scene = self.mapToScene(QtCore.QPointF(0, 0))
+            scene_pos = origin_scene + constrain_extent_vector(
+                self.kind, scene_pos - origin_scene, self.SHIFT_SNAP_DEG)
         self.p1_local = self.mapFromScene(scene_pos)
         if self._end_handle is not None:
             self._end_handle.setPos(self.p1_local)
@@ -512,7 +572,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         # rotation/transformOriginPoint instead of assuming local==parent.
         self._start_drag_p1_abs = self.mapToParent(self.p1_local)
 
-    def _on_start_drag(self, scene_pos):
+    def _on_start_drag(self, scene_pos, modifiers=QtCore.Qt.NoModifier):
         """Move this item's own origin (p0) to track the cursor directly
         (matching _on_endpoint_drag's own direct-snap style for p1), while
         keeping p1 fixed in the *parent* frame -- dragging p0 must not
@@ -522,8 +582,17 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         correct even while rotated. (Like _on_endpoint_drag, moving
         transformOriginPoint after p1_local changes -- via
         _position_rotate_handle below -- can still cause the classic
-        "resize-while-rotated jump"; see CLAUDE.md.)"""
+        "resize-while-rotated jump"; see CLAUDE.md.)
+
+        With Shift held, p1 (in scene space, via _parent_to_scene) is the
+        fixed point the constraint anchors on; p0 is placed so the p0->p1
+        vector matches the constraint, same scene-space approach as
+        _on_endpoint_drag."""
         self.prepareGeometryChange()
+        if modifiers & QtCore.Qt.ShiftModifier:
+            p1_scene = self._parent_to_scene(self._start_drag_p1_abs)
+            scene_pos = p1_scene + constrain_extent_vector(
+                self.kind, scene_pos - p1_scene, self.SHIFT_SNAP_DEG)
         self.setPos(self._parent_point(scene_pos))
         self.p1_local = self.mapFromParent(self._start_drag_p1_abs)
         if self._end_handle is not None:
@@ -556,16 +625,19 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         self.figure._push_history(undo_fn=lambda: apply(old_pos, old_p1), redo_fn=lambda: apply(new_pos, new_p1))
 
     # -- rotate handle -----------------------------------------------
-    def _on_rotate_drag(self, scene_pos):
+    def _on_rotate_drag(self, scene_pos, modifiers=QtCore.Qt.NoModifier):
         """Angle the shape so its "up" direction (the rotate handle's
         resting position, straight above center) points at the mouse.
         Both points are converted into the item's *parent* frame (fixed
         during the drag) before computing the angle, matching the
-        approach used for whole-body drag above."""
+        approach used for whole-body drag above. Shift snaps to
+        SHIFT_SNAP_DEG steps, LibreOffice-Draw style."""
         cursor = self._parent_point(scene_pos)
         center = self.mapToParent(self._shape_center_local())
         vec = cursor - center
         angle = math.degrees(math.atan2(vec.y(), vec.x())) + 90
+        if modifiers & QtCore.Qt.ShiftModifier:
+            angle = round(angle / self.SHIFT_SNAP_DEG) * self.SHIFT_SNAP_DEG
         self._apply_rotation(angle)
 
     def _apply_rotation(self, angle):

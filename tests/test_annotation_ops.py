@@ -40,7 +40,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from tests.helpers import (
     app, m, SHIFT, FakeClickEvent, FakeSceneEvent, FakePressEvent, shown_figure,
     first_curve, _click_annotation, _place, _two_annotation_figure,
-    _scene_pos,
+    _scene_pos, _vb_center,
 )
 
 
@@ -278,4 +278,110 @@ def test_multi_properties_is_one_undo_entry():
     assert len(f.undo_stack) == n_undo + 1
     f.undo()
     assert {a: (a.pen.color(), a.pen.widthF()) for a in (rect, ellipse)} == old
+    f.close()
+
+
+# -- Shift constraints (LibreOffice Draw style): move / resize / rotate /
+# placement all snap the same way while Shift is held. Every check below
+# compares SCENE (screen-pixel) vectors, not local/data ones -- see
+# constrain_extent_vector's own docstring for why that's the deliberate
+# choice (it reads the same on screen for any anchor/data scale).
+
+def test_shift_move_snaps_to_45_degrees():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    _click_annotation(f, rect)
+    start = rect.scenePos()
+    rect.mousePressEvent(FakePressEvent(start))
+    rect.mouseMoveEvent(FakePressEvent(start + QtCore.QPointF(50, 6), modifiers=SHIFT))
+    moved = rect.scenePos() - start
+    assert abs(moved.y()) < 0.5 and moved.x() > 0, moved
+    rect.mouseReleaseEvent(FakePressEvent(start + QtCore.QPointF(50, 6), modifiers=SHIFT))
+    f.close()
+
+
+def test_plain_move_is_not_constrained():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    _click_annotation(f, rect)
+    start = rect.scenePos()
+    rect.mousePressEvent(FakePressEvent(start))
+    rect.mouseMoveEvent(FakePressEvent(start + QtCore.QPointF(50, 6)))
+    moved = rect.scenePos() - start
+    assert abs(moved.x() - 50) < 0.5 and abs(moved.y() - 6) < 0.5, moved
+    rect.mouseReleaseEvent(FakePressEvent(start + QtCore.QPointF(50, 6)))
+    f.close()
+
+
+def test_shift_resize_rect_is_screen_square():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    origin_scene = rect.mapToScene(QtCore.QPointF(0, 0))
+    rect._on_endpoint_drag(origin_scene + QtCore.QPointF(80, 20), modifiers=SHIFT)
+    vec = rect.mapToScene(rect.p1_local) - origin_scene
+    assert abs(abs(vec.x()) - abs(vec.y())) < 1.0, vec
+    assert abs(vec.x() - 80) < 1.0, vec  # the larger magnitude wins, sign preserved
+    f.close()
+
+
+def test_plain_resize_rect_is_not_constrained():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    origin_scene = rect.mapToScene(QtCore.QPointF(0, 0))
+    rect._on_endpoint_drag(origin_scene + QtCore.QPointF(80, 20))
+    vec = rect.mapToScene(rect.p1_local) - origin_scene
+    assert abs(vec.x() - 80) < 1.0 and abs(vec.y() - 20) < 1.0, vec
+
+
+def test_shift_resize_line_snaps_angle():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    line = _place(f, 'line', f.plots[2])
+    origin_scene = line.mapToScene(QtCore.QPointF(0, 0))
+    line._on_endpoint_drag(origin_scene + QtCore.QPointF(100, 12), modifiers=SHIFT)
+    vec = line.mapToScene(line.p1_local) - origin_scene
+    assert abs(vec.y()) < 1.0 and vec.x() > 90, vec
+    f.close()
+
+
+def test_shift_start_handle_resize_is_screen_square():
+    """The p0 (start) handle drags the *other* end while p1 stays fixed --
+    same constraint, opposite end."""
+    f, curve, rect, ellipse = _two_annotation_figure()
+    p1_scene = rect.mapToScene(rect.p1_local)
+    rect._on_start_press(None)
+    rect._on_start_drag(p1_scene + QtCore.QPointF(-70, -18), modifiers=SHIFT)
+    vec = rect.mapToScene(QtCore.QPointF(0, 0)) - p1_scene
+    assert abs(abs(vec.x()) - abs(vec.y())) < 1.0, vec
+    assert rect.mapToScene(rect.p1_local) == p1_scene, "p1 must stay exactly fixed"
+    f.close()
+
+
+def test_shift_rotate_snaps_to_45_degrees():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    center = rect.mapToScene(rect._shape_center_local())
+    rect._on_rotate_drag(center + QtCore.QPointF(60, -55), modifiers=SHIFT)
+    ratio = rect.rotation() / 45.0
+    assert abs(ratio - round(ratio)) < 1e-6, rect.rotation()
+    f.close()
+
+
+def test_plain_rotate_is_not_constrained():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    center = rect.mapToScene(rect._shape_center_local())
+    rect._on_rotate_drag(center + QtCore.QPointF(60, -55))
+    ratio = rect.rotation() / 45.0
+    assert abs(ratio - round(ratio)) > 1e-3, "control: this angle should NOT land on a 45-degree step"
+    f.close()
+
+
+def test_shift_placement_drag_constrains_the_new_shape():
+    f = m.LaFigure()
+    f.show()
+    app.processEvents()
+    plot = f.plots[0]
+    scene = f.layout_widget.scene()
+    start = _vb_center(plot)
+    f.start_placing_annotation('rect')
+    f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMousePress, start))
+    f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMouseRelease,
+                                        start + QtCore.QPointF(90, 15), modifiers=SHIFT))
+    ann = f.annotations[-1]
+    vec = ann.mapToScene(ann.p1_local) - ann.mapToScene(QtCore.QPointF(0, 0))
+    assert abs(abs(vec.x()) - abs(vec.y())) < 1.0, vec
     f.close()

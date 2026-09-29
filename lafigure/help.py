@@ -93,6 +93,20 @@ class HelpMixin:
 - **Right-click a subplot** (off any curve) for the subplot menu: copy/paste
   subplot, paste curve, front/back, legend, Reorder Curves..., Remove Average, FFT, CSV
 
+### Annotations
+- **Annotate toolbar button** to place a shape: point kinds (text, data
+  cursor) on a single click; rect/ellipse/line/arrow/double arrow/text+arrow
+  via press-drag-release
+- **Drag the shape body** to move it; **drag its end-point handle(s)** to
+  resize; **drag its rotate handle** (green) to rotate
+- **Hold Shift** while placing, resizing, dragging, or rotating an
+  annotation to constrain it, LibreOffice-Draw style: rectangles/ellipses
+  stay square/circular, every directional shape (line/arrow/double
+  arrow/text+arrow) snaps its angle to 45°, movement locks to a 45° screen
+  direction, and rotation snaps to 45° steps
+- **Right-click** an annotation for Properties... (color/width/fill),
+  Link to... (reparent), Delete
+
 ### Hand Mode
 - **Pan and zoom** the subplot under the cursor
 - **No selection** borders or handles shown
