@@ -90,8 +90,9 @@ class HelpMixin:
 - **Click a legend** to select it; drag it to move it (undoable); Del hides it
 - **Right-click a curve** for its own menu: copy/paste, front/back, line width,
   line style, marker, marker size, rename, delete
-- **Right-click a subplot** (off any curve) for the subplot menu: copy/paste
-  subplot, paste curve, front/back, legend, Reorder Curves..., Remove Average, FFT, CSV
+- **Right-click a subplot** (off any curve or annotation) for the subplot
+  menu: copy/paste subplot, paste curve, front/back, legend, Reorder
+  Curves..., Remove Average, FFT, CSV
 
 ### Annotations
 - **Annotate toolbar button** to place a shape: point kinds (text, data
@@ -104,8 +105,13 @@ class HelpMixin:
   stay square/circular, every directional shape (line/arrow/double
   arrow/text+arrow) snaps its angle to 45°, movement locks to a 45° screen
   direction, and rotation snaps to 45° steps
-- **Right-click** an annotation for Properties... (color/width/fill),
-  Link to... (reparent), Delete
+- **Ctrl+C / Ctrl+V** copy/paste the selected annotation(s) too (offset a
+  few pixels so a same-window paste doesn't land exactly on the original)
+- **Right-click** an annotation for Copy/Paste Annotation, Properties...
+  (color/width/fill), Link to... (click a subplot to reparent) -- an
+  unlinked annotation also lists a direct **Link to subplot `<name>`**
+  shortcut for every subplot its own bounding box currently overlaps --
+  and Delete
 
 ### Hand Mode
 - **Pan and zoom** the subplot under the cursor
@@ -120,6 +126,7 @@ class HelpMixin:
 ### Brush Mode
 - **Drag a rectangle** to brush points; **Shift+drag** adds to the brushed set
 - **Right-click** for the brushed-point actions (delete, transform, stats, fit, hide)
+- **Del** deletes the brushed points (not a subplot/curve/annotation selection)
 - A mode like Select/Hand/Zoom Rect: choosing one unchecks the others
 
 Every zoom and pan (rectangle, wheel, drag, Home, Fit, View All) is one

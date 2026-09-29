@@ -144,6 +144,35 @@ def test_resizing_a_border_never_moves_a_sibling():
     f.close()
 
 
+def test_link_x_resize_does_not_change_a_linked_siblings_zoom():
+    """Item 9 (reported bug): with Link X on, resizing one subplot --
+    without touching its own zoom -- must not change a linked sibling's
+    X range. Reproduced via a real drag (see module docstring): the
+    mechanism, if any, plausibly lives in how pyqtgraph's own X-link
+    propagation reacts to a real geometry/resize event, which a direct
+    method call wouldn't exercise the same way."""
+    f = shown_figure()
+    p1, p2, p3, p4 = f.plots
+    f.toggle_link_x(True)
+    app.processEvents()
+    vb1, vb2 = p1.getViewBox(), p2.getViewBox()
+    vb1.setRange(xRange=(10, 90), padding=0)
+    app.processEvents()
+    before1, before2 = vb1.viewRange()[0], vb2.viewRange()[0]
+
+    _click_subplot(f, p1)
+    start = _handle_center(f, 'right')
+    _drag(f, start, start + QtCore.QPointF(60, 0), mods=ALT)
+    app.processEvents()
+
+    after1, after2 = vb1.viewRange()[0], vb2.viewRange()[0]
+    assert _close(after1[0], before1[0]) and _close(after1[1], before1[1]), \
+        ("p1's own X range changed just from being resized", before1, after1)
+    assert _close(after2[0], before2[0]) and _close(after2[1], before2[1]), \
+        ("linked sibling's X range changed from p1's resize alone", before2, after2)
+    f.close()
+
+
 def test_two_consecutive_drags_and_the_subplot_stays_live():
     """Bug #2: a second drag on the same subplot used to KeyError. Bug #3:
     a detached subplot went invisible. Both drags must work, and the plot
@@ -288,6 +317,37 @@ def test_dragging_a_grid_line_rescales_attached_edges_only():
     f.undo()
     for p in (a, b, c, d):
         assert _rect(p) == before[p]
+    f.close()
+
+
+def test_link_x_gutter_drag_does_not_change_either_sides_zoom():
+    """Item 9 (reported bug), gutter-drag variant: dragging the grid line
+    between two X-linked subplots resizes both of them on screen (unlike
+    a subplot's own border handle, which -- per
+    test_link_x_resize_does_not_change_a_linked_siblings_zoom above --
+    already doesn't disturb a sibling's zoom). Their X range (zoom) must
+    stay whatever it was, not follow the resize."""
+    f, a, b, c, d = _three_columns()
+    f.toggle_link_x(True)
+    app.processEvents()
+    vb_a, vb_b = a.getViewBox(), b.getViewBox()
+    vb_a.setRange(xRange=(10, 90), padding=0)
+    app.processEvents()
+    before_a, before_b = vb_a.viewRange()[0], vb_b.viewRange()[0]
+    before_a_width = _rect(a).width()
+
+    pt = _gutter_point(f, 'col', 1, 0.5)
+    _mouse(f, PRESS, pt, L, mods=ALT)
+    _mouse(f, MOVE, pt + QtCore.QPointF(40, 0), L, button=NO, mods=ALT)
+    _mouse(f, RELEASE, pt + QtCore.QPointF(40, 0), NO, mods=ALT)
+    app.processEvents()
+    assert abs(_rect(a).width() - before_a_width) > 1, "control: the drag must have actually resized a"
+
+    after_a, after_b = vb_a.viewRange()[0], vb_b.viewRange()[0]
+    assert _close(after_a[0], before_a[0]) and _close(after_a[1], before_a[1]), \
+        ("a's own X range changed just from being resized", before_a, after_a)
+    assert _close(after_b[0], before_b[0]) and _close(after_b[1], before_b[1]), \
+        ("linked b's X range changed from a's resize alone", before_b, after_b)
     f.close()
 
 
@@ -459,6 +519,32 @@ def test_window_resize_recomputes_every_box():
     vp = f.layout_widget.viewport()
     assert abs(_rect(p2).right() - (vp.width() - f.FIG_MARGIN - f.CELL_PAD)) < 0.01
     assert abs(_rect(p2).top() - (f.FIG_MARGIN + f.CELL_PAD)) < 0.01
+    f.close()
+
+
+def test_link_x_window_resize_does_not_change_any_subplots_zoom():
+    """Item 9, third variant: resizing the whole FIGURE WINDOW (dragging
+    its OS border) recomputes every subplot's pixel geometry at once, via
+    resizeEvent -- a third, completely different code path from a
+    subplot's own border handle or a gutter drag (both tested above).
+    Every X-linked subplot's zoom must still survive it untouched."""
+    f = shown_figure()
+    p1, p2 = f.plots[0], f.plots[1]
+    f.toggle_link_x(True)
+    app.processEvents()
+    vb1, vb2 = p1.getViewBox(), p2.getViewBox()
+    vb1.setRange(xRange=(10, 90), padding=0)
+    app.processEvents()
+    before1, before2 = vb1.viewRange()[0], vb2.viewRange()[0]
+
+    f.resize(700, 500)
+    app.processEvents()
+
+    after1, after2 = vb1.viewRange()[0], vb2.viewRange()[0]
+    assert _close(after1[0], before1[0]) and _close(after1[1], before1[1]), \
+        ("the reference view's own X range changed from a window resize alone", before1, after1)
+    assert _close(after2[0], before2[0]) and _close(after2[1], before2[1]), \
+        ("linked p2's X range changed from a window resize alone", before2, after2)
     f.close()
 
 

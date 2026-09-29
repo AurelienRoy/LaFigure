@@ -114,6 +114,43 @@ class AnnotationOpsMixin:
                 return 'border', p
         return 'figure', None
 
+    def _annotation_at(self, scene_pos):
+        """The topmost annotation whose shape contains scene_pos, or None.
+        Mirrors _curve_at's role (menus.py) for annotations: an
+        AnnotationItem's own contextMenuEvent (annotations.py, a native
+        Qt event) fires independently of pyqtgraph's own right-click
+        dispatch (ViewBox.raiseContextMenu / the scene's sigMouseClicked
+        empty-space handling) -- two unrelated delivery mechanisms that
+        both fire for the same right-click. Callers use this to skip
+        their own menu when an annotation is about to show its own."""
+        for a in sorted(self.annotations, key=lambda a: a.zValue(), reverse=True):
+            if a.contains(a.mapFromScene(scene_pos)):
+                return a
+        return None
+
+    def _subplots_under_annotation(self, ann):
+        """Every subplot whose own scene box the annotation's UN-rotated
+        bounding box overlaps -- ignores self.rotation() deliberately (an
+        arrow tilted 80 degrees shouldn't "cover" a subplot only because
+        its rotated silhouette swings over it; "bounding box" means the
+        plain axis-aligned one, per the literal request). Feeds the
+        "Link to subplot <name>" menu shortcuts on an unlinked
+        (anchor='figure') annotation -- see _link_annotation_to_subplot.
+        Ordered like self.plots (top-left reading order)."""
+        box = ann.boundingRect().translated(ann.pos())
+        return [p for p in self.plots if p.sceneBoundingRect().intersects(box)]
+
+    def _link_annotation_to_subplot(self, ann, parent_plot):
+        """"Link to subplot <name>" menu shortcut (annotations.py's
+        contextMenuEvent): reparents `ann` in place, at wherever it's
+        currently sitting on screen. Always anchor='border' -- a
+        bounding-box "covers this subplot" relationship is coarse (the
+        annotation may not even sit over the subplot's data area), so
+        border (attaches to the subplot's chrome, valid anywhere) is the
+        safer default; 'axes' anchoring is still reachable via the
+        existing precise "Link to..." click-to-choose gesture."""
+        self._reparent_annotation(ann, 'border', parent_plot, ann.scenePos())
+
     def _handle_placement_click(self, scene_pos):
         """Single-click placement for point kinds (cursor, text). Extent
         kinds (TWO_CLICK_KINDS) are placed by a press-drag-release gesture

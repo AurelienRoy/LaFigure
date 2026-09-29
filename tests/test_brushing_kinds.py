@@ -387,6 +387,23 @@ def test_delete_brushed_points_on_a_source_series_keeps_it_linked():
     f.close()
 
 
+def test_del_key_in_brush_mode_deletes_brushed_points_not_the_selection():
+    """delete_selection (the Del key / toolbar Delete) must defer to
+    delete_brushed_points while Brush mode is on -- normal subplot/curve/
+    annotation selection is a different concept from the brushed-point
+    selection, and Del previously did nothing useful in Brush mode."""
+    f, (ax,) = _figure()
+    src = _ramp_source()
+    s = ax.plot(src, x='t', y='a')
+    f.brush_action.trigger()
+    _brush_rows(f, s, [0, 1])
+    f.delete_selection()
+    assert list(s.rows) == list(range(2, 100))
+    f.undo()
+    assert list(s.rows) == list(range(100))
+    f.close()
+
+
 # -- derived columns ---------------------------------------------------------
 def test_remove_average_on_a_source_series_writes_a_derived_column():
     f, (ax,) = _figure()

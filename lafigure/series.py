@@ -275,6 +275,11 @@ class SeriesMixin:
         # kinds), not this construction site's. Guard rather than crash.
         if hasattr(item, 'curve'):
             self._wire_curve_clickable(plot_item, item)
+        # The Curve Browser and the Figure Browser's "Show Curves" tree
+        # both rebuild from this signal (manager.py's _on_subplots_changed)
+        # -- without it, neither noticed a curve added to an existing
+        # subplot, only whole-subplot add/remove.
+        self.registry.notify_subplots_changed(self)
         return series
 
     def _add_series_from_dict(self, plot_item, d):

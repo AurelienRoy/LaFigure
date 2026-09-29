@@ -507,6 +507,89 @@ the actual code — this list is a summary, not a substitute for checking.
       drag reads `ev.modifiers()` directly in `mouseMoveEvent`. Covered
       by `tests/test_annotation_ops.py`'s `test_shift_*`/`test_plain_*`
       pairs (one shift-held, one unconstrained control, per gesture).
+- [x] **A batch of annotation/curve-browser fixes and one small feature**
+      (2026-09-29), scoped and confirmed with the user via `/lafigure-scope`
+      before implementation, each independently tested:
+      - **Tight, oriented selection outline for arrows** (`annotations.py`):
+        `line`/`arrow`/`doublearrow`/`textarrow`'s dashed selection box, when
+        selected, now hugs the p0→p1 segment at an angle
+        (`AnnotationItem._selection_outline_geometry`) instead of the
+        axis-aligned box of the two endpoints, which wasted visible space on
+        a non-horizontal/vertical segment. `rect`/`ellipse`/`text`/`cursor`
+        are unaffected (angle 0 — see the method's own docstring for why).
+      - **Arrowheads no longer distort on an 'axes'-anchored subplot** whose
+        X/Y data scale isn't 1:1: `_draw_arrowhead` (now an `AnnotationItem`
+        method, not a free function) builds the triangle in SCENE
+        (screen-pixel) space and maps it back to local coordinates, instead
+        of computing it directly in local (data) space. `paint()` also now
+        sets `QPainter.Antialiasing` (previously unset — visible on a
+        diagonal line/rotated shape).
+      - **Fixed: right-click on an annotation opened both its own menu and
+        the subplot's (or, outside any subplot, the empty-space "Paste
+        Subplot" menu)** — two independent right-click delivery paths
+        (pyqtgraph's own click dispatch vs. Qt's native `contextMenuEvent`)
+        both fired. New `_annotation_at(scene_pos)` hit-test
+        (`annotation_ops.py`) guards both `menus.py`'s `raise_context_menu`
+        and `selection_ui.py`'s `_on_scene_clicked` empty-space branch.
+      - **New: "Link to subplot `<name>`" menu shortcuts.** An unlinked
+        (`anchor='figure'`) annotation's own right-click menu now lists one
+        direct-reparent action per subplot its own **un-rotated** bounding
+        box overlaps (`_subplots_under_annotation`/
+        `_link_annotation_to_subplot`, `annotation_ops.py`), alongside the
+        existing precise "Link to..." click-to-choose gesture. Always
+        reparents as `anchor='border'` (a bounding-box "covers this
+        subplot" relationship is coarse — see the method's own docstring);
+        `'axes'` anchoring is still reachable via the click gesture.
+      - **New: annotations are copy/pastable**, including across figure
+        windows, mirroring curve/subplot copy/paste: `Clipboard.annotation`
+        (`clipboard.py`), `copy_annotation`/`paste_annotation`
+        (`clip_ops.py`, added as `copy_selection`/`paste_selection`'s third
+        dispatch tier — after curve, before the subplot fallback), and
+        Copy/Paste Annotation entries on the right-click menu
+        (`annotations.py`). A pasted annotation lands on the **focused**
+        subplot (same convention as `paste_curve` — not necessarily the one
+        it was copied from), offset `ANNOTATION_PASTE_OFFSET_PX` (20) scene
+        pixels so a same-window paste doesn't land exactly on the original
+        — computed in scene space and converted into the annotation's own
+        parent frame (`_offset_pasted_annotation`), same approach the Shift
+        move-constraint above uses. User-confirmed choice over an
+        exact-position paste.
+      - **Del in Brush mode now deletes the brushed points**
+        (`clip_ops.py`'s `delete_selection`, one added branch at the top)
+        instead of acting on `selected_plots`/`selected_curves`/
+        `selected_annotations` — a different, usually-empty selection
+        concept in that mode, so Del previously did nothing useful there.
+      - **Fixed: renaming a curve via its legend didn't propagate.**
+        `editable_text.py`'s `wire_legend_editable` used to only set the
+        legend label's own displayed text, leaving `curve.opts['name']` (and
+        hence everywhere else that reads it) untouched and the edit
+        un-undoable. Now routes through `NamingMixin._apply_curve_rename`,
+        the same path the curve menu's Rename already used — its signature
+        gained `figure`/`plot_item` params; both call sites (`naming.py`,
+        `view_ops.py`) updated.
+      - **Fixed: the Curve Browser and the Figure Browser's "Show Curves"
+        tree didn't live-update when a curve was added, deleted, or
+        renamed** on an already-open subplot — only a whole-subplot add/
+        remove/rename fired `registry.notify_subplots_changed`, which both
+        browsers rebuild from (`manager.py`'s `_on_subplots_changed`). Now
+        also fired from `series.py`'s `_add_series` (the one series-
+        construction site) and `clip_ops.py`'s `delete_curve` (both its
+        direct removal and redo's); the rename fix above already covers
+        itself via `_apply_curve_rename`.
+      - **Investigated, NOT reproduced: "Link X + resize changes a linked
+        subplot's zoom."** Tried three real-drag reproductions — a
+        subplot's own border-handle resize, a gutter (grid-line) drag
+        resizing two subplots at once, and a whole-window resize — all via
+        real `QMouseEvent`s / `figure.resize()`, all checking each linked
+        `ViewBox.viewRange()` before/after. **All three passed cleanly**
+        (`tests/test_layout.py`'s three `test_link_x_*` tests) — kept as
+        regression coverage either way, but the reported mechanism wasn't
+        observed in this environment across three plausible readings of
+        "resizing a subplot." Per CLAUDE.md's own established practice for
+        an unreproducible bug (see bug #5 below): don't guess a fix for a
+        mechanism never actually observed — ask for the exact repro steps
+        (which handle/gesture, with/without Alt, how many subplots linked)
+        instead.
 
 ## Roadmap (agreed with the user 2026-09-28) — live backlog
 
@@ -1642,6 +1725,15 @@ repeating the same resume/merge/launch cycle every session. So:
   (`help.py`) and this file, then commit only this session's files (the
   user's own edits separate or left out, `git commit -F`). The help
   dialog and the commit split were the steps most easily forgotten.
+- **Scoping Skill — `/lafigure-scope`
+  (`.claude/skills/lafigure-scope/SKILL.md`, 2026-09-29).** The opposite
+  bookend to `lafigure-ship`: before writing any implementation code for a
+  nontrivial change (multi-file, user-visible behavior, or touching undo/
+  data-model/annotation/selection/layout code), read the relevant modules
+  first, then write a short scope proposal — what changes file-by-file,
+  what's explicitly out of scope — and wait for the user's go-ahead. User
+  request: confirm the change's perimeter before starting, not just
+  report what was done afterward.
 
 Still **not** Skills: the test recipe (one command:
 `QT_QPA_PLATFORM=offscreen python run_tests.py`, since WP-01 landed

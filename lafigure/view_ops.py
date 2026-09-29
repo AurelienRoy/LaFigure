@@ -281,7 +281,7 @@ class ViewOpsMixin:
             implements = getattr(item, 'implements', None)
             if implements is not None and implements('plotData') and item.name():
                 legend.addItem(item, item.name())
-        wire_legend_editable(legend)
+        wire_legend_editable(self, p, legend)
         self._wire_legend_interaction(p, legend)
         return legend
 

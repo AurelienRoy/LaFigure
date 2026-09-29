@@ -243,6 +243,37 @@ def test_checkboxes_toggle_curve_and_annotation_sublevels():
     mgr.close()
 
 
+def test_curve_sublevel_updates_live_on_add_delete_rename():
+    """Before the fix, adding/deleting/renaming a curve on an existing
+    subplot never rebuilt this tree -- only add_subplot/delete_subplot
+    fired the registry signal it rebuilds from."""
+    win = shown_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    p1 = win.plots[0]
+    row = mgr._fig_plot_rows[win][p1]
+    mgr.show_curves_check.setChecked(True)
+    app.processEvents()
+    n_before = row.childCount()
+
+    new_curve = win._add_series(p1, 'line', [0, 1, 2], [0, 1, 2], name='extra').item
+    app.processEvents()
+    assert row.childCount() == n_before + 1
+    assert any(row.child(i).data(0, mgr.ROLE_OBJ) is new_curve for i in range(row.childCount()))
+
+    win._apply_curve_rename(p1, new_curve, 'renamed')
+    app.processEvents()
+    renamed_row = next(row.child(i) for i in range(row.childCount())
+                        if row.child(i).data(0, mgr.ROLE_OBJ) is new_curve)
+    assert renamed_row.text(0) == 'renamed'
+
+    win.delete_curve(new_curve)
+    app.processEvents()
+    assert row.childCount() == n_before
+    win.close()
+    mgr.close()
+
+
 def test_node_delete_removes_a_subplot_and_is_undoable():
     win = shown_figure()
     mgr = m.FigureManager()

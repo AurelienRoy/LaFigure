@@ -24,10 +24,12 @@
 
 """Copy/paste and delete of curves and subplots (clip_ops.py)."""
 import pyqtgraph as pg
+from pyqtgraph.Qt import QtCore
 
+import lafigure as m
 from tests.helpers import (
-    SHIFT, shown_figure, _click_subplot, _click_curve, _click_annotation,
-    _two_annotation_figure,
+    app, SHIFT, shown_figure, _click_subplot, _click_curve, _click_annotation,
+    _two_annotation_figure, _scene_pos,
 )
 
 
@@ -110,4 +112,95 @@ def test_multi_delete_is_one_undo_entry_and_round_trips():
     assert counts() == after
     f.undo()
     assert counts() == before, "a second undo must still work (holders refreshed by redo)"
+    f.close()
+
+
+# -- annotation copy/paste (item 3) ------------------------------------------
+
+def test_copy_paste_annotation_offset_on_the_same_subplot():
+    """Pasted back onto the subplot it was copied from, an annotation
+    must land a few pixels off, not exactly on top of the original."""
+    f, curve, rect, ellipse = _two_annotation_figure()  # rect on plots[1]
+    before_pos = _scene_pos(rect)
+    _click_annotation(f, rect)
+    f.copy_annotation()
+    assert f.clipboard.last_copied == 'annotation'
+    f._on_plot_clicked(rect.parent_plot)
+    n_before = len(f.annotations)
+    f.paste_annotation()
+    assert len(f.annotations) == n_before + 1
+    pasted = f.annotations[-1]
+    assert pasted is not rect and pasted.kind == 'rect'
+    assert pasted.anchor == 'axes' and pasted.parent_plot is rect.parent_plot
+    offset = _scene_pos(pasted) - before_pos
+    assert offset.x() > 0 and offset.y() > 0, "pasted a few pixels down/right, not on top of the original"
+    assert f.selected_annotations == [pasted], "paste selects the new annotation"
+
+    f.undo()
+    assert len(f.annotations) == n_before
+    f.redo()
+    assert len(f.annotations) == n_before + 1
+    f.undo()
+    f.close()
+
+
+def test_paste_annotation_lands_on_the_focused_subplot_not_the_original():
+    f, curve, rect, ellipse = _two_annotation_figure()  # rect on plots[1]
+    other = f.plots[2]
+    _click_annotation(f, rect)
+    f.copy_annotation()
+    f._on_plot_clicked(other)
+    n_before = len(f.annotations)
+    f.paste_annotation()
+    assert len(f.annotations) == n_before + 1
+    pasted = f.annotations[-1]
+    assert pasted.anchor == 'axes' and pasted.parent_plot is other
+    f.close()
+
+
+def test_copy_paste_figure_annotation_across_windows():
+    """A 'figure'-anchored (free-floating) annotation copies/pastes across
+    separate LaFigure windows via the shared process-wide Clipboard, same
+    as curves and subplots already do."""
+    f = m.LaFigure(empty=True)
+    f.add_subplot(row=0, col=0)
+    f.show()
+    app.processEvents()
+    ann = f._create_annotation('text', 'figure', None, QtCore.QPointF(30, 30), None, text="hi")
+    f._select_annotation(ann)
+    f.copy_annotation()
+
+    other = m.LaFigure(empty=True)
+    other.show()
+    app.processEvents()
+    other.paste_annotation()
+    assert len(other.annotations) == 1
+    pasted = other.annotations[0]
+    assert pasted.anchor == 'figure' and pasted.kind == 'text' and pasted.text == "hi"
+    other.close()
+    f.close()
+
+
+def test_copy_selection_dispatches_to_annotation_when_only_one_is_selected():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    _click_annotation(f, rect)
+    f.copy_selection()
+    assert f.clipboard.last_copied == 'annotation'
+    assert len(f.clipboard.annotation) == 1
+    f.close()
+
+
+def test_multi_annotation_copy_paste_is_one_undo_entry():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    _click_annotation(f, rect)
+    _click_annotation(f, ellipse, modifiers=SHIFT)
+    f.copy_annotation()
+    assert len(f.clipboard.annotation) == 2
+    f._on_plot_clicked(f.plots[2])
+    n_before, n_undo = len(f.annotations), len(f.undo_stack)
+    f.paste_annotation()
+    assert len(f.annotations) == n_before + 2
+    assert len(f.undo_stack) == n_undo + 1
+    f.undo()
+    assert len(f.annotations) == n_before
     f.close()

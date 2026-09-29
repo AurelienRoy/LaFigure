@@ -87,6 +87,11 @@ TWO_ENDPOINT_KINDS = ('rect', 'ellipse', 'line', 'arrow', 'doublearrow', 'textar
 # that dragging corners/endpoints alone can't express.
 NO_ROTATE_KINDS = ('cursor', 'line', 'arrow', 'doublearrow', 'textarrow')
 
+# Kinds whose selected-outline is a box oriented along p0->p1 (tight around
+# the segment) instead of the axis-aligned box of the two endpoints, which
+# wastes visible space once the segment isn't horizontal/vertical.
+ORIENTED_OUTLINE_KINDS = ('line', 'arrow', 'doublearrow', 'textarrow')
+
 SUBPLOT_FILIATION_COLOR = QtGui.QColor(220, 40, 40)
 FIGURE_FILIATION_COLOR = QtGui.QColor(120, 120, 120)
 
@@ -157,16 +162,6 @@ def constrain_extent_vector(kind, vec, step_deg=45):
         sy = 1 if dy >= 0 else -1
         return QtCore.QPointF(sx * m, sy * m)
     return _snap_vector_angle(vec, step_deg)
-
-
-def _draw_arrowhead(painter, tip, tail, size=10):
-    """Draw a filled triangular arrowhead at `tip`, pointing away from
-    `tail` -- shared by 'arrow' (one head) and 'doublearrow' (two)."""
-    angle = math.atan2(tip.y() - tail.y(), tip.x() - tail.x())
-    spread = math.pi / 7
-    p1 = tip - QtCore.QPointF(size * math.cos(angle - spread), size * math.sin(angle - spread))
-    p2 = tip - QtCore.QPointF(size * math.cos(angle + spread), size * math.sin(angle + spread))
-    painter.drawPolygon(QtGui.QPolygonF([tip, p1, p2]))
 
 
 class AnnotationItem(QtWidgets.QGraphicsObject):
@@ -353,12 +348,9 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         return self.mapRectToScene(self.boundingRect().adjusted(pad, pad, -pad, -pad))
 
     def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QtGui.QPainter.Antialiasing, True)
         painter.setPen(self.pen)
         p0 = QtCore.QPointF(0, 0)
-        # _draw_arrowhead's own `size` default (10) is a literal pixel
-        # length, wrong for 'axes' anchor's data-unit local space -- same
-        # class of fix as _px_to_local elsewhere in this file.
-        arrow_size = self._px_to_local(10)
         if self.kind == 'rect':
             painter.setBrush(self.brush or QtCore.Qt.NoBrush)
             painter.drawRect(QtCore.QRectF(p0, self.p1_local).normalized())
@@ -370,16 +362,16 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         elif self.kind == 'arrow':
             painter.drawLine(p0, self.p1_local)
             painter.setBrush(QtGui.QBrush(self.pen.color()))
-            _draw_arrowhead(painter, self.p1_local, p0, size=arrow_size)
+            self._draw_arrowhead(painter, self.p1_local, p0)
         elif self.kind == 'doublearrow':
             painter.drawLine(p0, self.p1_local)
             painter.setBrush(QtGui.QBrush(self.pen.color()))
-            _draw_arrowhead(painter, self.p1_local, p0, size=arrow_size)
-            _draw_arrowhead(painter, p0, self.p1_local, size=arrow_size)
+            self._draw_arrowhead(painter, self.p1_local, p0)
+            self._draw_arrowhead(painter, p0, self.p1_local)
         elif self.kind == 'textarrow':
             painter.drawLine(p0, self.p1_local)
             painter.setBrush(QtGui.QBrush(self.pen.color()))
-            _draw_arrowhead(painter, self.p1_local, p0, size=arrow_size)
+            self._draw_arrowhead(painter, self.p1_local, p0)
         elif self.kind == 'cursor':
             painter.setBrush(QtGui.QBrush(self.pen.color()))
             marker_r = self._px_to_local(4)
@@ -407,13 +399,62 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         # does all the rendering.
 
         if self._selected:
-            inset = self._px_to_local(4)
             outline_pen = pg.mkPen(filiation_color(self.parent_plot, self.figure.plots),
                                     width=2, style=QtCore.Qt.DashLine)
             outline_pen.setCosmetic(True)  # constant on-screen width/dash length, not data-scaled
             painter.setPen(outline_pen)
             painter.setBrush(QtCore.Qt.NoBrush)
-            painter.drawRect(self.boundingRect().adjusted(inset, inset, -inset, -inset))
+            rect, angle = self._selection_outline_geometry()
+            if angle:
+                painter.save()
+                painter.rotate(angle)
+                painter.drawRect(rect)
+                painter.restore()
+            else:
+                painter.drawRect(rect)
+
+    def _selection_outline_geometry(self):
+        """(local_rect, angle_deg) for the dashed selection outline drawn
+        above. ORIENTED_OUTLINE_KINDS get a box hugging p0->p1 -- angle is
+        the segment's own local-frame angle, same formula paint() itself
+        uses to draw the line, so painter.rotate(angle) then drawing
+        `rect` lines up exactly with the drawn segment. Everything else
+        keeps today's padded, axis-aligned boundingRect() (angle 0.0, so
+        paint() skips the rotate -- these kinds have no meaningful "along
+        the shape" direction, or (rect/ellipse) already rotate as a whole
+        via self.rotation() when selected, so their own boundingRect is
+        already tight for their own local frame)."""
+        inset = self._px_to_local(4)
+        if self.kind in ORIENTED_OUTLINE_KINDS and self.p1_local is not None:
+            length = math.hypot(self.p1_local.x(), self.p1_local.y())
+            angle = math.degrees(math.atan2(self.p1_local.y(), self.p1_local.x()))
+            return QtCore.QRectF(-inset, -inset, length + 2 * inset, 2 * inset), angle
+        return self.boundingRect().adjusted(inset, inset, -inset, -inset), 0.0
+
+    ARROWHEAD_PX = 10  # a literal on-screen pixel size -- see _draw_arrowhead
+
+    def _draw_arrowhead(self, painter, tip, tail):
+        """Draw a filled triangular arrowhead at `tip` (local coords),
+        pointing away from `tail` -- shared by 'arrow' (one head) and
+        'doublearrow' (two).
+
+        Built in SCENE (screen-pixel) space, not local space: for an
+        'axes'-anchored annotation, local units are DATA units, and a
+        rotation computed and applied purely in data space is only
+        shape-preserving on screen when the subplot's X/Y data-per-pixel
+        ratio is 1:1 -- otherwise the triangle comes out visibly skewed
+        (see CLAUDE.md). `tip` itself is kept exact (no scene round-trip)
+        so the arrowhead stays attached exactly at the line's endpoint;
+        only the two back corners go through the scene<->local mapping."""
+        tip_scene = self.mapToScene(tip)
+        tail_scene = self.mapToScene(tail)
+        angle = math.atan2(tip_scene.y() - tail_scene.y(), tip_scene.x() - tail_scene.x())
+        spread = math.pi / 7
+        size = self.ARROWHEAD_PX
+        p1_scene = tip_scene - QtCore.QPointF(size * math.cos(angle - spread), size * math.sin(angle - spread))
+        p2_scene = tip_scene - QtCore.QPointF(size * math.cos(angle + spread), size * math.sin(angle + spread))
+        poly = QtGui.QPolygonF([tip, self.mapFromScene(p1_scene), self.mapFromScene(p2_scene)])
+        painter.drawPolygon(poly)
 
     # -- selection / handles ------------------------------------------
     def set_selected(self, selected):
@@ -725,11 +766,25 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         if self not in self.figure.selected_annotations:  # right-click inside the selection keeps it
             self.figure._select_annotation(self)
         menu = QtWidgets.QMenu()
+        menu.addAction("Copy Annotation").triggered.connect(lambda: self.figure.copy_annotation())
+        paste_action = menu.addAction("Paste Annotation")
+        paste_action.setEnabled(bool(self.figure.clipboard.annotation))
+        paste_action.triggered.connect(lambda: self.figure.paste_annotation())
+        menu.addSeparator()
         menu.addAction("Properties...").triggered.connect(lambda: self.figure._edit_annotation_properties(self))
         if self.figure._relink_source is self:
             menu.addAction("Cancel Link").triggered.connect(self.figure._cancel_relink)
         else:
             menu.addAction("Link to...").triggered.connect(lambda: self.figure._start_relink(self))
+            if self.anchor == 'figure':
+                # Unlinked: offer a direct shortcut for every subplot its
+                # own (un-rotated) bounding box currently overlaps, instead
+                # of always requiring the click-to-choose gesture above.
+                for p in self.figure._subplots_under_annotation(self):
+                    name = self.figure.subplot_name(p) or "(untitled)"
+                    menu.addAction(f"Link to subplot {name}").triggered.connect(
+                        lambda checked=False, p=p: self.figure._link_annotation_to_subplot(self, p)
+                    )
         menu.addSeparator()
         menu.addAction("Delete").triggered.connect(lambda: self.figure.delete_annotation(self))
         menu.exec_(ev.screenPos())

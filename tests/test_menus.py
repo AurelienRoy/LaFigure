@@ -303,3 +303,33 @@ def test_reorder_curves_opens_the_manager_on_the_curve_tab():
     assert f.open_curve_browser(p) is mgr, "one manager, reused"
     mgr.close()
     f.close()
+
+
+def test_right_click_on_an_annotation_opens_neither_the_curve_nor_subplot_menu():
+    """An AnnotationItem's own contextMenuEvent (annotations.py, a native
+    Qt event) fires independently of this ViewBox-level dispatch -- before
+    the fix, both it and whichever of these two also opened."""
+    f, p, c = _curve_figure()
+    vb = p.getViewBox()
+    ann = f._create_annotation('rect', 'axes', p, QtCore.QPointF(10, 10), QtCore.QPointF(10, 10))
+    ann_scene = ann.mapToScene(QtCore.QPointF(5, 5))
+    shown = []
+    real_curve_menu = f._curve_context_menu
+    f._curve_context_menu = lambda plot_item, curve: shown.append(curve) or real_curve_menu(plot_item, curve)
+    popped = []
+    real_popup = vb.menu.popup
+    vb.menu.popup = lambda *a, **k: popped.append(True)
+    try:
+        # Control: off the annotation, off the curve -- the plain subplot
+        # menu still opens (proves the popup spy actually observes this).
+        vb.raiseContextMenu(_FakeContextEvent(vb.mapViewToScene(QtCore.QPointF(90, 5))))
+        assert popped == [True], "control: subplot menu should open here"
+        popped.clear()
+        # On the annotation: neither menu opens.
+        vb.raiseContextMenu(_FakeContextEvent(ann_scene))
+        assert shown == [], "no curve menu"
+        assert popped == [], "no subplot menu -- the annotation's own contextMenuEvent handles it"
+    finally:
+        vb.menu.popup = real_popup
+        f._curve_context_menu = real_curve_menu
+    f.close()

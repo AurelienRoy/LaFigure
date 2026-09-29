@@ -220,6 +220,21 @@ def test_shift_click_on_empty_space_changes_nothing():
     f.close()
 
 
+def test_right_click_on_a_figure_annotation_does_not_open_the_empty_space_menu():
+    """A figure/border-anchored annotation sits outside every subplot's
+    ViewBox, so a right-click on it used to fall into the 'truly empty
+    space' branch and open Paste Subplot instead of the annotation's own
+    menu (a separate, native contextMenuEvent -- see annotations.py)."""
+    f, curve, ann = _selection_figure()
+    pt = _empty_scene_point(f)
+    free_ann = f._create_annotation('rect', 'figure', None, pt, QtCore.QPointF(20, 20))
+    shown = []
+    f._show_empty_space_menu = lambda: shown.append(True)
+    f._on_scene_clicked(FakeClickEvent(pt + QtCore.QPointF(5, 5), button=QtCore.Qt.RightButton))
+    assert shown == [], "the annotation's own contextMenuEvent handles this, not the empty-space menu"
+    f.close()
+
+
 def test_escape_deselects_everything():
     f, curve, ann = _selection_figure()
     _click_subplot(f, f.plots[1])

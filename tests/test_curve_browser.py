@@ -131,6 +131,34 @@ def test_switching_focus_within_one_figure_updates_the_tree():
     mgr.close()
 
 
+def test_tree_updates_live_when_a_curve_is_added_deleted_or_renamed():
+    """Before the fix, this tree only rebuilt on focus/selection changes
+    or a whole-subplot add/remove -- a curve added to (or renamed or
+    deleted on) the already-focused subplot left it stale."""
+    f, p, s1, s2 = _two_curve_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+    n_before = len(_top_items(mgr.curve_tree))
+
+    s3 = f._add_series(p, 'line', [0, 1], [1, 0], name='extra')
+    app.processEvents()
+    assert len(_top_items(mgr.curve_tree)) == n_before + 1
+    assert _find_row(_top_items(mgr.curve_tree), 'series', s3) is not None
+
+    f._apply_curve_rename(p, s3.item, 'renamed')
+    app.processEvents()
+    row = _find_row(_top_items(mgr.curve_tree), 'series', s3)
+    assert row is not None and row.text(0) == 'renamed'
+
+    f.delete_curve(s3.item)
+    app.processEvents()
+    assert len(_top_items(mgr.curve_tree)) == n_before
+    f.close()
+    mgr.close()
+
+
 def test_switching_focus_across_two_figures_updates_the_tree():
     f1 = m.LaFigure(empty=True)
     p1 = f1.add_subplot(row=0, col=0)

@@ -35,6 +35,8 @@ safely undo() twice in a row past a create/delete pair that itself already
 replaced the object once -- pair every undo with its matching redo (or a
 fresh delete_annotation call on whatever is *currently* live).
 """
+import math
+
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from tests.helpers import (
@@ -384,4 +386,131 @@ def test_shift_placement_drag_constrains_the_new_shape():
     ann = f.annotations[-1]
     vec = ann.mapToScene(ann.p1_local) - ann.mapToScene(QtCore.QPointF(0, 0))
     assert abs(abs(vec.x()) - abs(vec.y())) < 1.0, vec
+    f.close()
+
+
+# -- Selection outline / arrowhead geometry (pure math, no QPainter needed) --
+
+def test_oriented_outline_for_a_diagonal_arrow_is_tight_and_angled():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    arrow = _place(f, 'arrow', f.plots[2])
+    arrow.p1_local = QtCore.QPointF(60, 40)  # diagonal, not horizontal/vertical
+    rect_out, angle = arrow._selection_outline_geometry()
+    length = math.hypot(60, 40)
+    inset = arrow._px_to_local(4)
+    assert abs(rect_out.width() - (length + 2 * inset)) < 1e-6
+    assert abs(rect_out.height() - 2 * inset) < 1e-6
+    assert abs(angle - math.degrees(math.atan2(40, 60))) < 1e-6
+    # Tighter than the old axis-aligned box of the same diagonal segment.
+    assert rect_out.width() * rect_out.height() < 60 * 40
+    f.close()
+
+
+def test_rect_selection_outline_is_unrotated():
+    f, curve, rect, ellipse = _two_annotation_figure()
+    rect_out, angle = rect._selection_outline_geometry()
+    assert angle == 0.0
+    inset = rect._px_to_local(4)
+    assert rect_out == rect.boundingRect().adjusted(inset, inset, -inset, -inset)
+    f.close()
+
+
+def test_arrowhead_is_a_real_triangle_pointing_at_the_tip():
+    """The tip corner must stay exactly at the line's endpoint; the other
+    two corners come back from a scene-space round trip (see
+    _draw_arrowhead's docstring for why), so check them via their
+    scene-space triangle instead of exact local values."""
+    f, curve, rect, ellipse = _two_annotation_figure()
+    arrow = _place(f, 'arrow', f.plots[2])
+    arrow.p1_local = QtCore.QPointF(50, 0)
+    captured = []
+    real_draw_polygon = QtGui.QPainter.drawPolygon
+
+    class _Recorder:
+        def drawPolygon(self, poly):
+            captured.append(QtGui.QPolygonF(poly))
+
+    arrow._draw_arrowhead(_Recorder(), arrow.p1_local, QtCore.QPointF(0, 0))
+    assert len(captured) == 1
+    poly = captured[0]
+    assert len(poly) == 3
+    assert poly[0] == arrow.p1_local, "the tip corner is exact, no scene round-trip"
+    tip_scene = arrow.mapToScene(poly[0])
+    p1_scene = arrow.mapToScene(poly[1])
+    p2_scene = arrow.mapToScene(poly[2])
+    back_scene = QtCore.QPointF((p1_scene.x() + p2_scene.x()) / 2, (p1_scene.y() + p2_scene.y()) / 2)
+
+    def dist(a, b):
+        return math.hypot(a.x() - b.x(), a.y() - b.y())
+
+    # The two back corners must be exactly ARROWHEAD_PX away from the tip,
+    # in scene (screen-pixel) space, straddling the tip->tail line.
+    assert abs(dist(tip_scene, p1_scene) - arrow.ARROWHEAD_PX) < 0.5
+    assert abs(dist(tip_scene, p2_scene) - arrow.ARROWHEAD_PX) < 0.5
+    assert dist(tip_scene, back_scene) > 0
+    f.close()
+
+
+# -- "Link to subplot <name>" menu shortcuts (item 5) -----------------------
+
+def test_subplots_under_annotation_and_link_shortcut():
+    f = m.LaFigure(empty=True)
+    p0 = f.add_subplot(row=0, col=0)
+    p1 = f.add_subplot(row=0, col=1)
+    f.show()
+    app.processEvents()
+    r0, r1 = p0.sceneBoundingRect(), p1.sceneBoundingRect()
+    mid_x = (r0.right() + r1.left()) / 2
+    start = QtCore.QPointF(mid_x - 20, r0.top() + 10)
+    ann = f._create_annotation('rect', 'figure', None, start, QtCore.QPointF(40, 20))
+    covered = f._subplots_under_annotation(ann)
+    assert p0 in covered and p1 in covered, (covered, r0, r1)
+
+    f._link_annotation_to_subplot(ann, p1)
+    assert ann.anchor == 'border' and ann.parent_plot is p1
+    assert ann in f.annotations
+    f.close()
+
+
+class _FakeMenuEvent:
+    """Duck-types the QGraphicsSceneContextMenuEvent AnnotationItem.
+    contextMenuEvent reads: screenPos() (only passed through to
+    QMenu.exec_, which is monkeypatched below to avoid a blocking modal
+    popup) and accept()."""
+
+    def __init__(self, pos):
+        self._pos = pos
+
+    def screenPos(self):
+        return self._pos.toPoint()
+
+    def accept(self):
+        pass
+
+
+def test_link_to_subplot_actions_only_offered_for_an_unlinked_annotation():
+    f = m.LaFigure(empty=True)
+    p0 = f.add_subplot(row=0, col=0)
+    p1 = f.add_subplot(row=0, col=1)
+    f.show()
+    app.processEvents()
+    r0, r1 = p0.sceneBoundingRect(), p1.sceneBoundingRect()
+    mid_x = (r0.right() + r1.left()) / 2
+    start = QtCore.QPointF(mid_x - 20, r0.top() + 10)
+    free_ann = f._create_annotation('rect', 'figure', None, start, QtCore.QPointF(40, 20))
+    linked_ann = f._create_annotation('rect', 'axes', p0, QtCore.QPointF(10, 10), QtCore.QPointF(10, 10))
+
+    captured = []
+    real_exec = QtWidgets.QMenu.exec_
+    QtWidgets.QMenu.exec_ = lambda self, *a, **k: captured.append(self)
+    try:
+        free_ann.contextMenuEvent(_FakeMenuEvent(free_ann.scenePos()))
+        free_texts = [a.text() for a in captured[-1].actions()]
+        linked_ann.contextMenuEvent(_FakeMenuEvent(linked_ann.mapToScene(QtCore.QPointF(0, 0))))
+        linked_texts = [a.text() for a in captured[-1].actions()]
+    finally:
+        QtWidgets.QMenu.exec_ = real_exec
+
+    assert any(t.startswith("Link to subplot") for t in free_texts), free_texts
+    assert not any(t.startswith("Link to subplot") for t in linked_texts), linked_texts
     f.close()

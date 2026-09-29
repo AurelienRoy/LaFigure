@@ -32,11 +32,12 @@ own figure and disconnects its slot when done.
 """
 import contextlib
 
-from pyqtgraph.Qt import QtCore
+from pyqtgraph.Qt import QtCore, QtWidgets
 
 from tests.helpers import (
     app, m, SHIFT, shown_figure, first_curve, _click_subplot, _click_curve,
     _click_annotation, _selection_figure, _press_escape, _key, _band_drag,
+    FakePressEvent,
 )
 
 
@@ -106,6 +107,33 @@ def test_rename_figure_round_trips_and_emits_figure_renamed():
         assert f.windowTitle() == "Test rig 3" and len(renamed) == 3
         f.rename_figure("Test rig 3")
         assert len(renamed) == 3 and len(f.undo_stack) == n_undo + 1, "same name: no-op"
+    f.close()
+
+
+def test_legend_rename_propagates_everywhere_and_is_undoable():
+    """wire_legend_editable used to just set the legend label's own
+    displayed text -- curve.opts['name'] (what the Curve Browser, CSV
+    export, etc. all read) stayed untouched, and the edit wasn't undoable."""
+    f = shown_figure()
+    p = f.plots[0]
+    f._show_legend(p)
+    app.processEvents()
+    curve = first_curve(p)
+    sample, label = p.legend.items[0]
+    assert sample.item is curve
+    n_undo = len(f.undo_stack)
+    saved = QtWidgets.QInputDialog.getText
+    QtWidgets.QInputDialog.getText = staticmethod(lambda *a, **k: ("Renamed", True))
+    with _recording(f.registry.subplotsChanged, f) as changed:
+        try:
+            label.mouseDoubleClickEvent(FakePressEvent(QtCore.QPointF(0, 0)))
+        finally:
+            QtWidgets.QInputDialog.getText = saved
+        assert curve.name() == "Renamed", "must go through _apply_curve_rename, not just label.setText"
+        assert changed, "the Curve/Figure Browser rebuild from this signal"
+    assert len(f.undo_stack) == n_undo + 1
+    f.undo()
+    assert curve.name() == "signal A"
     f.close()
 
 

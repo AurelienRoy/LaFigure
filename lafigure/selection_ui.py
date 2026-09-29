@@ -138,11 +138,15 @@ class SelectionUIMixin:
                 break
 
         if (hit_plot is None and ev.button() == QtCore.Qt.RightButton
-                and not ev.double() and not ev.isAccepted()):
+                and not ev.double() and not ev.isAccepted()
+                and self._annotation_at(pos) is None):
             # A right-click inside some subplot's ViewBox already gets its
             # own context menu from pyqtgraph (see _wire_context_menu) --
             # this covers right-clicking truly empty space instead, which
-            # otherwise did nothing but deselect everything.
+            # otherwise did nothing but deselect everything. A right-click
+            # on a figure/border-anchored annotation (outside every
+            # subplot) is excluded too: its own contextMenuEvent (a
+            # separate native Qt event) already handles that click.
             self._show_empty_space_menu()
             return
 
@@ -197,6 +201,15 @@ class SelectionUIMixin:
         self.focused_plot = plots[-1]
         self.selected_plots = list(plots)
         self._mark_active(self.focused_plot, keep_selection=True)
+
+    def _select_annotations(self, anns):
+        """Exclusively select `anns` (e.g. just-pasted annotations)."""
+        self._clear_selection()
+        self._mark_active(self.focused_plot, keep_selection=True)
+        for a in anns:
+            self.selected_annotations.append(a)
+            a.set_selected(True)
+        self.active_annotation = anns[-1] if anns else None
 
     def _on_scene_hovered(self, pos):
         """sigMouseMoved gives scene coords directly (unlike sigMouseClicked's

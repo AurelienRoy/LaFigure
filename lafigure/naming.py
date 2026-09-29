@@ -77,7 +77,8 @@ class NamingMixin:
         if plot_item.legend is not None:
             plot_item.legend.removeItem(old_name)
             plot_item.legend.addItem(curve, new_name)
-            wire_legend_editable(plot_item.legend)
+            wire_legend_editable(self, plot_item, plot_item.legend)
+        self.registry.notify_subplots_changed(self)
 
     def _rename_curve(self, plot_item, curve):
         """Renames every selected curve to the same new name if `curve`

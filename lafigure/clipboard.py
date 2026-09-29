@@ -31,22 +31,24 @@ Ctrl+C in one window and Ctrl+V in another needs a clipboard that isn't
 scoped to either instance -- hence a module-level singleton, same pattern
 as registry.get_registry().
 
-Both `curve` and `subplot` are lists, one entry per copied item -- Shift+
-click can multi-select curves/subplots, and Copy/Paste (see
-LaFigure.copy_curve/copy_subplot) act on the whole selection, not just
-one. `curve` is a list of (x, y, pen, name) tuples. `subplot` is a list of
-plain dicts: {title, xlabel, ylabel, curves, annotations}, where curves is
-again a list of (x, y, pen, name) tuples -- the same shape
-LaFigure._insert_subplot_at already consumes, so paste_subplot is a
-thin wrapper, not a parallel reconstruction path. annotations is a list of
-AnnotationItem.to_dict() dicts (added in the annotations module), empty
-until that phase populates it. Either list is None (not just empty) until
-the first copy of that kind.
+`curve`, `subplot` and `annotation` are all lists, one entry per copied
+item -- Shift+click can multi-select curves/subplots/annotations, and
+Copy/Paste (see LaFigure.copy_curve/copy_subplot/copy_annotation) act on
+the whole selection, not just one. `curve` is a list of (x, y, pen, name)
+tuples. `subplot` is a list of plain dicts: {title, xlabel, ylabel,
+curves, annotations}, where curves is again a list of (x, y, pen, name)
+tuples -- the same shape LaFigure._insert_subplot_at already consumes, so
+paste_subplot is a thin wrapper, not a parallel reconstruction path.
+annotations is a list of AnnotationItem.to_dict() dicts. `annotation` is a
+list of AnnotationItem.to_dict() dicts too -- the same shape, reused
+directly by LaFigure.paste_annotation (annotation_ops.py's
+AnnotationItem.from_dict is the one reconstruction path either way). Any
+list is None (not just empty) until the first copy of that kind.
 
-last_copied records which of the two ('curve' or 'subplot') was most
-recently copied, so a plain Ctrl+V (LaFigure.paste_selection) can
-mirror whichever a plain Ctrl+C most recently copied, instead of always
-pasting a curve.
+last_copied records which of the three ('curve', 'subplot' or
+'annotation') was most recently copied, so a plain Ctrl+V
+(LaFigure.paste_selection) can mirror whichever a plain Ctrl+C most
+recently copied, instead of always pasting a curve.
 """
 
 _clipboard = None
@@ -56,7 +58,8 @@ class Clipboard:
     def __init__(self):
         self.curve = None        # list of (x, y, pen, name), or None
         self.subplot = None      # list of dict, or None
-        self.last_copied = None  # 'curve' or 'subplot', or None
+        self.annotation = None   # list of AnnotationItem.to_dict(), or None
+        self.last_copied = None  # 'curve', 'subplot', 'annotation', or None
 
 
 def get_clipboard():

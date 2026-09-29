@@ -68,15 +68,36 @@ def wire_plot_labels_editable(plot_item):
         )
 
 
-def wire_legend_editable(legend):
-    """Double-click a legend entry's text to rename that curve."""
+def wire_legend_editable(figure, plot_item, legend):
+    """Double-click a legend entry's text to rename that curve.
+
+    Goes through the same undoable rename path as the curve menu's Rename
+    (NamingMixin._apply_curve_rename) instead of just setting the legend
+    label's own displayed text -- the latter used to leave curve.opts
+    ['name'] untouched, so the new name never reached anywhere else that
+    reads it (the Curve browser, Export to CSV's header, ...)."""
     for sample, label in legend.items:
-        def make_set(label=label):
-            return lambda t: label.setText(t)
+        curve = sample.item
+
+        def make_set(curve=curve):
+            def set_text(new_name):
+                old_name = curve.name() or ""
+                if new_name == old_name:
+                    return
+
+                def apply_new():
+                    figure._apply_curve_rename(plot_item, curve, new_name)
+
+                def undo_fn():
+                    figure._apply_curve_rename(plot_item, curve, old_name)
+
+                apply_new()
+                figure._push_history(undo_fn=undo_fn, redo_fn=apply_new)
+            return set_text
 
         make_click_editable(
             label,
-            get_text=lambda label=label: label.text,
+            get_text=lambda curve=curve: curve.name() or "",
             set_text=make_set(),
             prompt="New curve name:",
         )

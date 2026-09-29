@@ -32,6 +32,8 @@ the rows a series isn't drawing right now, and hides them again. A copied
 series keeps its DataSource by reference, so a paste -- in any window --
 stays linked to it (brushing, hidden rows).
 """
+from pyqtgraph.Qt import QtCore
+
 from .annotations import AnnotationItem
 from .selection_ui import selection_op
 from .groups import groups_from_dict
@@ -44,9 +46,18 @@ class ClipOpsMixin:
         """Del key / toolbar Delete: remove everything selected, whatever
         its kind, as one undo entry.
 
+        In Brush mode, Del instead removes the brushed points (the
+        figure-wide brushed selection, not selected_plots/curves/
+        annotations -- see brushing.py; Brush mode disables normal
+        subplot/curve/annotation selection anyway, so this Del would
+        otherwise do nothing useful).
+
         Curves and subplot-owned annotations on a subplot that is itself
         being deleted are skipped: the subplot's own undo restores them,
         while their separate undo steps would target the dead PlotItem."""
+        if self.brushing:
+            self.delete_brushed_points()
+            return
         doomed_plots = list(self.selected_plots)
         if self.selected_legend is not None and self.selected_legend.legend is not None:
             # View state, like Toggle Legend -- not an undo entry.
@@ -72,6 +83,11 @@ class ClipOpsMixin:
         brusher = self._brushers.get(plot_item)
         if brusher is not None:
             brusher.forget_curve(curve)
+        # See series.py's _add_series for why: the Curve/Figure Browser
+        # trees rebuild from this signal, and undo's re-add already
+        # triggers it via _add_series_restoring -> _add_series, but this
+        # removal and redo's (below) don't go through _add_series at all.
+        self.registry.notify_subplots_changed(self)
 
         holder = {}
 
@@ -83,18 +99,28 @@ class ClipOpsMixin:
             if c is not None:
                 plot_item.removeItem(c)
                 self._forget_curve_selection(c)
+                self.registry.notify_subplots_changed(self)
 
         self._push_history(undo_fn, redo_fn)
 
-    # -- Ctrl+C / Ctrl+V: dispatch to curve or subplot copy/paste --------
+    # -- Ctrl+C / Ctrl+V: dispatch to curve, subplot or annotation copy/paste
     def copy_selection(self):
         """Ctrl+C: copy the selected curve(s) if any curve is selected
         (Shift+click to select more than one), else the selected
-        subplot(s) -- without this, Ctrl+C always copied a curve even when
-        only a subplot had ever been selected, silently duplicating a
-        curve on paste instead of the subplot."""
+        annotation(s) if any are selected and no subplot is (selection is
+        exclusive across kinds unless Shift is held, so this only matters
+        for a mixed Shift-selection -- see CLAUDE.md), else the selected
+        subplot(s) -- without the first check, Ctrl+C always copied a
+        curve even when only a subplot had ever been selected, silently
+        duplicating a curve on paste instead of the subplot. The subplot
+        branch keeps its original fallback (copy_subplot() itself falls
+        back to focused_plot when nothing is explicitly selected) so a
+        plain click into a subplot with nothing selected still copies it,
+        exactly as before annotations became copyable."""
         if self.selected_curves:
             self.copy_curve()
+        elif self.selected_annotations and not self.selected_plots:
+            self.copy_annotation()
         elif self.focused_plot is not None:
             self.copy_subplot()
 
@@ -104,6 +130,8 @@ class ClipOpsMixin:
         equivalents (see Clipboard.last_copied)."""
         if self.clipboard.last_copied == 'subplot':
             self.paste_subplot()
+        elif self.clipboard.last_copied == 'annotation':
+            self.paste_annotation()
         else:
             self.paste_curve()
 
@@ -217,3 +245,71 @@ class ClipOpsMixin:
             self._select_plots(holder['plots'])
 
         self._push_history(undo_fn, redo_fn)
+
+    # -- copy / paste annotations, including across separate figure
+    # windows (via the process-wide Clipboard) ---------------------------
+    ANNOTATION_PASTE_OFFSET_PX = 20
+
+    def copy_annotation(self):
+        """Copies every selected annotation (Shift+click to select more
+        than one)."""
+        if not self.selected_annotations:
+            return
+        self.clipboard.annotation = [a.to_dict() for a in self.selected_annotations]
+        self.clipboard.last_copied = 'annotation'
+
+    def paste_annotation(self):
+        """Pastes every copied annotation, offset a few screen pixels from
+        where it was copied (_offset_pasted_annotation) so a same-window
+        paste doesn't land exactly on top of the original. An 'axes'/
+        'border'-anchored one lands on the FOCUSED subplot -- same target
+        convention paste_curve already uses, not necessarily the subplot
+        it was copied from -- and is skipped if nothing is focused; a
+        'figure'-anchored one just needs this window."""
+        data_list = self.clipboard.annotation
+        if not data_list:
+            return
+        target_plot = self.focused_plot
+
+        def build():
+            new_anns = []
+            for data in data_list:
+                if data['anchor'] != 'figure' and target_plot is None:
+                    continue
+                parent_plot = target_plot if data['anchor'] != 'figure' else None
+                ann = AnnotationItem.from_dict(self, parent_plot, data)
+                self._offset_pasted_annotation(ann)
+                new_anns.append(ann)
+            return new_anns
+
+        holder = {'anns': build()}
+        if not holder['anns']:
+            return
+        self._select_annotations(holder['anns'])
+
+        def undo_fn():
+            for a in holder.get('anns', []):
+                self._purge_annotation(a)
+            holder['anns'] = []
+
+        def redo_fn():
+            holder['anns'] = build()
+            self._select_annotations(holder['anns'])
+
+        self._push_history(undo_fn, redo_fn)
+
+    def _offset_pasted_annotation(self, ann):
+        """Nudges a just-pasted annotation ANNOTATION_PASTE_OFFSET_PX
+        screen pixels right/down from wherever from_dict placed it --
+        computed in scene (screen-pixel) space and converted into `ann`'s
+        own parent frame (data units for 'axes', scene pixels for
+        'figure'/'border'), same approach the Shift move-constraint uses
+        (annotations.py). For 'border', anchor_offset (a box-relative
+        fraction, the actual source of truth for its position -- see
+        _place_border_annotation) is refreshed too, mirroring
+        AnnotationItem._push_move_history's own pattern for a real drag."""
+        delta = QtCore.QPointF(self.ANNOTATION_PASTE_OFFSET_PX, self.ANNOTATION_PASTE_OFFSET_PX)
+        new_pos = ann._parent_point(ann.scenePos() + delta)
+        ann.setPos(new_pos)
+        if ann.anchor == 'border' and ann.parent_plot in self.plots:
+            ann.anchor_offset = self._box_fraction(ann.parent_plot, new_pos)

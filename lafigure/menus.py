@@ -185,6 +185,13 @@ class MenusMixin:
         native_raise = vb.raiseContextMenu
 
         def raise_context_menu(ev):
+            # An annotation's own contextMenuEvent (a native Qt event,
+            # independent of this ViewBox-level dispatch) already handles
+            # a right-click on it -- without this check, both menus opened
+            # at once. Checked in every mode, including Brush: the
+            # annotation menu should still win there too.
+            if self._annotation_at(ev.scenePos()) is not None:
+                return
             # Brush mode keeps the subplot menu everywhere: its brushed-point
             # actions are what a right-click on brushed points is for.
             curve = None
