@@ -113,11 +113,21 @@ def _row_ids(series, n):
 
 def _point_xy(series):
     """(x, y, rows) if the series is an x/y point cloud, one point per row
-    -- the full data from get_xy, not the display -- else None."""
+    -- the full data from get_xy, not the display -- else None. A 3D
+    kind's get_xy is (positions (N, 3), None) -- one row per point same as
+    any other point cloud, so it counts too (using only the x/y columns:
+    this is for row *membership*, e.g. positions_of_rows below, which
+    never reads the actual coordinates back)."""
     x, y = series.kind_obj.get_xy(series.item)
-    if x is None or y is None:
+    if x is None:
         return None
-    x, y = np.asarray(x), np.asarray(y)
+    x = np.asarray(x)
+    if y is None:
+        if x.ndim != 2 or x.shape[1] != 3:
+            return None
+        rows = _row_ids(series, x.shape[0])
+        return None if rows is None else (x[:, 0], x[:, 1], rows)
+    y = np.asarray(y)
     if x.ndim != 1 or x.shape != y.shape:
         return None
     rows = _row_ids(series, len(x))

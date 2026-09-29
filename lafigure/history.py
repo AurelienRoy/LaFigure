@@ -61,10 +61,24 @@ class HistoryMixin:
             self.undo_stack.pop(0)
         self.redo_stack.clear()
         self._update_undo_redo_actions()
+        self._resync_cursor_points()
 
     def _update_undo_redo_actions(self):
         self.undo_action.setEnabled(bool(self.undo_stack))
         self.redo_action.setEnabled(bool(self.redo_stack))
+
+    def _resync_cursor_points(self):
+        """Best-effort: re-derive every data-cursor annotation's position/
+        label from its point_ref against whatever the data is now. Cheap
+        (annotation counts stay small) and idempotent, so it's safe to run
+        after any undoable action and after undo/redo -- a cursor
+        genuinely just tracks its point, it doesn't need its own separate
+        undo entry for that (only for existing/not existing at all, which
+        brushing.delete_brushed_points handles precisely, at the moment a
+        point is actually removed from its curve)."""
+        for ann in list(self.annotations):
+            if ann.kind == 'cursor' and ann.point_ref is not None:
+                ann.refresh_point()
 
     def undo(self):
         self._close_wheel_gesture()
@@ -74,6 +88,7 @@ class HistoryMixin:
         undo_fn()
         self.redo_stack.append((undo_fn, redo_fn))
         self._update_undo_redo_actions()
+        self._resync_cursor_points()
 
     def redo(self):
         self._close_wheel_gesture()
@@ -83,3 +98,4 @@ class HistoryMixin:
         redo_fn()
         self.undo_stack.append((undo_fn, redo_fn))
         self._update_undo_redo_actions()
+        self._resync_cursor_points()

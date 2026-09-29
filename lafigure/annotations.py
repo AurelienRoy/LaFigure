@@ -89,8 +89,10 @@ NO_ROTATE_KINDS = ('cursor', 'line', 'arrow', 'doublearrow', 'textarrow')
 
 # Kinds whose selected-outline is a box oriented along p0->p1 (tight around
 # the segment) instead of the axis-aligned box of the two endpoints, which
-# wastes visible space once the segment isn't horizontal/vertical.
-ORIENTED_OUTLINE_KINDS = ('line', 'arrow', 'doublearrow', 'textarrow')
+# wastes visible space once the segment isn't horizontal/vertical. 'cursor'
+# joins these (2026-09-29): its p0->p1_local segment (marker -> label) is
+# exactly the same shape, so the same scene-space math applies unchanged.
+ORIENTED_OUTLINE_KINDS = ('line', 'arrow', 'doublearrow', 'textarrow', 'cursor')
 
 SUBPLOT_FILIATION_COLOR = QtGui.QColor(220, 40, 40)
 FIGURE_FILIATION_COLOR = QtGui.QColor(120, 120, 120)
@@ -201,8 +203,13 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     HANDLE_SIZE = 8
     ROTATE_OFFSET = 34  # constant on-screen px above the shape's center, pre-rotation
     SHIFT_SNAP_DEG = 45  # LibreOffice-Draw-style constraint step while Shift is held
+    # 'cursor' only: how far back toward p0 its end handle sits, as a
+    # fraction of p1_local -- pulled off the exact label point (see
+    # paint()'s cursor branch, which centers the text bubble there too),
+    # so the opaque handle box doesn't mask the text.
+    END_HANDLE_PULLBACK = 0.7
 
-    def __init__(self, figure, kind, anchor, parent_plot, pen, brush=None, text=''):
+    def __init__(self, figure, kind, anchor, parent_plot, pen, brush=None, text='', point_ref=None):
         super().__init__()
         self.figure = figure
         self.kind = kind
@@ -211,6 +218,13 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         self.pen = pen
         self.brush = brush
         self.text = text
+        # 'cursor' only: {'is_3d', 'curve_index', 'row'} -- which curve/
+        # series entry this cursor is pinned to, resolved fresh (never a
+        # live object reference, which would go stale across undo/redo --
+        # see CLAUDE.md's staleness lesson) by annotation_ops.py's
+        # _plot_data_items_for_ref. None for a free-floating cursor placed
+        # with no curve under it, or any other shape kind.
+        self.point_ref = point_ref
         # Offset from parent subplot's top-left, in scene px; only used for anchor=='border'.
         self.anchor_offset = QtCore.QPointF(0, 0)
 
@@ -259,7 +273,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
                 on_release=self._on_endpoint_release,
             )
             self._end_handle.setParentItem(self)
-            self._end_handle.setPos(self.p1_local)
+            self._end_handle.setPos(self._end_handle_pos())
 
         # TWO_ENDPOINT_KINDS get a second handle at p0 (this item's own
         # origin, always local (0,0) by this class's convention -- see
@@ -287,6 +301,23 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             self._rotate_handle.setParentItem(self)
             self._position_rotate_handle()
 
+        # 'cursor' only: a handle at p0 (its own origin) that re-picks
+        # WHICH sample this cursor is pinned to, on the SAME curve/series
+        # point_ref already names (never a different one -- confirmed with
+        # the user via /lafigure-scope) -- unlike TWO_ENDPOINT_KINDS'
+        # _start_handle, which moves p0 freely. p0 stays fixed exactly on
+        # a curve value at all times; only WHICH value it names changes.
+        self._anchor_handle = None
+        self._anchor_drag_origin = None
+        if kind == 'cursor':
+            self._anchor_handle = AnnotationHandle(
+                self.HANDLE_SIZE, on_press=self._on_anchor_press,
+                on_move=self._on_anchor_drag, on_release=self._on_anchor_release,
+                cursor=QtCore.Qt.PointingHandCursor,
+            )
+            self._anchor_handle.setParentItem(self)
+            self._anchor_handle.setPos(0, 0)
+
         self.set_selected(False)
 
     # -- geometry ----------------------------------------------------
@@ -312,6 +343,17 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         if self.p1_local is not None:
             return QtCore.QPointF(self.p1_local) / 2
         return QtCore.QPointF(0, 0)
+
+    def _end_handle_pos(self):
+        """Where the end-point drag handle sits: exactly at p1_local for
+        every kind except 'cursor', which pulls it back toward p0 (see
+        END_HANDLE_PULLBACK) so it doesn't sit on top of the label's own
+        text bubble -- both would otherwise be centered on the same point."""
+        if self.p1_local is None:
+            return QtCore.QPointF(0, 0)
+        if self.kind == 'cursor':
+            return self.p1_local * self.END_HANDLE_PULLBACK
+        return QtCore.QPointF(self.p1_local)
 
     def _position_rotate_handle(self):
         center = self._shape_center_local()
@@ -466,10 +508,51 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     # -- selection / handles ------------------------------------------
     def set_selected(self, selected):
         self._selected = selected
-        for handle in (self._end_handle, self._rotate_handle, self._start_handle):
+        for handle in (self._end_handle, self._rotate_handle, self._start_handle, self._anchor_handle):
             if handle is not None:
                 handle.setVisible(selected)
         self.update()
+
+    # -- anchor handle ('cursor' only): re-pick WHICH sample p0 names -----
+    def _on_anchor_press(self, scene_pos):
+        self._anchor_drag_origin = {
+            'pos': QtCore.QPointF(self.pos()),
+            'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
+            'text': self.text,
+        }
+
+    def _on_anchor_drag(self, scene_pos):
+        if self.point_ref is None or self.parent_plot is None:
+            return
+        hit = self.figure._nearest_sample_on_ref(self.parent_plot, self.point_ref, scene_pos)
+        if hit is None:
+            return
+        new_ref, local_pos, text = hit
+        self.prepareGeometryChange()
+        self.point_ref = new_ref
+        self.setPos(local_pos)
+        self.text = text
+        self.update()
+
+    def _on_anchor_release(self, scene_pos):
+        old = self._anchor_drag_origin
+        self._anchor_drag_origin = None
+        if old is None or old['point_ref'] == self.point_ref:
+            return  # never actually landed on a different sample
+        new = {
+            'pos': QtCore.QPointF(self.pos()),
+            'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
+            'text': self.text,
+        }
+
+        def apply(state):
+            self.prepareGeometryChange()
+            self.point_ref = dict(state['point_ref']) if state['point_ref'] is not None else None
+            self.setPos(state['pos'])
+            self.text = state['text']
+            self.update()
+
+        self.figure._push_history(undo_fn=lambda: apply(old), redo_fn=lambda: apply(new))
 
     # -- whole-body drag (native Qt overrides -- see CLAUDE.md) ----------
     def _parent_point(self, scene_pt):
@@ -603,7 +686,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
                 self.kind, scene_pos - origin_scene, self.SHIFT_SNAP_DEG)
         self.p1_local = self.mapFromScene(scene_pos)
         if self._end_handle is not None:
-            self._end_handle.setPos(self.p1_local)
+            self._end_handle.setPos(self._end_handle_pos())
         if self._rotate_handle is not None:
             self._position_rotate_handle()
         self.update()
@@ -619,7 +702,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             self.prepareGeometryChange()
             self.p1_local = pt
             if self._end_handle is not None:
-                self._end_handle.setPos(pt)
+                self._end_handle.setPos(self._end_handle_pos())
             if self._rotate_handle is not None:
                 self._position_rotate_handle()
             self.update()
@@ -661,7 +744,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         self.setPos(self._parent_point(scene_pos))
         self.p1_local = self.mapFromParent(self._start_drag_p1_abs)
         if self._end_handle is not None:
-            self._end_handle.setPos(self.p1_local)
+            self._end_handle.setPos(self._end_handle_pos())
         if self._rotate_handle is not None:
             self._position_rotate_handle()
         self.update()
@@ -682,7 +765,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             if self.anchor == 'border' and self.parent_plot in self.figure.plots:
                 self.anchor_offset = self.figure._box_fraction(self.parent_plot, pos)
             if self._end_handle is not None:
-                self._end_handle.setPos(p1)
+                self._end_handle.setPos(self._end_handle_pos())
             if self._rotate_handle is not None:
                 self._position_rotate_handle()
             self.update()
@@ -758,6 +841,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             'pen': _pen_to_tuple(self.pen),
             'brush': _brush_to_tuple(self.brush),
             'rotation': self.rotation(),
+            'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
         }
 
     @classmethod
@@ -768,22 +852,82 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         from). anchor='figure' annotations are never included in a
         subplot's serialized dict in the first place (see
         LaFigure.copy_subplot), so parent_plot is always a real
-        PlotItem here."""
+        PlotItem here. A carried-over point_ref's curve_index is resolved
+        fresh against `parent_plot`'s CURRENT curve list on the next
+        refresh_point(), so it still points at the right curve after a
+        cross-figure paste as long as that figure's curves are in the same
+        order (paste_subplot rebuilds them in their original order)."""
         ann = cls(
             figure, data['kind'], data['anchor'], parent_plot,
             pen=_pen_from_tuple(data['pen']), brush=_brush_from_tuple(data['brush']),
-            text=data.get('text', ''),
+            text=data.get('text', ''), point_ref=data.get('point_ref'),
         )
         if data['p1_local'] is not None:
             ann.p1_local = QtCore.QPointF(*data['p1_local'])
             if ann._end_handle is not None:
-                ann._end_handle.setPos(ann.p1_local)
+                ann._end_handle.setPos(ann._end_handle_pos())
         if ann._rotate_handle is not None:
             ann._position_rotate_handle()
         ann._apply_rotation(data.get('rotation', 0))
         ann.anchor_offset = QtCore.QPointF(*data['anchor_offset'])
         figure._add_annotation_to_scene(ann, QtCore.QPointF(*data['pos']))
         return ann
+
+    # -- live point tracking (self.kind == 'cursor' only) ------------------
+    def refresh_point(self):
+        """Re-derive this cursor's position and label from point_ref
+        against the CURRENT data -- never a value frozen at placement
+        time. Resolves via the referenced curve/series' full data (not
+        just what it's currently drawing), so a hide/show cycle doesn't
+        disturb it; only annotation_ops.py's/brushing.py's own delete path
+        removes the annotation outright, precisely when its own row is
+        removed from that curve (see brushing.delete_brushed_points).
+
+        Safe to call whenever -- best-effort: if the reference can't be
+        resolved at all (curve gone, index out of range), it just leaves
+        the annotation where it last was rather than raising. Returns
+        whether it resolved.
+
+        For an 'axes'-anchored cursor on a 3D cell, self.pos() is set to
+        the item's current PROJECTED screen pixel (View3DBox.projected),
+        not a data-space point -- 'axes' anchor on a 3D cell already lives
+        in the rendered image's own pixel space (see view3d.py's module
+        docstring), so this is what makes the cursor follow the camera on
+        orbit/pan/dolly: View3DBox.render_now calls this after every
+        render, i.e. after every camera move."""
+        ref = self.point_ref
+        if ref is None or self.parent_plot is None or self.figure is None:
+            return True
+        item = self.figure._cursor_ref_item(self.parent_plot, ref)
+        if item is None:
+            return False
+        series = self.figure._series_of(item)
+        array_idx = self.figure._cursor_ref_array_index(series, item, ref)
+        if array_idx is None:
+            return False
+        is_3d = bool(ref.get('is_3d'))
+        if is_3d:
+            xyz = item.positions()
+            if array_idx >= len(xyz):
+                return False
+            x, y, z = (float(v) for v in xyz[array_idx])
+            vb = self.parent_plot.getViewBox()
+            sx, sy, front = vb.projected(item)
+            if array_idx >= len(sx) or not bool(front[array_idx]):
+                return False
+            self.prepareGeometryChange()
+            self.setPos(QtCore.QPointF(float(sx[array_idx]), float(sy[array_idx])))
+        else:
+            x_arr, y_arr = item.xData, item.yData
+            if x_arr is None or array_idx >= len(x_arr):
+                return False
+            x, y, z = float(x_arr[array_idx]), float(y_arr[array_idx]), None
+            self.prepareGeometryChange()
+            self.setPos(QtCore.QPointF(x, y))
+        from .console import datatip_text
+        self.text = datatip_text(self.figure, self.parent_plot, item, array_idx, x, y, z=z)
+        self.update()
+        return True
 
     # -- context menu (native override -- see CLAUDE.md) -------------------
     def contextMenuEvent(self, ev):

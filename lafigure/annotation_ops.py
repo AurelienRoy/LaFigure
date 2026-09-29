@@ -114,6 +114,126 @@ class AnnotationOpsMixin:
                 return 'border', p
         return 'figure', None
 
+    # -- data-cursor point references ('cursor' annotations only) ----------
+    # A cursor's point_ref is {'is_3d', 'curve_index', 'row'}: 'curve_index'
+    # is resolved fresh, every time, against the CURRENT curve/series list
+    # of its parent_plot (never a live object reference held across undo/
+    # redo, which would go stale -- see CLAUDE.md's staleness lesson on
+    # this exact pattern for a curve). 'row' is a DataSource row id for a
+    # source-backed series (stable across a delete elsewhere/hide/paste --
+    # see the data model docs), or a plain array index for a private
+    # series (which has no stable id at all; an unrelated delete on that
+    # same series can shift it -- a known, inherent limit of a plain-array
+    # series, not something a cursor reference can fix).
+    def _plot_data_items_for_ref(self, parent_plot, is_3d):
+        """The ordered list curve_index indexes into: PlotDataItems for a
+        2D subplot, Series3DItems for a 3D one."""
+        if is_3d:
+            vb = parent_plot.getViewBox()
+            return list(getattr(vb, '_series_items', []))
+        return [c for c in parent_plot.listDataItems() if isinstance(c, pg.PlotDataItem)]
+
+    @staticmethod
+    def _row_id(series, array_idx):
+        """The stable id to store in a point_ref for entry `array_idx` of
+        `series`'s current data: its DataSource row if it has one, else
+        the array index itself (see the class of helpers' own docstring)."""
+        if series is not None and series.rows is not None:
+            return int(series.rows[array_idx])
+        return int(array_idx)
+
+    def _cursor_ref_item(self, parent_plot, point_ref):
+        """The curve/series `point_ref['curve_index']` currently names on
+        `parent_plot`, or None if it's out of range (that curve is gone)."""
+        items = self._plot_data_items_for_ref(parent_plot, bool(point_ref.get('is_3d')))
+        idx = point_ref['curve_index']
+        return items[idx] if 0 <= idx < len(items) else None
+
+    @staticmethod
+    def _cursor_ref_array_index(series, item, point_ref):
+        """Where point_ref['row'] currently sits in `item`'s own data --
+        re-searched every time (never cached), since a source-backed
+        series' displayed rows can be reordered/narrowed (e.g. by Delete
+        Selected Points) out from under a stale array index. None if that
+        row isn't (or is no longer) part of what this series draws."""
+        row_id = point_ref['row']
+        if series is not None and series.rows is not None:
+            pos = np.nonzero(np.asarray(series.rows) == row_id)[0]
+            return int(pos[0]) if pos.size else None
+        is_3d = bool(point_ref.get('is_3d'))
+        n = len(item.positions()) if is_3d else (0 if item.xData is None else len(item.xData))
+        return row_id if 0 <= row_id < n else None
+
+    def _nearest_3d_point(self, parent_plot, scene_pos):
+        """The closest entry, across every Series3DItem on this 3D cell, to
+        a click at `scene_pos` -- in the cell's own projected screen space
+        (View3DBox.projected, the same cached per-camera-state projection
+        brushing uses), since a 3D click can't be compared to data-space
+        curve samples the way a 2D click is. Returns (item, array_index,
+        (x, y, z), local_pos) or None if the cell has no visible points;
+        `local_pos` is the item's current projected pixel, in this
+        ViewBox's own local (pinned-pixel) coordinate space -- what
+        _create_annotation's `p0` expects for anchor='axes' here (see
+        view3d.py's module docstring: 'axes' anchor on a 3D cell already
+        lives in the rendered image's own pixel space)."""
+        vb = parent_plot.getViewBox()
+        click = vb.mapSceneToView(scene_pos)
+        best = None
+        for item in list(getattr(vb, '_series_items', [])):
+            sx, sy, front = vb.projected(item)
+            if len(sx) == 0:
+                continue
+            d2 = np.where(front, (sx - click.x()) ** 2 + (sy - click.y()) ** 2, np.inf)
+            row = int(np.argmin(d2))
+            if not np.isfinite(d2[row]):
+                continue
+            if best is None or d2[row] < best[0]:
+                xyz = item.positions()[row]
+                best = (d2[row], item, row,
+                        (float(xyz[0]), float(xyz[1]), float(xyz[2])),
+                        QtCore.QPointF(float(sx[row]), float(sy[row])))
+        if best is None:
+            return None
+        _, item, row, xyz, local_pos = best
+        return item, row, xyz, local_pos
+
+    def _nearest_sample_on_ref(self, parent_plot, point_ref, scene_pos):
+        """While dragging a cursor's own anchor handle (annotations.py's
+        AnnotationHandle._on_anchor_drag): the nearest sample to a live
+        drag position, on THE SAME curve/series point_ref already names --
+        never a different one, the user's own confirmed choice. Returns
+        (new_point_ref, local_pos, text) or None if that curve is gone."""
+        item = self._cursor_ref_item(parent_plot, point_ref)
+        if item is None:
+            return None
+        series = self._series_of(item)
+        is_3d = bool(point_ref.get('is_3d'))
+        if is_3d:
+            vb = parent_plot.getViewBox()
+            click = vb.mapSceneToView(scene_pos)
+            sx, sy, front = vb.projected(item)
+            if len(sx) == 0:
+                return None
+            d2 = np.where(front, (sx - click.x()) ** 2 + (sy - click.y()) ** 2, np.inf)
+            row = int(np.argmin(d2))
+            if not np.isfinite(d2[row]):
+                return None
+            xyz = item.positions()[row]
+            new_ref = dict(point_ref, row=self._row_id(series, row))
+            local_pos = QtCore.QPointF(float(sx[row]), float(sy[row]))
+            text = datatip_text(self, parent_plot, item, row,
+                                 float(xyz[0]), float(xyz[1]), z=float(xyz[2]))
+            return new_ref, local_pos, text
+        x_arr, y_arr = item.xData, item.yData
+        if x_arr is None or not len(x_arr):
+            return None
+        data_pos = parent_plot.getViewBox().mapSceneToView(scene_pos)
+        row = int(np.argmin(np.abs(np.asarray(x_arr) - data_pos.x())))
+        new_ref = dict(point_ref, row=self._row_id(series, row))
+        local_pos = QtCore.QPointF(float(x_arr[row]), float(y_arr[row]))
+        text = datatip_text(self, parent_plot, item, row, float(x_arr[row]), float(y_arr[row]))
+        return new_ref, local_pos, text
+
     def _annotation_at(self, scene_pos):
         """The topmost annotation whose shape contains scene_pos, or None.
         Mirrors _curve_at's role (menus.py) for annotations: an
@@ -161,17 +281,37 @@ class AnnotationOpsMixin:
         if kind == 'cursor':
             if anchor != 'axes':
                 return  # a data cursor needs a subplot's data axes -- ignore clicks elsewhere
+            if getattr(parent_plot, 'axes_type', 'cartesian') == '3d':
+                hit = self._nearest_3d_point(parent_plot, scene_pos)
+                if hit is None:
+                    self._cancel_placing()
+                    return
+                item, array_idx, (x, y, z), local_pos = hit
+                series = self._series_of(item)
+                items = self._plot_data_items_for_ref(parent_plot, True)
+                point_ref = {'is_3d': True, 'curve_index': items.index(item),
+                             'row': self._row_id(series, array_idx)}
+                text = datatip_text(self, parent_plot, item, array_idx, x, y, z=z)
+                self._create_annotation('cursor', 'axes', parent_plot, local_pos,
+                                         None, text=text, point_ref=point_ref)
+                self._cancel_placing()
+                return
             data_pos = parent_plot.getViewBox().mapSceneToView(scene_pos)
             curve = self._active_curve_on(parent_plot)
             idx = None
+            point_ref = None
             if curve is not None and curve.xData is not None and curve.xData.size:
                 idx = int(np.argmin(np.abs(curve.xData - data_pos.x())))
                 x, y = float(curve.xData[idx]), float(curve.yData[idx])
+                series = self._series_of(curve)
+                items = self._plot_data_items_for_ref(parent_plot, False)
+                point_ref = {'is_3d': False, 'curve_index': items.index(curve),
+                             'row': self._row_id(series, idx)}
             else:
                 x, y = data_pos.x(), data_pos.y()
             text = datatip_text(self, parent_plot, curve, idx, x, y)
             self._create_annotation('cursor', 'axes', parent_plot, QtCore.QPointF(x, y),
-                                     None, text=text)
+                                     None, text=text, point_ref=point_ref)
             self._cancel_placing()
             return
 
@@ -256,14 +396,15 @@ class AnnotationOpsMixin:
                 return True
         return super().eventFilter(obj, event)
 
-    def _create_annotation(self, kind, anchor, parent_plot, p0, p1_local, text=''):
+    def _create_annotation(self, kind, anchor, parent_plot, p0, p1_local, text='', point_ref=None):
         pen = pg.mkPen('k', width=2)
         pen.setCosmetic(True)
-        ann = AnnotationItem(self, kind, anchor, parent_plot, pen=pen, brush=None, text=text)
+        ann = AnnotationItem(self, kind, anchor, parent_plot, pen=pen, brush=None, text=text,
+                              point_ref=point_ref)
         if p1_local is not None:
             ann.p1_local = QtCore.QPointF(p1_local)
             if ann._end_handle is not None:
-                ann._end_handle.setPos(ann.p1_local)
+                ann._end_handle.setPos(ann._end_handle_pos())
             if ann._rotate_handle is not None:
                 ann._position_rotate_handle()
         if anchor == 'border' and parent_plot is not None:

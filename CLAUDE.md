@@ -732,6 +732,80 @@ the actual code — this list is a summary, not a substitute for checking.
         `AnnotationItem.mouseReleaseEvent` (when nothing moved and Shift
         wasn't held) — the two call sites are mutually exclusive per
         click, confirmed live, not assumed.
+- [x] **Data cursor overhaul** (2026-09-29), scoped via `/lafigure-scope`
+      (two judgment calls confirmed with the user: re-picking the anchor
+      stays on the SAME curve only, and 3D support was built in this same
+      pass rather than split off):
+      - **Oriented selection outline**: `'cursor'` joined
+        `ORIENTED_OUTLINE_KINDS` (`annotations.py`) — its p0->p1_local
+        (marker->label) segment gets the same tight, angle-hugging box as
+        line/arrow, built in scene space per the `lafigure-axes-geometry`
+        skill.
+      - **The point stays pinned to a real sample, live** — never a
+        frozen `(x, y)` baked in at placement time. A cursor now carries
+        `point_ref` (`{'is_3d', 'curve_index', 'row'}`): `curve_index` is
+        resolved fresh every time against its `parent_plot`'s CURRENT
+        curve/series list (never a live object reference held across
+        undo/redo, which would go stale — see the staleness lesson this
+        file already had for a curve, item 7's annotations section);
+        `row` is a `DataSource` row id for a source-backed series, or a
+        plain array index for a private one.
+        `AnnotationItem.refresh_point()` re-derives position + label text
+        from it. A figure-wide, best-effort resync
+        (`HistoryMixin._resync_cursor_points`) runs after every
+        `_push_history`/`undo`/`redo` — so any undoable action (a value
+        edit, Remove Average, Transform, undo/redo of any of them) moves
+        the cursor along automatically, with no per-mutation-site wiring
+        needed. This intentionally does NOT distinguish "hidden" from
+        "still there" (both just mean "not currently drawn by this
+        curve") and never purges on its own — see the next bullet for why
+        that has to be separate.
+      - **Deleting the cursor's own point removes the cursor too, as ONE
+        undo entry with the delete** (`brushing.py`'s
+        `_cursors_targeting` + `delete_brushed_points`, wrapped in
+        `undo_group()`) — precise and explicit, unlike the position
+        resync above: the underlying `DataSource` is never actually
+        shrunk by a delete (only a series' own drawn `rows` narrows — see
+        the class docstring above "Derived columns" in `brushing.py`), so
+        there is no generic "does this row still exist" signal to hang a
+        purge off; only the delete action itself, at the moment it
+        removes an entry from THIS curve, can tell deleted from merely
+        hidden. Hide Brushed Points / Show All never removes a cursor —
+        confirmed by a dedicated test.
+      - **3D**: a data cursor can now be placed on a 3D curve
+        (`annotation_ops.py`'s `_nearest_3d_point`, reusing
+        `View3DBox.projected`'s cached per-camera-state screen
+        projection — the same one brushing already used, never computed
+        twice), and follows the camera through orbit/pan/dolly
+        (`View3DBox.render_now` calls a new `_refresh_axes_cursors` after
+        every render, re-projecting any cursor it finds via
+        `childGroup.childItems()` — not `addedItems`, CLAUDE.md item 17's
+        own lesson on why). This is possible cheaply because an
+        `'axes'`-anchored item on a 3D cell already lives in the rendered
+        image's own pinned pixel space (view3d.py's module docstring), so
+        "follow the camera" is just "re-read the cached projection every
+        render" — no new coordinate system, no touching the deeper
+        `setRotation()`-in-local-space gap the `lafigure-axes-geometry`
+        skill documents as separately unfixed. The text includes Z
+        (`datatip_text` grew an optional `z=` param). Building this also
+        surfaced and fixed a real, independent, previously-uncaught bug
+        — see item 20 below — where the four brushed-point actions
+        (Delete included) silently never reached ANY 3D selection at all,
+        one layer below where this feature needed them to.
+      - **Drag behavior, made explicit**: only the label end (p1) does
+        a free whole-shape-independent drag, exactly as before (p0 was
+        never draggable at all until this pass). p0 itself now has its
+        own handle (`AnnotationHandle._anchor_handle`, `annotations.py`)
+        that, while dragged, re-picks WHICH sample on the SAME curve/
+        series it's pinned to — never a different curve, even one whose
+        point is screen-closer (`annotation_ops.py`'s
+        `_nearest_sample_on_ref`, deliberately curve-scoped, per the
+        user's own confirmed choice) — one undo entry per drag, only if
+        the row actually changed.
+      - **The label's drag handle no longer masks the label text.**
+        `AnnotationItem.END_HANDLE_PULLBACK` (0.7): the end handle sits
+        70% of the way from p0 to the label point instead of exactly on
+        it, where the label's own white text bubble is centered too.
 
 ## Roadmap (agreed with the user 2026-09-28) — live backlog
 
@@ -1818,6 +1892,59 @@ let the current event finish being dispatched first. Also: a bug that
 only reproduces via a real Qt-delivered event, not a direct method/
 setter call, needs a test built the same way (real `QTest.mouseClick`
 here) — see bug #11's and #14's own versions of this same lesson.
+
+### 20. A brushed-point action silently saw "nothing selected" for every 3D series — and a modal QMessageBox segfaults under `QT_QPA_PLATFORM=offscreen`
+**Symptom (found building the data-cursor overhaul, 2026-09-29):**
+`delete_brushed_points()` on a real 3D selection crashed the whole
+process (`Segmentation fault`, no Python traceback at all — see CLAUDE.md
+item 7's own note on segfaults being harder to debug than a raised
+exception) the instant it ran under the test suite's offscreen platform.
+
+**Root cause, two layers:** `selection.py`'s `_point_xy` (the fallback
+used by `positions_of_rows`, which `brushing._figure_brush_items` calls
+for every one of the four brushed-point actions, regardless of kind) only
+ever recognized a plain 1-D `(x, y)` pair as "point-like" — a 3D kind's
+`get_xy` of `(positions (N, 3), None)` made it return `None` unconditionally
+(`y is None` failed the old `x is None or y is None` check). So
+`_figure_brush_items()` saw *zero* items for a 3D selection that the
+ViewBox/RectBrush plumbing had, in fact, already brushed correctly (3D
+brushing itself works fine — it's a completely separate code path,
+`Kind3D.rows_in_rect`/`show_rows`, which `positions_of_rows` never
+touches). `_require_brush_selection()` then did exactly what it's
+supposed to when nothing is selected: pop a `QMessageBox.information(...)`
+— which is where the process actually died, since a real modal dialog's
+`exec_()` has no sane thing to do with no real display under `offscreen`.
+This is a second, independent confirmation of CLAUDE.md item 7/10's own
+running theme (an offscreen/headless environment fails in ways a real
+session wouldn't) — plus a new one of its own: **a bug that looks like
+"my new code crashed" can actually be "my new code finally reached a much
+older, never-before-exercised code path"**. Don't assume the crash site
+is the bug site; here the crash was three call-frames away from the real
+gap, in code nobody had ever touched (CLAUDE.md's own 3D section already
+flagged "the four brushed-point right-click actions... skip 3D series" as
+a known gap — this was *why*, precisely, not just *that*).
+
+**Fix:** `_point_xy` now also accepts `(positions (N, 3), None)`, treating
+it as one point per row (using only the x/y columns — row *membership* is
+all `positions_of_rows` needs, it never reads coordinates back through
+this path) via `_row_ids`, the same row-id-or-array-index convention every
+other kind already used. `delete_brushed_points` itself also needed one
+narrower fix once selection was actually reaching it: its array-slicing
+line assumed `y` was always an array (`np.asarray(y)[keep]`), which raises
+on `y is None` — now guarded.
+
+**Lesson:** when a new feature is the first thing to ever exercise an
+existing "generic, kind-agnostic" function against a kind that function's
+own author never tested it against (here: `positions_of_rows` against a
+3D series), verify that path explicitly with a real test *before* trusting
+CLAUDE.md's own "known gap" wording at face value — "skip 3D series" could
+have meant anything from "not implemented" to "silently n-op" to, as it
+turned out, "the selection never even reaches the code that would delete
+anything." And: bisect a segfault by adding `flush`ed logging between
+every single call (`print`/file-append, not relying on default buffering
+even with `python -u` — a genuine segfault can still lose already-written
+buffered output), never by staring at the last line of a traceback that
+doesn't exist.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 

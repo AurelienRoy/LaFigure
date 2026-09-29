@@ -105,33 +105,32 @@ class ToolbarMixin:
         SP = QtWidgets.QStyle
 
         action("Figure Manager", self.open_figure_manager, icon=SP.SP_FileDialogDetailedView,
-               tooltip="Figure Manager: browse open figures, subplots, curves and annotations")
+               tooltip="Browse open figures, subplots, curves, annotations")
 
         action("Save", self.show_save_dialog, icon=SP.SP_DialogSaveButton,
-               tooltip="Save: export the figure as PNG/JPG/SVG/PDF, with a "
-                       "customizable header (Ctrl+S)")
+               tooltip="Export as PNG/JPG/SVG/PDF with a custom header (Ctrl+S)")
 
         action("Add Subplot", self.add_new_subplot, icon=SP.SP_FileDialogNewFolder,
-               tooltip="Add Subplot: fill the first empty grid cell, else add a new row")
+               tooltip="Fill the first empty grid cell, or add a row")
         action("Delete", self.delete_selection, icon=SP.SP_TrashIcon,
-               tooltip="Delete: remove the selected curve, or the active subplot if no curve is selected (Del)")
-        self.undo_action = action("Undo", self.undo, icon=SP.SP_ArrowBack, tooltip="Undo last action (Ctrl+Z)")
-        self.redo_action = action("Redo", self.redo, icon=SP.SP_ArrowForward, tooltip="Redo last undone action (Ctrl+Y)")
+               tooltip="Remove the selected curve, or subplot if none (Del)")
+        self.undo_action = action("Undo", self.undo, icon=SP.SP_ArrowBack, tooltip="Undo the last action (Ctrl+Z)")
+        self.redo_action = action("Redo", self.redo, icon=SP.SP_ArrowForward, tooltip="Redo the last undone action (Ctrl+Y)")
         self.undo_action.setEnabled(False)
         self.redo_action.setEnabled(False)
 
         tb.addSeparator()
-        menu_button('pencil.png', "Annotate: place a shape on the figure", [
+        menu_button('pencil.png', "Place a shape on the figure", [
             (SHAPE_LABELS[kind], lambda checked=False, kind=kind: self.start_placing_annotation(kind))
             for kind in SHAPE_KINDS if kind != 'cursor'
         ])
         action("Data Cursor", lambda: self.start_placing_annotation('cursor'),
-               icon='tool_data_cursor.png', tooltip="Data Cursor: place a data-readout marker")
+               icon='tool_data_cursor.png', tooltip="Place a data-readout marker on a curve")
 
         action("Toggle Legend", self.toggle_legend, icon='tool_legend.png',
-               tooltip="Toggle Legend")
+               tooltip="Show or hide the legend")
 
-        menu_button('tool_text_textbox.png', "Axis Labels", [
+        menu_button('tool_text_textbox.png', "Edit the X or Y axis label", [
             ("X Label", lambda: self.set_axis_label('bottom')),
             ("Y Label", lambda: self.set_axis_label('left')),
         ])
@@ -141,15 +140,12 @@ class ToolbarMixin:
         self.brush_action = action(
             "Brush", lambda checked: self.set_interaction_mode('brush'), checkable=True,
             icon='tool_data_brush.png',
-            tooltip="Brush (a mode, exclusive with Select/Hand/Zoom Rect): rectangular "
-                    "data brushing on any subplot -- right-click a selection to "
-                    "delete/transform/fit/stat it",
+            tooltip="Drag a rectangle to select points for editing",
         )
         action("Hide Brushed Points", self.hide_brushed_points, icon=SP.SP_DialogDiscardButton,
-               tooltip="Hide Brushed Points: stop drawing the brushed points, in every "
-                       "subplot showing the same rows (the data stays intact)")
+               tooltip="Stop drawing brushed points; data stays intact")
         action("Show All Points", self.show_all_hidden_points, icon=SP.SP_DialogResetButton,
-               tooltip="Show All Points: draw every hidden point again")
+               tooltip="Redraw every hidden point")
 
         tb.addSeparator()
         mode_group = QtGui.QActionGroup(self)
@@ -157,19 +153,17 @@ class ToolbarMixin:
         self.select_action = action(
             "Select", lambda checked: self.set_interaction_mode('select'), checkable=True,
             icon='tool_pointer.png',
-            tooltip="Select: click a subplot to select it, drag its border/corner "
-                    "handles to resize, drag its center handle to move/swap it. "
-                    "(default)",
+            tooltip="Click to select; drag handles to resize or move",
         )
         self.hand_action = action(
             "Hand", lambda checked: self.set_interaction_mode('hand'), checkable=True,
             icon='tool_hand.png',
-            tooltip="Hand: pan/zoom/grab the subplot under the cursor. No selection.",
+            tooltip="Pan or zoom the subplot under the cursor",
         )
         self.zoom_action = action(
             "Zoom Rect", lambda checked: self.set_interaction_mode('zoom'), checkable=True,
             icon='tool_zoom_in.png',
-            tooltip="Zoom Rect: drag a rectangle to zoom into it. No selection.",
+            tooltip="Drag a rectangle to zoom in",
         )
         mode_group.addAction(self.select_action)
         mode_group.addAction(self.hand_action)
@@ -177,35 +171,33 @@ class ToolbarMixin:
         mode_group.addAction(self.brush_action)
         self.select_action.setChecked(True)
         action("Home", self.reset_view, icon='ico_breadcrumb_home_on.png',
-               tooltip="Home: reset the subplot's view to show all its data (autorange)")
+               tooltip="Reset the view to show all data")
         fit_y = action("Fit Vertical", self.fit_view_vertical,
-                       tooltip="Fit Vertical: stretch the Y range to the min/max of the "
-                               "curves inside the current X range")
+                       tooltip="Fit the Y range to visible data")
         fit_y.setIcon(_fit_icon(vertical=True))
         fit_x = action("Fit Horizontal", self.fit_view_horizontal,
-                       tooltip="Fit Horizontal: stretch the X range to the min/max of the "
-                               "curves inside the current Y range")
+                       tooltip="Fit the X range to visible data")
         fit_x.setIcon(_fit_icon(vertical=False))
 
         tb.addSeparator()
         self.link_x_action = action(
             "Link X", self.toggle_link_x, checkable=True,
-            icon='tool_plot_linked.png', tooltip="Link X: link the X axis across all subplots",
+            icon='tool_plot_linked.png', tooltip="Link the X axis across subplots",
         )
         action("FFT -> subplot below", self.fft_below, icon='fft_icon6.png',
-               tooltip="FFT: compute the FFT of the selected curve into a new subplot below")
+               tooltip="Plot the FFT of the selected curve below")
         action("Remove Average", self.remove_average, icon='icon1b1.png',
-               tooltip="Remove Average: subtract the mean from every curve on the active subplot")
+               tooltip="Subtract the mean from every curve")
 
         self.console_action = action(
             "Console", self.toggle_console, checkable=True,
             icon=SP.SP_ComputerIcon,
-            tooltip="Console: toggle an embedded Python console (fig/gca()/gcf()/np preloaded)",
+            tooltip="Toggle a Python console (fig, gca, np preloaded)",
         )
 
         tb.addSeparator()
         action("Help", self.show_help, icon=SP.SP_MessageBoxQuestion,
-               tooltip="Help: show controls reference (mouse/keys per mode), version, and credits")
+               tooltip="Show controls, version, and credits")
 
         QtGui.QShortcut(QtGui.QKeySequence.Save, self, activated=self.show_save_dialog)
         QtGui.QShortcut(QtGui.QKeySequence.Copy, self, activated=self.copy_selection)

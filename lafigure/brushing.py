@@ -472,32 +472,63 @@ class BrushingMixin:
         self._push_snapshots([(series, before, after)])
 
     # -- the four brushed-point actions -------------------------------------
+    def _cursors_targeting(self, item, removed_ids):
+        """Data-cursor annotations (annotation_ops.py) whose point_ref
+        currently resolves to `item` and one of `removed_ids` (a row id
+        for a DataSource-backed series, an array index for a private one
+        -- see _row_id's own docstring) -- i.e. cursors about to lose the
+        exact entry they're pinned to, on THIS series specifically. Note
+        the underlying DataSource, if any, is never itself shrunk by a
+        delete (see this method's own docstring below): this is the one
+        place that can tell "deleted from this curve" from merely
+        "hidden" or "not currently drawn", which is why cursor removal is
+        hooked in here rather than in refresh_point's generic resync."""
+        if len(removed_ids) == 0:
+            return []
+        removed = set(np.asarray(removed_ids).tolist())
+        hits = []
+        for ann in self.annotations:
+            if ann.kind != 'cursor' or ann.point_ref is None:
+                continue
+            target = self._cursor_ref_item(ann.parent_plot, ann.point_ref)
+            if target is item and ann.point_ref['row'] in removed:
+                hits.append(ann)
+        return hits
+
     def delete_brushed_points(self):
         """Remove the brushed points from their series. A series of a
         DataSource stays linked to it, drawing fewer of its rows; the
-        source itself is untouched."""
+        source itself is untouched. Any data-cursor annotation pinned to
+        one of the removed points is deleted too, in the same undo
+        entry."""
         items = self._require_brush_selection()
         if items is None:
             return
         self._clear_all_brush_selection()
         changes = []
-        for item, mask in items:
-            series = self._series_of(item)
-            before = self._snapshot(series)
-            x, y, source, rows, columns, view = before
-            keep = ~mask
-            if view is not None:
-                entries = np.ones(len(view.x), dtype=bool)
-                entries[np.nonzero(view.shown)[0][mask]] = False
-                view = view.replace(
-                    x=view.x[entries], y=view.y[entries], shown=view.shown[entries],
-                    rows=None if view.rows is None else view.rows[entries],
-                    hidden=None if view.hidden is None else view.hidden[entries])
-            after = (np.asarray(x)[keep], np.asarray(y)[keep], source,
-                     None if rows is None else rows[keep], columns, view)
-            self._restore(series, after)
-            changes.append((series, before, after))
-        self._push_snapshots(changes)
+        removed_cursors = []
+        with self.undo_group():
+            for item, mask in items:
+                series = self._series_of(item)
+                before = self._snapshot(series)
+                x, y, source, rows, columns, view = before
+                keep = ~mask
+                removed_ids = rows[mask] if rows is not None else np.nonzero(mask)[0]
+                removed_cursors.extend(self._cursors_targeting(item, removed_ids))
+                if view is not None:
+                    entries = np.ones(len(view.x), dtype=bool)
+                    entries[np.nonzero(view.shown)[0][mask]] = False
+                    view = view.replace(
+                        x=view.x[entries], y=view.y[entries], shown=view.shown[entries],
+                        rows=None if view.rows is None else view.rows[entries],
+                        hidden=None if view.hidden is None else view.hidden[entries])
+                after = (np.asarray(x)[keep], None if y is None else np.asarray(y)[keep], source,
+                         None if rows is None else rows[keep], columns, view)
+                self._restore(series, after)
+                changes.append((series, before, after))
+            self._push_snapshots(changes)
+            for ann in removed_cursors:
+                self.delete_annotation(ann)
 
     def transform_brushed_points(self):
         items = self._require_brush_selection()

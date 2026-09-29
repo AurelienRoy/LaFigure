@@ -962,3 +962,20 @@ class View3DBox(pg.ViewBox):
         self.image_item.setTransform(QtGui.QTransform.fromScale(w / pix.width(), h / pix.height()))
         self.render_count += 1
         self._refresh_overlays()
+        self._refresh_axes_cursors()
+
+    def _refresh_axes_cursors(self):
+        """Re-project every 'axes'-anchored data-cursor annotation living
+        in this cell after every render (so after every camera orbit/pan/
+        dolly, since that's what schedules one) -- see AnnotationItem.
+        refresh_point's own docstring for why this is what makes a 3D
+        cursor follow the camera: an 'axes' anchor here already lives in
+        the rendered image's pixel space (this class's own docstring), so
+        without this it would keep whatever pixel position it was placed
+        at while the image underneath it changes around it. Walks
+        childGroup.childItems(), not addedItems (CLAUDE.md's own lesson:
+        the latter only lists items counted for autorange bounds)."""
+        from .annotations import AnnotationItem
+        for child in self.childGroup.childItems():
+            if isinstance(child, AnnotationItem) and child.kind == 'cursor' and child.point_ref is not None:
+                child.refresh_point()

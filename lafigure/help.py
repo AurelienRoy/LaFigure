@@ -116,6 +116,11 @@ class HelpMixin:
   unlinked annotation also lists a direct **Link to subplot `<name>`**
   shortcut for every subplot its own bounding box currently overlaps --
   and Delete
+- **Data Cursor**: its point stays pinned exactly on a curve sample (2D or
+  3D, following the camera as it orbits) -- **drag its anchor handle** to
+  re-pick a different sample on the same curve, or **drag the label** to
+  move just the text; deleting that sample via Brush mode removes the
+  cursor too, as one undo
 
 ### Hand Mode
 - **Pan and zoom** the subplot under the cursor

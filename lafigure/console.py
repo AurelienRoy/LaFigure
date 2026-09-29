@@ -97,21 +97,22 @@ def get_datatip(plot_item):
     return _DATATIPS.get(plot_item)
 
 
-def datatip_text(figure, plot_item, curve, idx, x, y):
-    """Text for a data-cursor annotation at data point (x, y). Falls back
-    to the original "{x:.4g}, {y:.4g}" (annotation_ops.py's own default,
-    preserved exactly) whenever no datatip is configured for `plot_item`,
-    there's no nearest curve/row (idx is None), or formatting the
-    configured spec against the real row raises for any reason -- a bad
-    user format string / callable must degrade gracefully, not crash
+def datatip_text(figure, plot_item, curve, idx, x, y, z=None):
+    """Text for a data-cursor annotation at data point (x, y[, z]). Falls
+    back to "{x:.4g}, {y:.4g}" (annotation_ops.py's own original default,
+    preserved exactly) or, when `z` is given (a 3D curve), "{x:.4g},
+    {y:.4g}, {z:.4g}" -- whenever no datatip is configured for
+    `plot_item`, there's no nearest curve/row (idx is None), or formatting
+    the configured spec against the real row raises for any reason -- a
+    bad user format string / callable must degrade gracefully, not crash
     annotation placement.
 
     `curve`/`idx` are exactly what annotation_ops.py's cursor branch
-    already computes (the active curve on `plot_item` and the index of
-    its nearest point to the click) -- passed in rather than recomputed
-    here so this stays a pure formatting step.
+    already computes (the nearest curve/series and the index of its
+    nearest point to the click) -- passed in rather than recomputed here
+    so this stays a pure formatting step.
     """
-    default = f"{x:.4g}, {y:.4g}"
+    default = f"{x:.4g}, {y:.4g}" if z is None else f"{x:.4g}, {y:.4g}, {z:.4g}"
     spec = _DATATIPS.get(plot_item)
     if spec is None or curve is None or idx is None:
         return default
@@ -123,6 +124,8 @@ def datatip_text(figure, plot_item, curve, idx, x, y):
         rows = series.rows
         row = int(rows[idx]) if rows is not None else idx
         row_dict = {name: source[name][row] for name in source.columns}
+        if z is not None:
+            row_dict.setdefault('z', z)
         if callable(spec):
             return str(spec(RowAccessor(row_dict)))
         return spec.format(**row_dict)

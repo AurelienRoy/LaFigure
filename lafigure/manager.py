@@ -121,8 +121,7 @@ class FigureManager(QtWidgets.QMainWindow):
         tb = QtWidgets.QToolBar("Figures")
         self.addToolBar(tb)
         new_fig_action = QtGui.QAction("New Figure", self)
-        new_fig_action.setToolTip("Create a new, empty figure window (no subplots) -- "
-                                   "useful for testing copy/paste between figures.")
+        new_fig_action.setToolTip("Open a new, empty figure window")
         new_fig_action.triggered.connect(self.new_figure)
         tb.addAction(new_fig_action)
 
