@@ -590,6 +590,90 @@ the actual code — this list is a summary, not a substitute for checking.
         mechanism never actually observed — ask for the exact repro steps
         (which handle/gesture, with/without Alt, how many subplots linked)
         instead.
+- [x] **A second batch: tighter/correct arrow outline, a scene-space
+      geometry skill, Zoom-mode click behavior, and click-cycling**
+      (2026-09-29), scoped via `/lafigure-scope` again, each independently
+      tested:
+      - **Arrow selection outline fixed twice over.** The oriented box
+        added in the first batch (above) was itself still computed in
+        LOCAL space (`math.atan2`/`hypot` on `p1_local`, then
+        `painter.rotate()`) — same warping bug class as the arrowhead
+        fix, just missed there. `AnnotationItem._selection_outline_polygon`
+        (replacing `_selection_outline_geometry`) now builds all 4
+        corners in SCENE space and maps them back, exactly like
+        `_draw_arrowhead`; `paint()` now always `drawPolygon`s it, no more
+        `painter.rotate()`. Also widened 1.5x perpendicular to the segment
+        (`OUTLINE_PERP_PAD_PX = 6`, was the shared 4px `inset`) per an
+        explicit request — `OUTLINE_END_PAD_PX` (along the segment) is
+        unchanged.
+      - **New skill: `lafigure-axes-geometry`**
+        (`.claude/skills/lafigure-axes-geometry/SKILL.md`) — the general
+        principle behind both the arrowhead and outline fixes: any
+        angle/direction-dependent geometry on an `'axes'`-anchored item
+        must be computed in scene space and mapped back, never computed
+        directly in local (data) space, since the ViewBox's transform
+        only preserves angles when X/Y data-per-pixel is 1:1 (the
+        exception, not the rule). Documents a **known, NOT-yet-fixed**
+        deeper gap found while fixing this: `AnnotationItem.setRotation()`
+        itself (`rect`/`ellipse`/`text`'s rotate handle) applies rotation
+        in local space too, so a rotated one on a non-square-scaled
+        subplot likely also warps — bigger fix (the shape's own geometry,
+        not a decoration), deliberately out of scope for this pass.
+      - **Fixed: a click on an annotation in a non-Select mode (Zoom
+        Rect, Hand, Brush) used to select/ready-to-drag it anyway** —
+        `AnnotationItem.mousePressEvent` now also checks
+        `self.figure.interaction_mode != 'select'` and ignores the press,
+        letting it fall through to the ViewBox beneath (same double-
+        dispatch class as the earlier double-context-menu bug).
+      - **New: Zoom Rect mode's plain click zooms.** A click with no drag
+        previously did nothing there. Now: click zooms in to 1/3 the
+        current view (`ViewOpsMixin.CLICK_ZOOM_FACTOR = 3.0`), double-
+        click zooms out to 3x — both centered on the **clicked data
+        point** (re-derived from the *current* view mapping each time,
+        not a fixed screen pixel — that point is the new view center
+        after a zoom-in, by definition of a centered zoom), one undo
+        entry each via the existing `_undoable_view_change`
+        (`_click_zoom`, `view_ops.py`; dispatched from
+        `_on_scene_clicked`, `selection_ui.py`). 3D cells are excluded
+        (`axes_type == '3d'`; a `View3DBox` has no `viewRange()`/
+        `setRange()` the same way).
+      - **New: click-cycling through overlapping objects in Select
+        mode.** Clicking (about) the same spot again — within
+        `CLICK_CYCLE_TOLERANCE_PX` (4px) and `CLICK_CYCLE_TIMEOUT_S`
+        (1.0s) of the previous plain click — steps to the next
+        curve/annotation/subplot stacked there instead of re-selecting
+        the same one, wrapping around; a click elsewhere (or a pause)
+        resets to the top. User-specified scope: curves included from
+        the start (the harder option — see below), state resets on
+        distance-or-timeout (both confirmed via `/lafigure-scope`'s
+        AskUserQuestion). `LaFigure._stacked_click_targets` (
+        `selection_ui.py`) builds the ordered stack from the app's own
+        existing hit-tests (`_curves_at` — `_curve_at`'s per-plot check,
+        now factored out in `menus.py` so cycling can see the whole
+        overlapping set, not just the topmost curve — and
+        `_annotation_at`-style annotation containment, plus a subplot's
+        own `ViewBox`), not Qt's raw item stack, so every target cycling
+        can reach is one a normal click could reach too. Ordering
+        approximates real render z-order (annotations first, any anchor
+        — they're always zValue=800, above every subplot; then subplots
+        by their own z, each contributing its curves then its own body)
+        rather than perfectly replicating Qt's hit-testing.
+        `_apply_click_cycle` (`selection_ui.py`) runs *after* ordinary
+        click dispatch already selected something, and overrides it if
+        this was a repeat — reusing the ordinary single-target selection
+        setters (`_select_curve`/`_select_annotation`/`_on_plot_clicked`),
+        never reimplementing selection itself. **One real architectural
+        wrinkle, found only by testing with real Qt events (not a direct
+        method call — see CLAUDE.md's own established lesson on this)**:
+        an annotation's native `mousePressEvent`/`mouseReleaseEvent`
+        (see CLAUDE.md's note on native-vs-pyqtgraph dispatch) fully
+        consumes a click on it, so pyqtgraph's own `sigMouseClicked` —
+        and hence `_on_scene_clicked`'s own tail call to
+        `_apply_click_cycle` — never fires for it at all. Fixed by also
+        calling `_apply_click_cycle` directly from
+        `AnnotationItem.mouseReleaseEvent` (when nothing moved and Shift
+        wasn't held) — the two call sites are mutually exclusive per
+        click, confirmed live, not assumed.
 
 ## Roadmap (agreed with the user 2026-09-28) — live backlog
 
@@ -1734,6 +1818,15 @@ repeating the same resume/merge/launch cycle every session. So:
   what's explicitly out of scope — and wait for the user's go-ahead. User
   request: confirm the change's perimeter before starting, not just
   report what was done afterward.
+- **Reference Skill — `lafigure-axes-geometry`**
+  (`.claude/skills/lafigure-axes-geometry/SKILL.md`, 2026-09-29). Not a
+  workflow bookend like the two above — a standing reference, loaded
+  before writing or reviewing paint()/geometry code for anything
+  angle- or direction-dependent on an `'axes'`-anchored item. Captures a
+  lesson learned the hard way twice in one session (the arrowhead, then
+  the selection outline, both needed the same scene-space-then-map-back
+  fix) so a future session applies it up front instead of rediscovering
+  it per shape.
 
 Still **not** Skills: the test recipe (one command:
 `QT_QPA_PLATFORM=offscreen python run_tests.py`, since WP-01 landed

@@ -37,7 +37,7 @@ from pyqtgraph.Qt import QtCore, QtWidgets
 from tests.helpers import (
     app, m, SHIFT, shown_figure, first_curve, _click_subplot, _click_curve,
     _click_annotation, _selection_figure, _press_escape, _key, _band_drag,
-    FakePressEvent,
+    FakePressEvent, FakeClickEvent, _vb_center,
 )
 
 
@@ -182,10 +182,21 @@ def test_focused_plot_has_no_other_writer():
 def test_selection_changed_fires_once_per_real_change():
     f, curve, ann = _selection_figure()
     p0, p1 = f.plots[0], f.plots[1]
+    # _vb_center(p1) has a curve and ann stacked on top of the subplot
+    # there (by _selection_figure's own construction) -- clicking twice
+    # legitimately cycles through them now (a new, deliberate feature),
+    # so this re-click check needs a point with only the subplot on it.
+    lone_pos = None
+    for dx, dy in ((0, 0), (-140, -60), (140, -60), (-140, 60), (140, 60), (-160, 0), (160, 0)):
+        pt = _vb_center(p1) + QtCore.QPointF(dx, dy)
+        if p1.getViewBox().sceneBoundingRect().contains(pt) and len(f._stacked_click_targets(pt)) == 1:
+            lone_pos = pt
+            break
+    assert lone_pos is not None, "control: no point with only the subplot on it"
     with _recording(f.registry.selectionChanged, f) as sel:
-        _click_subplot(f, p1)
+        f._on_scene_clicked(FakeClickEvent(lone_pos))
         assert len(sel) == 1 and sel[0] is f
-        _click_subplot(f, p1)
+        f._on_scene_clicked(FakeClickEvent(lone_pos))
         assert len(sel) == 1, "re-selecting the same subplot is no change"
         _click_curve(f, p0, curve)
         assert len(sel) == 2, "one emission per click, not one per intermediate state"

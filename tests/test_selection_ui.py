@@ -30,11 +30,14 @@ not direct method calls: the band relies on pyqtgraph emitting exactly
 one click after a drag whose moves it never saw, and the keys on Qt's
 shortcut routing -- only the real event path can show either works.
 """
+import time
+
+import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from tests.helpers import (
-    SHIFT, FakeClickEvent, has_border, shown_figure, first_curve, _vb_center,
+    app, m, SHIFT, FakeClickEvent, has_border, shown_figure, first_curve, _vb_center,
     _click_subplot, _click_curve, _click_annotation, _selection_figure, _selected,
     _two_annotation_figure, _empty_scene_point, _press_escape, _scene_pos, _mouse,
     _band_drag, _key, _band_start_up_left_of,
@@ -390,4 +393,85 @@ def test_tab_cycles_every_item_in_reading_order_and_wraps():
     assert current() is order[-1]
     assert isinstance(QtWidgets.QApplication.focusWidget(), pg.GraphicsLayoutWidget), \
         "Tab must not move keyboard focus to the toolbar"
+    f.close()
+
+
+def _real_click(f, pt):
+    _mouse(f, QtCore.QEvent.MouseButtonPress, pt, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, pt, QtCore.Qt.NoButton)
+
+
+def _click_selection(f):
+    if f.selected_annotations:
+        return ('annotation', f.selected_annotations[0])
+    if f.selected_curves:
+        return ('curve', f.selected_curves[0])
+    if f.selected_plots:
+        return ('subplot', f.selected_plots[0])
+    return None
+
+
+def _overlap_figure():
+    """One subplot, a fixed (non-auto-ranging) view, a curve crossing the
+    view's center, and a rect annotation straddling that same center --
+    a deliberately robust fixture for click-cycling: an explicit range
+    (not left auto-ranging, which can still be settling across the few
+    real events these tests send) and a click point well inside each
+    shape, not at a razor-thin edge where a tiny viewPixelSize fluctuation
+    could flip containment."""
+    f = m.LaFigure(empty=True)
+    p = f.add_subplot(row=0, col=0)
+    x = np.linspace(0, 100, 200)
+    f._add_series(p, 'line', x, x, name='ramp')
+    f.show()
+    app.processEvents()
+    vb = p.getViewBox()
+    vb.setRange(xRange=(0, 100), yRange=(0, 100), padding=0)
+    app.processEvents()
+    center = vb.mapViewToScene(QtCore.QPointF(50, 50))
+    ann = f._create_annotation('rect', 'axes', p, QtCore.QPointF(30, 30), QtCore.QPointF(40, 40))
+    f._deselect_all()
+    app.processEvents()
+    return f, p, ann, center
+
+
+def test_click_cycling_steps_through_overlapping_objects_and_wraps():
+    """Select mode: repeated plain clicks at (about) the same spot step
+    through whatever's stacked there -- built from real Qt mouse events
+    (CLAUDE.md: this depends on real dispatch order between a curve's own
+    clickable protocol, an annotation's native mousePressEvent, and the
+    scene-level click signal, which a direct method call can't show)."""
+    f, p, ann, pt = _overlap_figure()
+    targets = f._stacked_click_targets(pt)
+    assert len(targets) >= 2, "control: needs a real overlap here"
+
+    seen = []
+    for _ in range(len(targets) + 1):
+        _real_click(f, pt)
+        seen.append(_click_selection(f))
+        time.sleep(0.6)  # comfortably above a real double-click interval, under CLICK_CYCLE_TIMEOUT_S
+    assert all(s is not None for s in seen), seen
+    assert len(set(seen)) == len(targets), (seen, [(k, type(o).__name__) for k, o, plt in targets])
+    assert seen[0] == seen[len(targets)], "one full cycle must wrap back to the first selection"
+
+    # A click clearly elsewhere is not "the same spot": no cycling, and it
+    # breaks the cycle for a subsequent click back at pt too.
+    other = _empty_scene_point(f)
+    _real_click(f, other)
+    assert _click_selection(f) is None
+    time.sleep(0.6)
+    _real_click(f, pt)
+    assert _click_selection(f) == seen[0], "back at pt: cycling restarts at the top, not mid-cycle"
+    f.close()
+
+
+def test_click_cycling_only_applies_in_select_mode():
+    f, p, ann, pt = _overlap_figure()
+    assert len(f._stacked_click_targets(pt)) >= 2, "control: needs a real overlap here"
+    f.set_interaction_mode('hand')
+    _real_click(f, pt)
+    first = _click_selection(f)
+    time.sleep(0.6)
+    _real_click(f, pt)
+    assert _click_selection(f) == first, "Hand mode: no cycling, not a selection mode at all"
     f.close()

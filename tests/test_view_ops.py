@@ -35,7 +35,7 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from tests.helpers import (
     app, m, has_border, shown_figure, first_curve, _mouse, _ramp_figure, _is_x_linked,
-    _band_drag, _press_escape,
+    _band_drag, _press_escape, FakeClickEvent,
 )
 
 
@@ -434,4 +434,63 @@ def test_zoom_right_drag_shows_the_zoom_drag_cursor_only_during_the_drag():
     for w in QtWidgets.QApplication.topLevelWidgets():
         if isinstance(w, QtWidgets.QMenu):
             w.close()
+    f.close()
+
+
+def test_click_zooms_in_double_click_zooms_out_centered_on_the_click():
+    f, vb = _ramp_figure()
+    f.show()
+    app.processEvents()
+    vb.setRange(xRange=(0, 100), yRange=(0, 100), padding=0)
+    f.zoom_action.trigger()
+    n = len(f.undo_stack)
+    scene_pt = vb.mapViewToScene(QtCore.QPointF(20, 20))  # off-center, so centering is testable
+
+    f._on_scene_clicked(FakeClickEvent(scene_pt))
+    (x0, x1), (y0, y1) = vb.viewRange()
+    assert abs((x1 - x0) - 100 / f.CLICK_ZOOM_FACTOR) < 0.5, (x0, x1)
+    assert abs((x0 + x1) / 2 - 20) < 0.5, "centered on the clicked data point, not the view's own center"
+    assert len(f.undo_stack) == n + 1
+
+    zoomed_width = x1 - x0
+    # Data point 20 is now exactly the view's center (that's what a
+    # centered zoom-in does) -- the OLD scene_pt no longer maps there, so
+    # re-derive the click point from the current (zoomed-in) mapping.
+    scene_pt = vb.mapViewToScene(QtCore.QPointF(20, 20))
+    f._on_scene_clicked(FakeClickEvent(scene_pt, double=True))
+    (x0b, x1b), (y0b, y1b) = vb.viewRange()
+    assert abs((x1b - x0b) - zoomed_width * f.CLICK_ZOOM_FACTOR) < 0.5, (zoomed_width, x0b, x1b)
+    assert abs((x0b + x1b) / 2 - 20) < 0.5
+    assert len(f.undo_stack) == n + 2, "the double click is its own one undo entry"
+
+    f.undo()
+    f.undo()
+    assert np.allclose(vb.viewRange(), ((0, 100), (0, 100)))
+    f.close()
+
+
+def test_zoom_mode_click_on_an_annotation_zooms_instead_of_selecting_it():
+    """Bug: AnnotationItem.mousePressEvent used to handle a left-button
+    press in every mode, so a click on an annotation in Zoom Rect mode
+    selected it instead of zooming -- needs a REAL Qt click (unlike the
+    click-zoom math test above), since this depends on real dispatch
+    precedence between the annotation's own native mousePressEvent and
+    the ViewBox beneath it (see CLAUDE.md)."""
+    f, vb = _ramp_figure()
+    p = f.plots[0]
+    f.show()
+    app.processEvents()
+    vb.setRange(xRange=(0, 100), yRange=(0, 100), padding=0)
+    ann = f._create_annotation('rect', 'axes', p, QtCore.QPointF(10, 10), QtCore.QPointF(20, 20))
+    f._deselect_all()
+    f.zoom_action.trigger()
+    scene_pt = ann.mapToScene(QtCore.QPointF(5, 5))
+    before = vb.viewRange()
+
+    _mouse(f, QtCore.QEvent.MouseButtonPress, scene_pt, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, scene_pt, QtCore.Qt.NoButton)
+    app.processEvents()
+
+    assert ann not in f.selected_annotations, "must not select the annotation in Zoom mode"
+    assert not np.allclose(vb.viewRange(), before), "the click must zoom instead"
     f.close()

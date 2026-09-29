@@ -31,12 +31,16 @@ focused_plot property setter -- the only writer) and selectionChanged
 (_notify_selection_changed) signals.
 """
 import functools
+import time
 
 from pyqtgraph.Qt import QtCore, QtWidgets
 import pyqtgraph as pg
 
 from .handles import ResizeHandle, MoveHandle
 from .annotations import AnnotationItem, TWO_CLICK_KINDS
+
+CLICK_CYCLE_TOLERANCE_PX = 4
+CLICK_CYCLE_TIMEOUT_S = 1.0
 
 
 def selection_op(fn):
@@ -137,6 +141,17 @@ class SelectionUIMixin:
                 hit_plot = p
                 break
 
+        if (self.interaction_mode == 'zoom' and hit_plot is not None
+                and ev.button() == QtCore.Qt.LeftButton
+                and getattr(hit_plot, 'axes_type', 'cartesian') != '3d'):
+            # Zoom Rect mode's plain-click behavior: a drag still draws a
+            # zoom rectangle (pyqtgraph's own RectMode), but a click with
+            # no drag was otherwise a no-op -- now single click zooms in,
+            # double click zooms out (see _click_zoom).
+            self._on_plot_clicked(hit_plot, additive=False)
+            self._click_zoom(hit_plot, pos, out=ev.double())
+            return
+
         if (hit_plot is None and ev.button() == QtCore.Qt.RightButton
                 and not ev.double() and not ev.isAccepted()
                 and self._annotation_at(pos) is None):
@@ -165,6 +180,78 @@ class SelectionUIMixin:
             # clickable (e.g. a figure/border-anchored annotation) consumed
             # it -- that's genuinely empty space.
             self._deselect_all()
+
+        if not additive:
+            self._apply_click_cycle(pos)
+
+    # -- click-cycling: repeated clicks at (about) the same spot step
+    # through whatever's stacked there (curves, annotations, subplots) --
+    def _stacked_click_targets(self, scene_pos):
+        """Every subplot/curve/annotation whose clickable area contains
+        scene_pos, topmost first, LibreOffice/MATLAB Alt+click style --
+        built from the same per-kind hit-tests normal click dispatch
+        already uses (_annotation_at-style, _curves_at, a subplot's own
+        ViewBox), not Qt's own raw item stack, so every target cycling can
+        reach is guaranteed reachable by a normal, non-cycling click too.
+
+        Ordering approximates real render z-order, not a perfect replica
+        of Qt's own hit-testing: annotations render above every subplot
+        (zValue=800, any anchor -- see annotations.py) so they come first,
+        in the app's own annotation z-order (matching _annotation_at);
+        then subplots by their own z-order (_plots_by_z()), each
+        contributing its own curves (topmost first) then its own body,
+        before moving to the next (lower) subplot -- covering the
+        "overlapping subplots" case too, not just one grid cell."""
+        targets = []
+        for a in sorted(self.annotations, key=lambda a: a.zValue(), reverse=True):
+            if a.contains(a.mapFromScene(scene_pos)):
+                targets.append(('annotation', a, a.parent_plot))
+        for p in self._plots_by_z():
+            if not p.getViewBox().sceneBoundingRect().contains(scene_pos):
+                continue
+            for c in self._curves_at(p, scene_pos):
+                targets.append(('curve', c, p))
+            targets.append(('subplot', p, p))
+        return targets
+
+    def _apply_click_target(self, target):
+        kind, obj, plot_item = target
+        if kind == 'annotation':
+            self._select_annotation(obj)
+        elif kind == 'curve':
+            self._select_curve(obj)
+            self._mark_active(plot_item, keep_selection=True)
+        elif kind == 'subplot':
+            self._on_plot_clicked(plot_item)
+
+    def _apply_click_cycle(self, pos):
+        """Called after ordinary click dispatch already ran (whatever it
+        selected stands as index 0 of _stacked_click_targets -- both use
+        the same per-kind hit-tests/priority, so they agree). If this
+        click landed within CLICK_CYCLE_TOLERANCE_PX of the previous
+        plain click, within CLICK_CYCLE_TIMEOUT_S of it, select the NEXT
+        target in the stack instead, wrapping around. Only ever chooses
+        between outcomes ordinary dispatch could itself have produced
+        (_apply_click_target reuses the same single-target selection
+        setters) -- it doesn't reimplement selection, just which target."""
+        if self.interaction_mode != 'select':
+            self._click_cycle = None
+            return
+        targets = self._stacked_click_targets(pos)
+        if not targets:
+            self._click_cycle = None
+            return
+        now = time.monotonic()
+        prev = self._click_cycle
+        same_spot = (
+            prev is not None
+            and (pos - prev['pos']).manhattanLength() <= CLICK_CYCLE_TOLERANCE_PX
+            and now - prev['time'] <= CLICK_CYCLE_TIMEOUT_S
+        )
+        index = (prev['index'] + 1) % len(targets) if same_spot else 0
+        self._click_cycle = {'pos': QtCore.QPointF(pos), 'index': index, 'time': now}
+        if same_spot:
+            self._apply_click_target(targets[index])
 
     @selection_op
     def _on_plot_clicked(self, plot_item, additive=False):

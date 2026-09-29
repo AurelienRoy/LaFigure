@@ -404,32 +404,39 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             outline_pen.setCosmetic(True)  # constant on-screen width/dash length, not data-scaled
             painter.setPen(outline_pen)
             painter.setBrush(QtCore.Qt.NoBrush)
-            rect, angle = self._selection_outline_geometry()
-            if angle:
-                painter.save()
-                painter.rotate(angle)
-                painter.drawRect(rect)
-                painter.restore()
-            else:
-                painter.drawRect(rect)
+            painter.drawPolygon(self._selection_outline_polygon())
 
-    def _selection_outline_geometry(self):
-        """(local_rect, angle_deg) for the dashed selection outline drawn
-        above. ORIENTED_OUTLINE_KINDS get a box hugging p0->p1 -- angle is
-        the segment's own local-frame angle, same formula paint() itself
-        uses to draw the line, so painter.rotate(angle) then drawing
-        `rect` lines up exactly with the drawn segment. Everything else
-        keeps today's padded, axis-aligned boundingRect() (angle 0.0, so
-        paint() skips the rotate -- these kinds have no meaningful "along
-        the shape" direction, or (rect/ellipse) already rotate as a whole
-        via self.rotation() when selected, so their own boundingRect is
-        already tight for their own local frame)."""
-        inset = self._px_to_local(4)
+    OUTLINE_END_PAD_PX = 4      # along the segment, past each end -- matches boundingRect()'s own pad
+    OUTLINE_PERP_PAD_PX = 6     # perpendicular to it -- 1.5x END_PAD, so the box reads clearly
+
+    def _selection_outline_polygon(self):
+        """4 local-space corners of the dashed selection outline drawn
+        above. ORIENTED_OUTLINE_KINDS get a box hugging p0->p1, built in
+        SCENE (screen-pixel) space and mapped back to local coordinates --
+        same reasoning as _draw_arrowhead's own docstring: a box computed
+        (and, in an earlier version of this, rotated) purely in local
+        (data) space isn't shape- or size-preserving on screen when an
+        'axes' anchor's X/Y data-per-pixel ratio isn't 1:1. Everything
+        else keeps today's padded, axis-aligned boundingRect() as a
+        (degenerate, unrotated) polygon -- these kinds have no meaningful
+        "along the shape" direction, or (rect/ellipse) already rotate as a
+        whole via self.rotation() when selected, so their own
+        boundingRect() is already tight for their own local frame."""
         if self.kind in ORIENTED_OUTLINE_KINDS and self.p1_local is not None:
-            length = math.hypot(self.p1_local.x(), self.p1_local.y())
-            angle = math.degrees(math.atan2(self.p1_local.y(), self.p1_local.x()))
-            return QtCore.QRectF(-inset, -inset, length + 2 * inset, 2 * inset), angle
-        return self.boundingRect().adjusted(inset, inset, -inset, -inset), 0.0
+            p0_scene = self.mapToScene(QtCore.QPointF(0, 0))
+            p1_scene = self.mapToScene(self.p1_local)
+            vec = p1_scene - p0_scene
+            length = math.hypot(vec.x(), vec.y())
+            ux, uy = (vec.x() / length, vec.y() / length) if length else (1.0, 0.0)
+            along = QtCore.QPointF(ux, uy) * self.OUTLINE_END_PAD_PX
+            perp = QtCore.QPointF(-uy, ux) * self.OUTLINE_PERP_PAD_PX
+            corners_scene = [
+                p0_scene - along - perp, p0_scene - along + perp,
+                p1_scene + along + perp, p1_scene + along - perp,
+            ]
+            return QtGui.QPolygonF([self.mapFromScene(c) for c in corners_scene])
+        inset = self._px_to_local(4)
+        return QtGui.QPolygonF(self.boundingRect().adjusted(inset, inset, -inset, -inset))
 
     ARROWHEAD_PX = 10  # a literal on-screen pixel size -- see _draw_arrowhead
 
@@ -482,8 +489,14 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         """LibreOffice Draw / MATLAB style: Shift toggles this annotation in
         or out of the selection; a plain press on an already-selected one
         keeps the group so it can be dragged together, and collapses to
-        just this one on release if nothing moved."""
-        if ev.button() != QtCore.Qt.LeftButton:
+        just this one on release if nothing moved.
+
+        Outside Select mode there's nothing to select/drag -- Hand/Zoom
+        Rect/Brush are all "no selection" modes (see CLAUDE.md), and a
+        click there needs to fall through to the ViewBox instead (Zoom
+        Rect's own click-to-zoom, Hand's pan-drag start, ...), not be
+        eaten here just because an annotation happens to sit on top."""
+        if ev.button() != QtCore.Qt.LeftButton or self.figure.interaction_mode != 'select':
             ev.ignore()
             return
         fig = self.figure
@@ -532,6 +545,17 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
                     a._push_move_history(origin, a.pos())
         if not moved and self._collapse_on_release:
             self.figure._select_annotation(self)
+        if not moved and not (ev.modifiers() & QtCore.Qt.ShiftModifier):
+            # A genuine click (not a drag) on this annotation -- give
+            # click-cycling a chance to override the selection above, if
+            # this landed on (about) the same spot as the previous plain
+            # click (see selection_ui.py's _apply_click_cycle). Needed
+            # here specifically because this is a NATIVE Qt override (see
+            # CLAUDE.md): unlike a curve click or the empty-space/subplot
+            # fallback, it fully consumes the event before pyqtgraph's own
+            # sigMouseClicked -- and hence _on_scene_clicked's own tail
+            # call to the same method -- ever gets a look at it.
+            self.figure._apply_click_cycle(ev.scenePos())
         ev.accept()
 
     def mouseDoubleClickEvent(self, ev):

@@ -72,6 +72,10 @@ class HelpMixin:
 
 ### Select Mode (default)
 - **Click a subplot** to select it (red border)
+- **Click again at (about) the same spot** to step through whatever else
+  is stacked there (a curve, an annotation, an overlapping subplot) --
+  wraps back to the top after the last one; clicking elsewhere (or
+  pausing over a second) starts a fresh stack there instead
 - **Drag border/corner handles** to resize the subplot
   - Border: resize in one dimension
   - Corner: resize both dimensions
@@ -120,8 +124,11 @@ class HelpMixin:
 
 ### Zoom Rect Mode
 - **Drag a rectangle** to zoom into that area
+- **Click** (no drag) to zoom in 3x, centered on the clicked point
+- **Double-click** to zoom out 3x, same centering
 - **Right-drag** to zoom/unzoom dynamically (per axis)
-- **No selection** borders or handles shown
+- **No selection** borders or handles shown -- a click never selects a
+  subplot/curve/annotation in this mode, even one right under the cursor
 
 ### Brush Mode
 - **Drag a rectangle** to brush points; **Shift+drag** adds to the brushed set

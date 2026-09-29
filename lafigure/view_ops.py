@@ -210,6 +210,27 @@ class ViewOpsMixin:
             return
         self._undoable_view_change(p.getViewBox().autoRange)
 
+    CLICK_ZOOM_FACTOR = 3.0  # a plain click in Zoom Rect mode zooms by this factor
+
+    def _click_zoom(self, plot_item, scene_pos, out=False):
+        """Zoom Rect mode's plain-click behavior (_on_scene_clicked):
+        zoom in to 1/CLICK_ZOOM_FACTOR of the current view on a single
+        click, or out to CLICK_ZOOM_FACTOR x it on a double-click --
+        centered on the clicked DATA point, not the view's own center,
+        matching a normal "click to zoom in here" gesture. One undo
+        entry, same mechanism Home/Fit/View All use."""
+        vb = plot_item.getViewBox()
+        factor = self.CLICK_ZOOM_FACTOR if out else (1.0 / self.CLICK_ZOOM_FACTOR)
+        center = vb.mapSceneToView(scene_pos)
+        (x0, x1), (y0, y1) = vb.viewRange()
+
+        def scaled(lo, hi, c):
+            half = (hi - lo) / 2 * factor
+            return c - half, c + half
+
+        new_x, new_y = scaled(x0, x1, center.x()), scaled(y0, y1, center.y())
+        self._undoable_view_change(lambda: vb.setRange(xRange=new_x, yRange=new_y, padding=0))
+
     def fit_view_vertical(self):
         """Stretch Y to the min/max of the data whose x lies in the current
         X range -- the curves as currently shown, not their full extent."""

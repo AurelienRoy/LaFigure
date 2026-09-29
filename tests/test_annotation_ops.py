@@ -391,27 +391,64 @@ def test_shift_placement_drag_constrains_the_new_shape():
 
 # -- Selection outline / arrowhead geometry (pure math, no QPainter needed) --
 
-def test_oriented_outline_for_a_diagonal_arrow_is_tight_and_angled():
+def test_oriented_outline_for_a_diagonal_arrow_is_tight_in_scene_space():
     f, curve, rect, ellipse = _two_annotation_figure()
     arrow = _place(f, 'arrow', f.plots[2])
     arrow.p1_local = QtCore.QPointF(60, 40)  # diagonal, not horizontal/vertical
-    rect_out, angle = arrow._selection_outline_geometry()
-    length = math.hypot(60, 40)
-    inset = arrow._px_to_local(4)
-    assert abs(rect_out.width() - (length + 2 * inset)) < 1e-6
-    assert abs(rect_out.height() - 2 * inset) < 1e-6
-    assert abs(angle - math.degrees(math.atan2(40, 60))) < 1e-6
-    # Tighter than the old axis-aligned box of the same diagonal segment.
-    assert rect_out.width() * rect_out.height() < 60 * 40
+    poly = arrow._selection_outline_polygon()
+    assert len(poly) == 4
+    scene_poly = [arrow.mapToScene(p) for p in poly]
+    p0_scene = arrow.mapToScene(QtCore.QPointF(0, 0))
+    p1_scene = arrow.mapToScene(arrow.p1_local)
+    length = math.hypot(p1_scene.x() - p0_scene.x(), p1_scene.y() - p0_scene.y())
+
+    def dist(a, b):
+        return math.hypot(a.x() - b.x(), a.y() - b.y())
+
+    # A tight, oriented rectangle around the segment in SCENE space: two
+    # opposite edges ~= the segment length + 2*END_PAD, the other two
+    # ~= 2*PERP_PAD -- tighter than the old axis-aligned box of the two
+    # endpoints (60 x 40), and not the axis-aligned box at all.
+    edges = sorted(dist(scene_poly[i], scene_poly[(i + 1) % 4]) for i in range(4))
+    expected_short, expected_long = 2 * arrow.OUTLINE_PERP_PAD_PX, length + 2 * arrow.OUTLINE_END_PAD_PX
+    assert abs(edges[0] - expected_short) < 0.5 and abs(edges[1] - expected_short) < 0.5, edges
+    assert abs(edges[2] - expected_long) < 0.5 and abs(edges[3] - expected_long) < 0.5, edges
     f.close()
 
 
 def test_rect_selection_outline_is_unrotated():
     f, curve, rect, ellipse = _two_annotation_figure()
-    rect_out, angle = rect._selection_outline_geometry()
-    assert angle == 0.0
+    poly = rect._selection_outline_polygon()
     inset = rect._px_to_local(4)
-    assert rect_out == rect.boundingRect().adjusted(inset, inset, -inset, -inset)
+    expected = QtGui.QPolygonF(rect.boundingRect().adjusted(inset, inset, -inset, -inset))
+    assert poly == expected
+    f.close()
+
+
+def test_oriented_outline_is_not_warped_by_a_non_square_data_scale():
+    """A subplot whose X range spans 1000x its Y range: a rotation/box
+    computed in DATA space (not scene space) would come out visibly
+    skewed on screen. The outline polygon, mapped to scene space, must
+    still be a true rectangle (adjacent edges perpendicular)."""
+    f = m.LaFigure(empty=True)
+    p = f.add_subplot(row=0, col=0)
+    f._add_series(p, 'line', [0, 1000], [0, 1], name='flat')
+    f.show()
+    app.processEvents()
+    p.getViewBox().setRange(xRange=(0, 1000), yRange=(0, 1), padding=0)
+    app.processEvents()
+    start_scene = p.getViewBox().mapViewToScene(QtCore.QPointF(500, 0.5))
+    arrow = f._create_annotation(
+        'arrow', 'axes', p, p.getViewBox().mapSceneToView(start_scene), QtCore.QPointF(200, 0.3))
+    poly = arrow._selection_outline_polygon()
+    scene_poly = [arrow.mapToScene(pt) for pt in poly]
+
+    def vec(a, b):
+        return (b.x() - a.x(), b.y() - a.y())
+
+    e0, e1 = vec(scene_poly[0], scene_poly[1]), vec(scene_poly[1], scene_poly[2])
+    dot = e0[0] * e1[0] + e0[1] * e1[1]
+    assert abs(dot) < 0.5, ("adjacent edges must be perpendicular on screen", dot)
     f.close()
 
 

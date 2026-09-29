@@ -205,20 +205,29 @@ class MenusMixin:
         vb.raiseContextMenu = raise_context_menu
 
     # -- the curve menu ----------------------------------------------------
-    def _curve_at(self, plot_item, scene_pos):
-        """The topmost clickable curve under scene_pos, or None. Same hit
-        area as a left click (the curve's mouseShape), plus a scatter's
-        markers."""
+    def _curves_at(self, plot_item, scene_pos):
+        """Every curve on plot_item whose hit area contains scene_pos,
+        topmost first -- same per-curve check as a left click (the
+        curve's mouseShape), plus a scatter's markers. Factored out of
+        _curve_at (below, now just its first result) so selection_ui.py's
+        click-cycling can see the whole overlapping stack, not just the
+        top one."""
         items = [c for c in plot_item.listDataItems()
                  if isinstance(c, pg.PlotDataItem) and c.isVisible()]
         order = {c: i for i, c in enumerate(items)}
+        hits = []
         for c in sorted(items, key=lambda c: (c.zValue(), order[c]), reverse=True):
             if c.curve.mouseShape().contains(c.curve.mapFromScene(scene_pos)):
-                return c
-            if (c.opts.get('symbol') is not None
+                hits.append(c)
+            elif (c.opts.get('symbol') is not None
                     and len(c.scatter.pointsAt(c.scatter.mapFromScene(scene_pos)))):
-                return c
-        return None
+                hits.append(c)
+        return hits
+
+    def _curve_at(self, plot_item, scene_pos):
+        """The topmost clickable curve under scene_pos, or None."""
+        hits = self._curves_at(plot_item, scene_pos)
+        return hits[0] if hits else None
 
     def _curve_menu_targets(self, plot_item, curve):
         """Right-click on a curve: keep a curve selection containing it (the

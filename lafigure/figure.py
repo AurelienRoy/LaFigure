@@ -148,6 +148,9 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         # A finished band drag reaches pyqtgraph as a plain click (it never
         # saw the consumed moves); this swallows that one click.
         self._suppress_click = False
+        # Click-cycling (Select mode): {'pos', 'index', 'time'} of the last
+        # plain click that landed on/near an overlapping stack, or None.
+        self._click_cycle = None
 
         # Layout state (grid lines, boxes, z_order, drag states) is created
         # by _create_resize_handles below -- see layout.py.
