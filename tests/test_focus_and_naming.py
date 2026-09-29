@@ -214,7 +214,7 @@ def test_add_subplot_accepts_spans_and_axes_type():
     assert wide.sceneBoundingRect().width() > 1.5 * left.sceneBoundingRect().width(), \
         "colspan is passed through to the grid"
     try:
-        f.add_subplot(2, 0, axes_type='3d')
+        f.add_subplot(2, 0, axes_type='polar')  # '3d' exists since WP-O
     except NotImplementedError:
         pass
     else:
