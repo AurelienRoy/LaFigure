@@ -1,6 +1,6 @@
 ---
 name: lafigure-worker
-description: Implements one LaFigure work package (WP-<id> from PLAN.md) in an isolated git worktree, following the project's ownership, testing and reporting rules. Launched by the coordinator session (see the /lafigure-next skill) with isolation "worktree"; the prompt names the package, its goal, owned files and interfaces.
+description: Implements one LaFigure work package (WP-<id> from PLAN.md) in an isolated git worktree, following the project's ownership, testing and reporting rules. Launched by a coordinator session (following PLAN.md's "How to resume" and "Merge protocol") with isolation "worktree"; the prompt names the package, its goal, owned files and interfaces.
 tools: Read, Edit, Write, Glob, Grep, Bash, PowerShell
 model: sonnet
 ---

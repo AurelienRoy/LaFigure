@@ -78,6 +78,10 @@ LaFigure/
     selection.py                    # brushing protocol (rows_in_rect/show_rows/
                                      # brush_bins) + RectBrush -- SelectionModel/
                                      # LinkedScatter deleted 2026-09-28 (WP-J)
+    grid.py                          # fractional grid coordinates <-> figure
+                                      # fractions (the free layout, WP-A)
+    datasource.py                    # DataSource: shared columnar table, row
+                                      # index = point ID, hide/filter (no Qt)
     handles.py                       # DragHandle base + ResizeHandle, MoveHandle,
                                       # AnnotationHandle (child-parented resize/
                                       # rotate/endpoint grip for one AnnotationItem)
@@ -303,11 +307,8 @@ the actual code — this list is a summary, not a substitute for checking.
         column** instead of overwriting; a plain-array series is still
         edited in place. Fit's overlay curve is a fresh `'line'` series,
         so it can itself be brushed/deleted/fit again like any other.
-- [x] Right-click context menu, extending pyqtgraph's default one (View
-      All / Mouse Mode / Plot Options) with: Paste Curve, Copy/Paste
-      Subplot, Toggle Legend, Remove Average, FFT → Subplot Below, the
-      four brushed-selection actions above, Delete Curve submenu, Rename
-      Curve submenu. Right-clicking a subplot selects it, unless the
+- [x] Right-click selection rules (the menus' contents: see "Right-click
+      menus split by target" above). Right-clicking a subplot selects it, unless the
       subplot (or a selected curve on it) is already part of the selection,
       which is then kept whole so menu actions see the entire Shift-built
       set (`_on_plot_context`); the same rule applies to right-clicking a
@@ -888,26 +889,6 @@ against memory of having launched the package.)
       installed — the renderer uses PyQt5's own raw GL bindings, per the
       spike's own approach.
 
-## The one thing to internalize before touching this kind of code
-
-**PyQtGraph's `GraphicsLayoutWidget` grid is a real `QGraphicsGridLayout`.**
-Layouts exist specifically to prevent overlap by construction. Every bug and
-every non-trivial feature in this file traces back to either respecting that
-fact or fighting it:
-
-- Resizing one cell without disturbing others → done *for free* by setting
-  row/column stretch factors and letting the layout redistribute space.
-  Don't hand-roll geometry math for this.
-- Making a subplot visually overlap its neighbors ("float") → **impossible**
-  while the layout manages it. You must detach it from the layout first.
-- "Move/swap two subplots" → same detach-and-reattach trick, then swap which
-  cell each item is reinserted into.
-
-If you're building something similar with a different library, look for the
-equivalent "manages the item" vs. "manages nothing" boundary in that
-library's layout system — the same class of bug will show up wherever you
-cross it carelessly.
-
 ## What worked well (keep doing this)
 
 - **Millions-of-points performance**: `setClipToView(True)` +
@@ -1163,14 +1144,10 @@ caught the mismatch (see bug #6).**
    than defending against a coexistence issue that may not be real. If
    double-clicking a text annotation to rename it visibly also
    deselects the annotation afterward, this is where to fix it.
-5. **A `'border'`-anchored annotation's on-screen offset from its
-   subplot is a raw scene-pixel offset (`anchor_offset`)** that does not
-   itself rescale if the subplot is resized — same class of simplification
-   as this app's own subplot-resize code forgetting manual sizing across
-   a structural grid change (see "Should you reuse the code?" below). A
-   border annotation can end up looking oddly placed relative to a
-   subplot that's since been resized a lot. Acceptable for a POC;
-   fixing it means storing a fractional (not absolute-pixel) offset.
+5. ~~A `'border'`-anchored annotation's offset is a raw scene-pixel
+   offset that doesn't rescale with its subplot.~~ **Fixed by WP-A
+   (2026-09-28):** `anchor_offset` is now a fraction of the subplot box
+   (`_box_fraction`/`_box_point`), so it follows a resize.
 6. **Filiation color is purely visual (a dashed outline when selected)**,
    derived live from `plots.index(parent_plot)` — it is NOT stored on the
    annotation itself, so if subplots are reordered (there's currently no
@@ -1566,6 +1543,26 @@ managing an item's placement takes back exactly the affordances you're
 using it for), which still applies to `QGraphicsScene`, undo stacks, and
 anything else "managing" this code touches next.
 
+The original text:
+
+> **PyQtGraph's `GraphicsLayoutWidget` grid is a real `QGraphicsGridLayout`.**
+> Layouts exist specifically to prevent overlap by construction. Every bug
+> and every non-trivial feature traced back to either respecting that fact
+> or fighting it:
+>
+> - Resizing one cell without disturbing others → done *for free* by
+>   setting row/column stretch factors and letting the layout redistribute
+>   space.
+> - Making a subplot visually overlap its neighbors ("float") →
+>   **impossible** while the layout manages it. You must detach it first.
+> - "Move/swap two subplots" → same detach-and-reattach trick, then swap
+>   which cell each item is reinserted into.
+>
+> If you're building something similar with a different library, look for
+> the equivalent "manages the item" vs. "manages nothing" boundary in that
+> library's layout system — the same class of bug will show up wherever
+> you cross it carelessly.
+
 ## Should you reuse the code?
 
 Only if you're extending *this exact app*. If you're building something
@@ -1581,9 +1578,10 @@ necessarily the right call in a codebase you can actually test:
   grid coordinates (`lafigure/grid.py`) don't have this problem — an edge
   is a fraction referencing specific grid lines, so it survives an
   add/delete elsewhere in the grid exactly, with no reindexing needed.
-- Brushing is hardcoded to two named scatter subplots (`self.scatter1`/
-  `self.scatter2`) rather than a general registry — a known, documented
-  shortcut, not a pattern to repeat.
+- **Superseded by WP-J (2026-09-28):** brushing used to be hardcoded to
+  two named scatter subplots (`self.scatter1`/`self.scatter2`). It now
+  works on any brush-capable series, linked through shared `DataSource`
+  rows (`selection.py`, `brushing.py`).
 - **Superseded by WP-A:** `_grid_layout()`, which reached into pyqtgraph's
   private `GraphicsLayout.layout` for row/column stretch factors, is gone
   along with `QGraphicsGridLayout` itself — subplots are positioned
@@ -1610,12 +1608,17 @@ repeating the same resume/merge/launch cycle every session. So:
   prompt then carries only the package-specific part (goal, owned files,
   interfaces). `PLAN.md`'s brief template holds only the package-specific
   part; the standing rules live in the agent file — change them there.
-- **Coordinator Skill — `/lafigure-next`
-  (`.claude/skills/lafigure-next/SKILL.md`).** A
-  thin trigger for `PLAN.md`'s "How to resume" and "Merge protocol":
-  status table, branches and worktrees, merge finished packages, run the
-  suite, update the docs, launch the next wave. The logic stays in
-  `PLAN.md`; the skill only saves re-explaining it every session.
+- **Coordinator Skill `/lafigure-next` — retired 2026-09-29**, once the
+  roadmap was complete (it only triggered `PLAN.md`'s resume/merge/launch
+  cycle; recover it from git history if a new multi-package roadmap
+  starts). The procedure itself stays in `PLAN.md`.
+- **Wrap-up Skill — `/lafigure-ship`
+  (`.claude/skills/lafigure-ship/SKILL.md`, 2026-09-29).** After the
+  roadmap, work became one user request at a time, each ending with the
+  same checklist: offscreen suite, sync the "?" help dialog
+  (`help.py`) and this file, then commit only this session's files (the
+  user's own edits separate or left out, `git commit -F`). The help
+  dialog and the commit split were the steps most easily forgotten.
 
 Still **not** Skills: the test recipe (one command:
 `QT_QPA_PLATFORM=offscreen python run_tests.py`, since WP-01 landed
