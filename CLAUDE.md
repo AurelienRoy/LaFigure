@@ -388,6 +388,11 @@ the actual code — this list is a summary, not a substitute for checking.
         `set_interaction_mode` and `add_subplot` so a subplot
         added/pasted while already in Hand mode gets it immediately too).
       - **Zoom Rect**: same as Hand but drag draws a zoom-to-rectangle.
+        The cursor is a drawn magnifying-glass-with-"+" (`view_ops.
+        _zoom_cursor`, 2026-09-29) — Qt has no built-in cursor shape for
+        this, unlike Hand's `OpenHandCursor`, so it's a cached `QPixmap`
+        painted once, wrapped in a `QCursor` with its hotspot at the
+        lens's center (the point actually being zoomed into).
 - [x] **Annotations** (ellipse, rectangle, text, text+arrow, arrow, double
       arrow, line, data cursor) with a filiation (parent/child) model:
       free-floating in the figure (`anchor='figure'`), tied to a subplot's

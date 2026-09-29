@@ -27,19 +27,55 @@
 Link X, Remove Average, FFT -> subplot below.
 """
 import numpy as np
-from pyqtgraph.Qt import QtCore
+from pyqtgraph.Qt import QtCore, QtGui
 import pyqtgraph as pg
 
 from .datasource import DataSource
 from .editable_text import wire_legend_editable
 from .selection_ui import selection_op
 
+# Qt has no built-in "magnifying glass" cursor shape, so Zoom Rect gets a
+# drawn one (same technique as toolbar.py's _fit_icon): a lens with a "+"
+# inside, a handle, cached once since it never changes.
+_ZOOM_CURSOR = None
+
+
+def _zoom_cursor():
+    global _ZOOM_CURSOR
+    if _ZOOM_CURSOR is None:
+        size = 24
+        pix = QtGui.QPixmap(size, size)
+        pix.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(pix)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        pen = QtGui.QPen(QtGui.QColor(40, 40, 40), 1.6)
+        painter.setPen(pen)
+        # Lens: circle centered at (9, 9), radius 6.
+        cx, cy, r = 9, 9, 6
+        painter.drawEllipse(QtCore.QPointF(cx, cy), r, r)
+        # "+" inside the lens.
+        painter.drawLine(QtCore.QPointF(cx - 3, cy), QtCore.QPointF(cx + 3, cy))
+        painter.drawLine(QtCore.QPointF(cx, cy - 3), QtCore.QPointF(cx, cy + 3))
+        # Handle, from the lens's lower-right edge out to the corner.
+        painter.setPen(QtGui.QPen(QtGui.QColor(40, 40, 40), 2.2))
+        hx, hy = cx + r * 0.7, cy + r * 0.7
+        painter.drawLine(QtCore.QPointF(hx, hy), QtCore.QPointF(size - 2, size - 2))
+        painter.end()
+        # Hotspot at the lens center: that's the point actually being
+        # zoomed into, same convention as a real magnifier cursor.
+        _ZOOM_CURSOR = QtGui.QCursor(pix, cx, cy)
+    return _ZOOM_CURSOR
+
 
 class ViewOpsMixin:
     # -- interaction mode ------------------------------------------------
     @staticmethod
     def _cursor_for_mode(mode):
-        return QtCore.Qt.OpenHandCursor if mode == 'hand' else QtCore.Qt.ArrowCursor
+        if mode == 'hand':
+            return QtCore.Qt.OpenHandCursor
+        if mode == 'zoom':
+            return _zoom_cursor()
+        return QtCore.Qt.ArrowCursor
 
     def _apply_view_mouse_mode(self, vb):
         """Set a ViewBox's pan/rect mouse mode from self.interaction_mode,

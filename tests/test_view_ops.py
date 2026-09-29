@@ -77,6 +77,27 @@ def test_interaction_modes_toggle_selection_ui():
     win.close()
 
 
+def test_zoom_mode_uses_a_drawn_magnifying_glass_cursor():
+    """Zoom Rect has no built-in Qt cursor shape to reuse (unlike Hand's
+    OpenHandCursor), so it gets a drawn one -- a real QCursor backed by a
+    non-empty pixmap, not a bare Qt.CursorShape, and every subplot's
+    ViewBox actually has it set. A subplot added while already in Zoom
+    Rect mode must get it too (add_subplot's own cursor-adoption call)."""
+    win = shown_figure()
+    win.set_interaction_mode('zoom')
+    for p in win.plots:
+        cursor = p.getViewBox().cursor()
+        assert cursor.shape() == QtCore.Qt.BitmapCursor, "a real drawn cursor, not a stock shape"
+        assert not cursor.pixmap().isNull() and cursor.pixmap().width() > 0
+
+    new_plot = win.add_subplot(row=2, col=0)
+    assert new_plot.getViewBox().cursor().shape() == QtCore.Qt.BitmapCursor
+
+    win.set_interaction_mode('hand')
+    assert win.plots[0].getViewBox().cursor().shape() == QtCore.Qt.OpenHandCursor
+    win.close()
+
+
 def test_remove_average_undo_redo():
     """Undo/redo: remove_average."""
     win = shown_figure()
