@@ -588,12 +588,20 @@ class FigureManager(QtWidgets.QMainWindow):
             obj.item.setVisible(item.checkState(0) == QtCore.Qt.Checked)
         elif kind == 'annotation':
             obj.setVisible(item.checkState(0) == QtCore.Qt.Checked)
-        self._curve_rebuild_tree()
+        # Deferred, not called directly: a real click on the checkbox fires
+        # itemChanged (this handler) *before* the same click's own
+        # itemClicked -- rebuilding the tree here, synchronously, deletes
+        # `item` out from under that still-pending itemClicked delivery, so
+        # Qt hands it a null item (AttributeError: 'NoneType' has no
+        # attribute 'data' in _on_curve_tree_item_clicked). Rebuilding on
+        # the next event-loop turn lets both signals for this click finish
+        # first.
+        QtCore.QTimer.singleShot(0, self._curve_rebuild_tree)
 
     # -- selection sync: tree click -> figure --------------------------------
     def _on_curve_tree_item_clicked(self, item, column):
         fig, plot_item = self._curve_current_fig, self._curve_current_plot
-        if fig is None or plot_item is None:
+        if fig is None or plot_item is None or item is None:
             return
         kind = item.data(0, self.ROLE_KIND)
         obj = item.data(0, self.ROLE_OBJ)

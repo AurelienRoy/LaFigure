@@ -1778,6 +1778,47 @@ and every edit made during the state goes through one path that knows
 about it (`curve_style.py`). And test the user-visible outcome (the
 legend has items and a size), not that the object exists.
 
+### 19. Rebuilding a QTreeWidget from inside its own itemChanged handler nulls out the pending itemClicked for the same click (2026-09-29)
+
+**Symptom:** clicking a checkbox in the Curve Browser tree (reported for
+an ellipse and a text+arrow annotation row, but not specific to either
+kind) raised `AttributeError: 'NoneType' object has no attribute 'data'`
+in `_on_curve_tree_item_clicked`. Not reproducible by calling
+`item.setCheckState(0, ...)` directly (what the existing checkbox tests
+did) — only by a real click on the checkbox indicator.
+
+**Root cause:** a real click on a `QTreeWidgetItem`'s checkbox delivers
+**two** signals for that one click: `itemChanged` (the checkbox state
+toggling) fires first, synchronously, followed by `itemClicked` (the
+click itself). `_on_curve_item_changed` (the `itemChanged` handler)
+called `self._curve_rebuild_tree()` directly, which does
+`self.curve_tree.clear()` — destroying every `QTreeWidgetItem`,
+including the one the still-pending `itemClicked` delivery was about to
+hand to `_on_curve_tree_item_clicked`. Qt then delivers that signal with
+a null item instead of a deleted-wrapper error (contrast bug #11's
+"wrapped C/C++ object has been deleted" for a different kind of stale
+reference) — `item.data(...)` on `None` is the `AttributeError` above.
+
+**Fix:** `_on_curve_item_changed` now defers the rebuild
+(`QtCore.QTimer.singleShot(0, self._curve_rebuild_tree)`) instead of
+calling it inline, so both signals for the same click finish being
+delivered to the *original* tree before it's torn down.
+`_on_curve_tree_item_clicked` also gained a defensive `item is None`
+guard, belt-and-suspenders. Existing tests that call
+`item.setCheckState(0, ...)` directly and then `app.processEvents()`
+still see an up-to-date tree — a `QTimer.singleShot(0, ...)` is due
+immediately, so `processEvents()` dispatches it in the same call.
+
+**Lesson:** don't mutate/rebuild a Qt item view synchronously from
+inside a signal handler fired *by that same view*, for a gesture (here,
+one click) known to emit more than one signal — an earlier handler in
+the chain can destroy state a later one for the same event still needs.
+When in doubt, defer the mutation with `QTimer.singleShot(0, ...)` and
+let the current event finish being dispatched first. Also: a bug that
+only reproduces via a real Qt-delivered event, not a direct method/
+setter call, needs a test built the same way (real `QTest.mouseClick`
+here) — see bug #11's and #14's own versions of this same lesson.
+
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 
 **This section described the codebase from the original single-file POC

@@ -27,8 +27,10 @@ section, WP-K2): the tree following the focused subplot live, group
 nesting/display_name, visibility checkboxes (view state, not undoable),
 two-way selection sync, and the bottom editor's undoable property edits.
 """
+import sys
+
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore
+from pyqtgraph.Qt import QtCore, QtTest
 
 from lafigure.groups import Group
 from tests.helpers import app, m, _place
@@ -203,6 +205,40 @@ def test_series_visibility_checkbox_toggles_item_and_is_not_undoable():
 
     assert s1.item.isVisible() is False
     assert len(f.undo_stack) == n_undo
+    f.close()
+    mgr.close()
+
+
+def test_real_click_on_an_annotation_checkbox_does_not_crash():
+    """A real click on the checkbox fires itemChanged (which used to
+    rebuild the tree synchronously) *before* the same click's own
+    itemClicked -- the synchronous rebuild deleted the C++ item out from
+    under that still-pending itemClicked, so Qt delivered it a null item
+    and _on_curve_tree_item_clicked raised AttributeError. Only a real
+    QTest click (not item.setCheckState) reproduces this: that's why the
+    other checkbox test above didn't catch it."""
+    f, p, s1, s2 = _two_curve_figure()
+    ann = _place(f, 'ellipse', p)
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+    item = _find_row(_top_items(mgr.curve_tree), 'annotation', ann)
+    assert item.checkState(0) == QtCore.Qt.Checked
+
+    errors = []
+    old_hook = sys.excepthook
+    sys.excepthook = lambda t, v, tb: errors.append(v)
+    try:
+        rect = mgr.curve_tree.visualItemRect(item)
+        pt = QtCore.QPoint(rect.left() + 8, rect.top() + rect.height() // 2)
+        QtTest.QTest.mouseClick(mgr.curve_tree.viewport(), QtCore.Qt.LeftButton, pos=pt)
+        app.processEvents()
+        app.processEvents()  # the deferred rebuild's singleShot(0, ...)
+    finally:
+        sys.excepthook = old_hook
+    assert errors == [], errors
+    assert ann.isVisible() is False
     f.close()
     mgr.close()
 
