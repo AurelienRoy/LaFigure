@@ -574,3 +574,179 @@ Worth picking up in a future pass, not urgent:
 - Transform applies to `line`/`scatter`/`stairs`/`area` only -- not
   `hist` (rebins), `bar`/`errorbar` (a scale wouldn't mean bar
   width/error height), `imshow` or any 3D kind.
+
+---
+
+# Round 3 — debug mode (planned 2026-09-30)
+
+User request: a debug mode with a verbose log the user can copy/paste
+back for future bug reports, enabled in every example script. Motivated
+directly by two real bugs just found/fixed in round 2's follow-up
+(title Edit Text's native GL crash -- no Python traceback at all -- and
+the Font dialog's underline/strikeout). Confirmed with the user:
+- **Log destination**: one fixed file, `lafigure_debug.log`, overwritten
+  every run (not timestamped-per-run), always also streamed to stderr.
+- **Log scope**: crash-safety (faulthandler, a Python exception hook, a
+  bridge for Qt's own C++-side warnings) is the foundation everyone
+  wants; on top of that, log interaction mode changes, every undo/redo
+  push and run, click/selection dispatch, and brushing/annotation
+  placement gestures.
+
+**Frozen interface (every package codes against this, don't invent your
+own):** `import logging; logger = logging.getLogger('lafigure.<module
+name, e.g. history/view_ops/selection_ui/brushing/annotation_ops>')` --
+ordinary hierarchical stdlib logging, no shared helper needed. WP-DBG1's
+`lafigure.debug.enable_debug_mode()` configures handlers/level on the
+root `'lafigure'` logger once; every child logger under it is affected
+for free. Log at `logging.DEBUG`. `enable_debug_mode(log_path=None) ->
+str` returns the absolute path it wrote to (default `lafigure_debug.log`
+in the current working directory), so a caller (an example script) can
+print it.
+
+## Status
+
+| WP | Title | Wave | Depends on | Model | Status |
+|----|-------|------|-----------|-------|--------|
+| DBG1 | Debug core: logging setup, faulthandler, exception hook, Qt message bridge | 1 | -- | sonnet | todo |
+| DBG2 | Log interaction-mode changes + undo/redo push/run | 1 | -- | sonnet | todo |
+| DBG3 | Log click/selection dispatch | 1 | -- | sonnet | todo |
+| DBG4 | Log brushing + annotation placement gestures | 1 | -- | sonnet | todo |
+| DBG5 | Enable debug mode in all 7 example scripts | 1 | DBG1 (interface frozen above; codes in parallel, merges after) | sonnet | todo |
+
+All five run in parallel worktrees; DBG5 codes against the frozen
+`enable_debug_mode()` signature above without waiting for DBG1's branch
+to exist, but is merged only after DBG1 lands.
+
+## File ownership
+
+| File | Owner |
+|------|-------|
+| `lafigure/debug.py` (new), `lafigure/__init__.py`, `tests/test_debug.py` (new) | DBG1 |
+| `lafigure/view_ops.py` (`set_interaction_mode` only), `lafigure/history.py`, `tests/test_view_ops.py`, `tests/test_history.py` | DBG2 |
+| `lafigure/selection_ui.py`, `tests/test_selection_ui.py` | DBG3 |
+| `lafigure/brushing.py`, `lafigure/annotation_ops.py`, `tests/test_brushing.py`, `tests/test_annotation_ops.py` | DBG4 |
+| `examples/*.py` (all 7) | DBG5 |
+
+`view_ops.py` is also owned (a different function, `remove_average`) by
+nothing currently active -- DBG2 touches only `set_interaction_mode`,
+so no collision with round 2's history.
+
+## Package briefs
+
+### DBG1 -- debug core (sonnet)
+- `lafigure/debug.py` (new): `enable_debug_mode(log_path=None) -> str`.
+  - Resolves `log_path` (default `os.path.abspath('lafigure_debug.log')`
+    in the CURRENT working directory, not the package directory --
+    that's where a user running an example actually looks).
+  - Opens it in `'w'` mode (overwritten every run, per the user's
+    choice), attaches a `logging.FileHandler` and a `logging.StreamHandler`
+    (stderr) to the root `'lafigure'` logger, level `DEBUG`, format
+    `"%(asctime)s %(levelname)s %(name)s: %(message)s"`.
+  - `faulthandler.enable(file=<the same log file object>, all_threads=True)`
+    -- the one thing that can leave ANY trace of a native crash with no
+    Python traceback (exactly the class of bug CLAUDE.md's own bug #20
+    and this round's Edit-Text crash both are).
+  - Wraps `sys.excepthook`: logs `logger.critical(..., exc_info=(exc_type,
+    exc_value, exc_tb))` then still calls whatever hook was previously
+    installed (don't swallow the normal terminal behavior).
+  - `QtCore.qInstallMessageHandler(...)`: routes every Qt
+    warning/critical/fatal message through the same logger (Qt's own
+    C++-side diagnostics are often the only hint before a native crash --
+    see this round's own investigation, which relied on very similar
+    manual instrumentation to find the GL/focus crash).
+  - Idempotent: calling it twice must not attach duplicate handlers (a
+    second call is a no-op, or replaces rather than adds -- your choice,
+    tested either way).
+  - `lafigure/__init__.py`: export `enable_debug_mode` from the public
+    API (`lafigure.enable_debug_mode`).
+- Acceptance tests (`tests/test_debug.py`, new): enabling creates/
+  truncates the log file at the expected path; a message logged via
+  `logging.getLogger('lafigure.somemodule').debug(...)` afterward
+  appears in the file; a simulated uncaught exception is logged via the
+  excepthook wrapper AND the previous hook still ran; a Qt warning
+  (trigger one for real, e.g. via an invalid pyqtgraph call known to
+  warn, or `QtCore.qWarning("test")` directly) is captured; calling
+  `enable_debug_mode()` twice doesn't duplicate log lines for one
+  subsequent message.
+- Report the exact final log line FORMAT and logger-naming convention
+  in your final report -- DBG2/DBG3/DBG4 are coding against your
+  interface in parallel and the coordinator reconciles at merge time,
+  but matching your actual format now avoids a needless mismatch.
+
+### DBG2 -- mode changes + undo/redo (sonnet)
+- `set_interaction_mode(mode)` (`view_ops.py`): log
+  `logger.debug("mode: %s -> %s", old, new)` (or equivalent), only on an
+  actual change.
+- `_push_history(undo_fn, redo_fn, ...)` (`history.py`): log that an
+  entry was pushed -- stack depth after push, and whether it's inside an
+  `undo_group()` (nested groups collapse to one entry on the *outer*
+  group's close, per the existing `undo_group` mechanism -- read it
+  first, log at the point an entry actually lands on the stack, not per
+  inner `_push_history` call swallowed by an open group, if that
+  distinction exists in the current code).
+- `undo()`/`redo()`: log which one ran and the resulting stack depth (or
+  that the stack was empty and nothing happened).
+- Logger name: `logging.getLogger('lafigure.history')` for history.py's
+  own lines, `logging.getLogger('lafigure.view_ops')` for the mode
+  change.
+- Acceptance tests: attach a plain list-based logging handler (or
+  caplog-equivalent -- this project has no pytest, so build a small
+  `logging.Handler` subclass that appends `record.getMessage()` to a
+  list, add/remove it around the assertion) to `logging.getLogger
+  ('lafigure')` and assert a record appears for a mode change, a
+  `_push_history` call, an `undo()`, and a `redo()`.
+
+### DBG3 -- click/selection dispatch (sonnet)
+- Find the ONE central place a click's outcome is finally decided (per
+  CLAUDE.md's "What worked well": "One central click dispatcher, one
+  mode variable" -- `_on_scene_clicked` in `selection_ui.py`). Log one
+  DEBUG line per dispatched click: the gesture (plain/shift/right/
+  double), what was hit (subplot/curve/annotation/empty space, with a
+  short identifying name), and the resulting selection (counts, or the
+  focused item's name).
+- Logger: `logging.getLogger('lafigure.selection_ui')`.
+- Acceptance test: dispatch a few real clicks via the existing `_mouse`
+  test helper (a plain click on a curve, a Shift+click adding a subplot,
+  a click on empty space) and assert each produces a log record whose
+  message contains the expected target description, using the same
+  list-based test handler pattern as DBG2 (build your own small helper;
+  if it turns out identical to DBG2's, that's fine -- small duplication
+  across independent packages beats a shared file neither owns).
+
+### DBG4 -- brushing + annotation placement gestures (sonnet)
+- `brushing.py`: log a brush drag's start (subplot, additive or not) and
+  end (rect in data coords, row count caught).
+- `annotation_ops.py`: log an annotation placement gesture's start (kind,
+  anchor) and its outcome (completed with final geometry, or cancelled --
+  Esc, or a negligible-movement click falling back to the default
+  extent).
+- Loggers: `logging.getLogger('lafigure.brushing')` /
+  `logging.getLogger('lafigure.annotation_ops')`.
+- Acceptance tests: a real, correctly-paced brush drag (`_brush_drag`
+  helper, CLAUDE.md bug #17's 12ms pacing) produces start/end log
+  records with the right row count; placing a rect annotation via the
+  real press-drag-release gesture (`eventFilter`) produces start/
+  completion records; pressing Esc mid-placement produces a cancellation
+  record.
+
+### DBG5 -- examples (sonnet, merges after DBG1)
+- Add, in every one of the 7 `examples/*.py` files, right after
+  `import lafigure`: call `lafigure.enable_debug_mode()` and print the
+  returned path so the user immediately sees where to find/copy it from
+  (e.g. `print(f"Debug log: {log_path}")`). Keep each example's own
+  existing docstring/behavior otherwise untouched -- this is a small,
+  identical, one-line-plus-print addition per file.
+- Since DBG1's branch won't exist yet when you start, write against the
+  frozen signature in this plan (`enable_debug_mode(log_path=None) ->
+  str`) -- don't invent a different name/signature. If DBG1's actual
+  merged interface differs from this plan when you check, stop and
+  report rather than guessing.
+- No dedicated test file: examples aren't covered by `run_tests.py`
+  today (CLAUDE.md is explicit that they're customer-facing runnable
+  scripts, not test fixtures) -- don't add one. Just confirm each script
+  still runs cleanly to completion under
+  `QT_QPA_PLATFORM=offscreen python examples/<name>.py` (it should exit
+  0; a couple may need `app.exec_()` skipped/short-circuited under
+  offscreen the way they already are, if that's already handled -- check
+  first, don't add new offscreen-specific branching if the example
+  doesn't already have any).
