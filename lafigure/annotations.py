@@ -62,6 +62,8 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
 from .handles import AnnotationHandle
+from . import editable_text
+from .richtext import to_html
 
 SHAPE_KINDS = ('rect', 'ellipse', 'line', 'arrow', 'doublearrow', 'text', 'textarrow', 'cursor')
 
@@ -216,6 +218,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     def __init__(self, figure, kind, anchor, parent_plot, pen, brush=None, text='', point_ref=None):
         super().__init__()
         self._text_item = None
+        self._font_set = False  # a Font... choice was made: serialize it
         self._rotate_handle = None
         # On-screen rotation in degrees (Qt's convention: clockwise, since
         # scene Y points down) -- see _update_rotation_transform for why
@@ -262,7 +265,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
 
         if kind in ('text', 'textarrow'):
             self._text_item = QtWidgets.QGraphicsTextItem(self)
-            self._text_item.setPlainText(text or SHAPE_LABELS[kind])
+            # self.text is the SOURCE markup (richtext.py); only the display is HTML.
+            self._text_item.setHtml(to_html(text or SHAPE_LABELS[kind]))
             self._text_item.setFont(QtWidgets.QApplication.font())
             self._text_item.setDefaultTextColor(pen.color())
             self._text_item.setAcceptedMouseButtons(QtCore.Qt.NoButton)
@@ -875,24 +879,53 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
 
     def mouseDoubleClickEvent(self, ev):
         if self._text_item is not None:
-            new_text, ok = QtWidgets.QInputDialog.getText(
-                None, "Edit text", "Text:", QtWidgets.QLineEdit.Normal, self.text
-            )
-            if ok and new_text:
-                old_text = self.text
-                self._apply_text(new_text)
-                self.figure._push_history(
-                    undo_fn=lambda: self._apply_text(old_text),
-                    redo_fn=lambda: self._apply_text(new_text),
-                )
+            self.start_text_edit()
         ev.accept()
+
+    # -- text: in-place editing, rich rendering, font (editable_text.py) --
+    def start_text_edit(self, select_all=False):
+        """Open the in-place editor over this annotation's text (source
+        markup, caret at the end -- or all selected, for a placeholder;
+        Enter commits, Shift+Enter = new line, Esc cancels, click-away
+        commits -- one undo entry). Returns the editor, or None for a kind
+        without text."""
+        if self._text_item is None:
+            return None
+        return editable_text.edit_in_place(editable_text.AnnotationTextTarget(self),
+                                           select_all=select_all)
 
     def _apply_text(self, text):
         self.prepareGeometryChange()  # the label's size feeds shape()/boundingRect()
         self.text = text
         if self._text_item is not None:
-            self._text_item.setPlainText(text)
+            self._text_item.setHtml(to_html(text))
         self._layout_label()
+
+    def font_spec(self):
+        """The text's current font, as editable_text's plain spec dict."""
+        if self._text_item is None:
+            return None
+        return editable_text.spec_from_font(self._text_item.font(), self._text_item.defaultTextColor())
+
+    def _apply_font(self, spec):
+        if self._text_item is None or spec is None:
+            return
+        self.prepareGeometryChange()
+        self._text_item.setFont(editable_text.font_from_spec(spec, self._text_item.font()))
+        self._text_item.setDefaultTextColor(QtGui.QColor(*spec['color']))
+        self._font_set = True
+        self._layout_label()
+        self.update()
+
+    def _font_menu_targets(self):
+        """(this annotation's target, the other targets): Font... applies
+        to every selected text annotation if this one is part of the
+        selection, else to this one alone -- starting from this one's font."""
+        fig = self.figure
+        group = fig.selected_annotations if self in fig.selected_annotations else [self]
+        others = tuple(editable_text.AnnotationTextTarget(a) for a in group
+                       if a is not self and a._text_item is not None)
+        return editable_text.AnnotationTextTarget(self), others
 
     def _push_move_history(self, origin, moved_to):
         def set_pos(pos):
@@ -1129,6 +1162,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             'brush': _brush_to_tuple(self.brush),
             'rotation': self._angle,  # on-screen degrees -- see screen_rotation()
             'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
+            'font': self.font_spec() if self._font_set else None,
         }
 
     @classmethod
@@ -1156,6 +1190,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         if ann._rotate_handle is not None:
             ann._position_rotate_handle()
         ann._apply_rotation(data.get('rotation', 0))
+        if data.get('font'):
+            ann._apply_font(data['font'])
         ann.anchor_offset = QtCore.QPointF(*data['anchor_offset'])
         figure._add_annotation_to_scene(ann, QtCore.QPointF(*data['pos']))
         return ann
@@ -1226,6 +1262,10 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         paste_action.setEnabled(bool(self.figure.clipboard.annotation))
         paste_action.triggered.connect(lambda: self.figure.paste_annotation())
         menu.addSeparator()
+        if self._text_item is not None:
+            menu.addAction("Edit Text").triggered.connect(lambda: self.start_text_edit())
+            menu.addAction("Font...").triggered.connect(
+                lambda: editable_text.edit_font(*self._font_menu_targets()))
         menu.addAction("Properties...").triggered.connect(lambda: self.figure._edit_annotation_properties(self))
         if self.figure._relink_source is self:
             menu.addAction("Cancel Link").triggered.connect(self.figure._cancel_relink)
