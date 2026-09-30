@@ -36,6 +36,7 @@ below, not to lafigure/__init__.py."""
 from . import scatter, stairs, area, hist, bar, errorbar, imshow
 from . import scatter3d, line3d, surface  # 3D kinds, for axes_type='3d' subplots (view3d.py)
 <<<<<<< HEAD
+<<<<<<< HEAD
 from . import log_kinds  # loglog/semilogx/semilogy (R4-LOG)
 from . import boxchart, violinplot  # R4-DIST
 from . import plot3, bubblechart3d  # R4-K3D
@@ -57,3 +58,10 @@ from . import plot3, bubblechart3d  # R4-K3D: more 3D kinds, delegating to line3
 __all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
            "scatter3d", "line3d", "surface", "plot3", "bubblechart3d"]
 >>>>>>> wp/r4-k3d
+=======
+from . import polar, polarhistogram, piechart  # polar family (kinds/_polar_base.py)
+
+__all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
+           "scatter3d", "line3d", "surface",
+           "polar", "polarhistogram", "piechart"]
+>>>>>>> wp/r4-polar
