@@ -30,6 +30,7 @@ not direct method calls: the band relies on pyqtgraph emitting exactly
 one click after a drag whose moves it never saw, and the keys on Qt's
 shortcut routing -- only the real event path can show either works.
 """
+import logging
 import math
 import time
 
@@ -596,4 +597,112 @@ def test_right_click_on_an_already_selected_curve_keeps_it_selected():
     _mouse(f, QtCore.QEvent.MouseButtonRelease, center, NO, button=R)
     assert f.selected_curves == [c], "the right-click must keep the curve selected"
     assert f.selected_plots == [], "must not flip the selection to the subplot"
+    f.close()
+
+
+# -- debug-mode click/selection-dispatch logging (Round 3 / WP-DBG3) --------
+class _ListHandler(logging.Handler):
+    """Appends every emitted record's rendered message to `messages`. Attach
+    to logging.getLogger('lafigure') around an assertion, then remove --
+    this project has no pytest/caplog, so this is the small per-package
+    handler CLAUDE.md's Round-3 plan calls for (PLAN.md: "small duplication
+    across independent packages beats a shared file neither owns")."""
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+def _debug_log(fn):
+    """Run fn() with a _ListHandler attached to logging.getLogger('lafigure')
+    at DEBUG level; returns the messages it captured. Enabling debug mode
+    for real (lafigure.debug.enable_debug_mode, WP-DBG1) attaches handlers
+    the same way, just to a file/stderr instead of a list -- this is the
+    plain-stdlib equivalent for an assertion."""
+    logger = logging.getLogger('lafigure')
+    handler = _ListHandler()
+    old_level = logger.level
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    try:
+        fn()
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+    return handler.messages
+
+
+def _dbg3_figure():
+    """One subplot named 'Ramp', a fixed-view 45-degree line named 'ramp' --
+    same "fixed view, real mouse events" pattern as _fixed_line_figure, kept
+    as its own fixture (rather than reusing that one directly) so the
+    subplot has an identifiable name for the log-message assertions below,
+    without touching a helper other tests in this file already depend on."""
+    f = m.LaFigure(empty=True)
+    p = f.add_subplot(row=0, col=0, title='Ramp')
+    x = np.linspace(0, 100, 200)
+    c = f._add_series(p, 'line', x, x, name='ramp', pen=pg.mkPen('r', width=2)).item
+    f.show()
+    app.processEvents()
+    app.processEvents()  # let the ViewBox's lazy auto-range settle first
+    vb = p.getViewBox()
+    vb.setRange(xRange=(0, 100), yRange=(0, 100), padding=0)
+    app.processEvents()
+    return f, p, c
+
+
+def test_click_dispatch_logs_a_plain_click_on_a_curve():
+    """A real plain click landing on a curve produces a DEBUG record from
+    _on_scene_clicked (the one central click dispatcher) naming that
+    curve."""
+    f, p, c = _dbg3_figure()
+    vb = p.getViewBox()
+    pt = vb.mapViewToScene(QtCore.QPointF(50, 50))  # on the 'ramp' line itself
+
+    messages = _debug_log(lambda: _real_click(f, pt))
+
+    dispatch = [msg for msg in messages if msg.startswith('click:')]
+    assert dispatch, "no click-dispatch log record was produced by a real click"
+    assert any("curve 'ramp'" in msg for msg in dispatch)
+    assert any('gesture=plain' in msg for msg in dispatch)
+    f.close()
+
+
+def test_click_dispatch_logs_a_shift_click_adding_a_subplot():
+    """A real Shift+click on empty subplot space (clear of the curve) both
+    adds the subplot to the selection AND produces a DEBUG record naming
+    that subplot."""
+    f, p, c = _dbg3_figure()
+    assert p not in f.selected_plots, "control: nothing selected yet"
+    vb = p.getViewBox()
+    pt = vb.mapViewToScene(QtCore.QPointF(10, 90))  # well off the y=x diagonal
+
+    def do_click():
+        _mouse(f, QtCore.QEvent.MouseButtonPress, pt, QtCore.Qt.LeftButton, mods=SHIFT)
+        _mouse(f, QtCore.QEvent.MouseButtonRelease, pt, NO, mods=SHIFT)
+
+    messages = _debug_log(do_click)
+
+    assert p in f.selected_plots, "control: the shift-click must have added the subplot"
+    dispatch = [msg for msg in messages if msg.startswith('click:')]
+    assert dispatch
+    assert any(f.subplot_name(p) in msg and 'subplot' in msg for msg in dispatch)
+    assert any('shift' in msg for msg in dispatch)
+    f.close()
+
+
+def test_click_dispatch_logs_a_click_on_empty_space():
+    """A real click landing outside every subplot produces a DEBUG record
+    with an 'empty space' marker."""
+    f, p, c = _dbg3_figure()
+    pt = _empty_scene_point(f)
+
+    messages = _debug_log(lambda: _real_click(f, pt))
+
+    dispatch = [msg for msg in messages if msg.startswith('click:')]
+    assert dispatch
+    assert any('empty space' in msg for msg in dispatch)
     f.close()
