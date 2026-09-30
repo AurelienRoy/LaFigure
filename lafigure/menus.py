@@ -41,7 +41,7 @@ from pyqtgraph.Qt import QtGui, QtWidgets
 import pyqtgraph as pg
 
 from .curve_style import (LINE_STYLES, LINE_WIDTHS, MARKERS, MARKER_SIZES,
-                          line_options_apply, marker_options_apply, pen_style_of)
+                          has_current_line, line_capable, marker_options_apply, pen_style_of)
 
 
 def _marker_color(state):
@@ -220,10 +220,12 @@ class MenusMixin:
     def _curves_at(self, plot_item, scene_pos):
         """Every curve on plot_item whose hit area contains scene_pos,
         topmost first -- same per-curve check as a left click (the
-        curve's mouseShape), plus a scatter's markers. Factored out of
-        _curve_at (below, now just its first result) so selection_ui.py's
-        click-cycling can see the whole overlapping stack, not just the
-        top one."""
+        curve's mouseShape, and a scatter's own padded pointsAt --
+        selection_ui._wire_curve_clickable pads both a few screen pixels
+        wider than their own drawn shape, CLICK_HIT_TOLERANCE_PX). Factored
+        out of _curve_at (below, now just its first result) so
+        selection_ui.py's click-cycling can see the whole overlapping
+        stack, not just the top one."""
         items = [c for c in plot_item.listDataItems()
                  if isinstance(c, pg.PlotDataItem) and c.isVisible()]
         order = {c: i for i, c in enumerate(items)}
@@ -276,9 +278,15 @@ class MenusMixin:
 
         state = self._curve_style_state(curve)
         kind = self._curve_kind(curve)
-        has_line = line_options_apply(kind)
+        # has_line_capable gates Line Style alone: a kind that CAN draw a
+        # line at all (e.g. 'scatter', whose default pen is transparent --
+        # CLAUDE.md bug #15) must still let the user turn one on. Line
+        # Width/Line Color additionally need has_visible_line: they stay
+        # grayed until that line actually exists (see curve_style.py's
+        # has_current_line docstring).
+        has_line_capable = line_capable(kind)
+        has_visible_line = has_current_line(kind, state['pen'])
         has_marker = marker_options_apply(kind)
-        pen = pg.mkPen(state['pen']) if state['pen'] is not None else None
 
         def choices(title, entries, current, setter, enabled=True):
             sub_menu = menu.addMenu(title)
@@ -292,31 +300,37 @@ class MenusMixin:
                 act.triggered.connect(lambda checked=False, v=value: setter(targets, v))
             return sub_menu
 
+        pen = pg.mkPen(state['pen']) if state['pen'] is not None else None
         width = pen.widthF() if pen is not None else None
-        choices("Line Width", [(f"{w:g}", w) for w in LINE_WIDTHS], width,
-                self.set_curve_line_width, has_line)
+
+        # Order: Line Style / Line Width / Line Color / Marker / Marker
+        # Size / Marker Color.
         choices("Line Style", [(f"{text}  ({code})" if code != 'none' else text, code)
                                for text, code, _ in LINE_STYLES],
-                pen_style_of(state['pen']), self.set_curve_line_style, has_line)
-        choices("Marker", [(f"{text}  ({code})" if code != 'none' else text, symbol)
-                           for text, code, symbol in MARKERS],
-                state['symbol'], self.set_curve_marker, has_marker)
-        choices("Marker Size", [(f"{s:g}", s) for s in MARKER_SIZES], state['symbolSize'],
-                self.set_curve_marker_size, has_marker and state['symbol'] is not None)
+                pen_style_of(state['pen']), self.set_curve_line_style, has_line_capable)
+        choices("Line Width", [(f"{w:g}", w) for w in LINE_WIDTHS], width,
+                self.set_curve_line_width, has_visible_line)
 
         def pick_line_color():
             color = QtWidgets.QColorDialog.getColor(self._line_color(state), self, "Line Color")
             if color.isValid():
                 self.set_curve_line_color(targets, (color.red(), color.green(), color.blue()))
 
+        line_color_action = menu.addAction("Line Color...")
+        line_color_action.setEnabled(has_visible_line)
+        line_color_action.triggered.connect(pick_line_color)
+
+        choices("Marker", [(f"{text}  ({code})" if code != 'none' else text, symbol)
+                           for text, code, symbol in MARKERS],
+                state['symbol'], self.set_curve_marker, has_marker)
+        choices("Marker Size", [(f"{s:g}", s) for s in MARKER_SIZES], state['symbolSize'],
+                self.set_curve_marker_size, has_marker and state['symbol'] is not None)
+
         def pick_marker_color():
             color = QtWidgets.QColorDialog.getColor(_marker_color(state), self, "Marker Color")
             if color.isValid():
                 self.set_curve_marker_color(targets, (color.red(), color.green(), color.blue()))
 
-        line_color_action = menu.addAction("Line Color...")
-        line_color_action.setEnabled(has_line)
-        line_color_action.triggered.connect(pick_line_color)
         marker_color_action = menu.addAction("Marker Color...")
         marker_color_action.setEnabled(has_marker and state['symbol'] is not None)
         marker_color_action.triggered.connect(pick_marker_color)

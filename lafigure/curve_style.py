@@ -70,17 +70,52 @@ MARKERS = [
 ]
 MARKER_SIZES = [3, 4, 6, 8, 10, 12, 16]
 
-# Which options apply to which kind. A scatter is markers only (its line
-# pen is transparent by construction); the step/fill kinds keep their pen
-# in to_dict but not a marker, so markers stay line/scatter only.
+# Which options apply to which kind. A scatter's line pen is transparent
+# BY DEFAULT (its item is still a genuine PlotDataItem, kinds/scatter.py),
+# not because the kind is incapable of one -- so it gets its own, broader
+# membership (_LINE_CAPABLE_KINDS) below, distinct from _LINE_KINDS (the
+# kinds whose line is meaningful unconditionally, regardless of whether
+# it's currently visible -- width/color edits on these apply even while
+# Line Style is 'none', so a later restyle shows the edited color/width;
+# see test_line_color_on_a_none_style_line_stays_invisible). The step/fill
+# kinds keep their pen in to_dict but not a marker, so markers stay
+# line/scatter only.
 _LINE_KINDS = ('line', 'stairs', 'area', 'hist', 'errorbar')
+_LINE_CAPABLE_KINDS = _LINE_KINDS + ('scatter',)
 _MARKER_KINDS = ('line', 'scatter')
 
 _STATE_KEYS = ('pen', 'symbol', 'symbolSize', 'symbolBrush', 'symbolPen')
 
 
 def line_options_apply(kind):
+    """True for the kinds whose pen is always treated as a meaningful
+    line, whatever it currently draws (see the module comment above)."""
     return kind in _LINE_KINDS
+
+
+def line_capable(kind):
+    """True for any kind whose item can draw a real connecting line at
+    all -- the broader set line_options_apply doesn't cover, e.g.
+    'scatter': its default pen is fully transparent (CLAUDE.md bug #15),
+    but nothing stops the user from turning a real line on via Line
+    Style. Used to gate the curve menu's Line Style submenu, which must
+    stay enabled for a line-capable kind regardless of whether a line is
+    CURRENTLY drawn -- that's exactly how the user turns one on."""
+    return kind in _LINE_CAPABLE_KINDS
+
+
+def has_current_line(kind, pen):
+    """True if `kind`'s item is drawing a real, visible line right now.
+    Unconditionally true for line_options_apply's kinds (mirrors their
+    existing behavior: Line Width/Color already applied regardless of the
+    pen's current visibility, e.g. while Line Style is 'none' -- kept
+    as-is, not just for menu gating). For a merely line_capable kind
+    (e.g. 'scatter'), true only once its pen is actually visible -- Line
+    Width/Color stay grayed (and gated a no-op, see set_curve_line_width/
+    set_curve_line_color) until Line Style has turned a real line on."""
+    if line_options_apply(kind):
+        return True
+    return line_capable(kind) and pen_style_of(pen) != 'none'
 
 
 def marker_options_apply(kind):
@@ -159,7 +194,10 @@ class CurveStyleMixin:
     # -- public edits ----------------------------------------------------------
     def set_curve_line_width(self, items, width):
         def change(item, s):
-            if not line_options_apply(self._curve_kind(item)):
+            # Gated on has_current_line, not line_capable: a merely
+            # line-capable kind (e.g. scatter) with no visible line yet
+            # has nothing to widen -- Line Style is what turns one on.
+            if not has_current_line(self._curve_kind(item), s['pen']):
                 return None
             pen = pg.mkPen(s['pen']) if s['pen'] is not None else pg.mkPen('k')
             pen.setWidthF(width)
@@ -172,7 +210,11 @@ class CurveStyleMixin:
         style = next(v for _, c, v in LINE_STYLES if c == code)
 
         def change(item, s):
-            if not line_options_apply(self._curve_kind(item)):
+            # Gated on line_capable, the broader set: this is the one
+            # edit that can turn a line on in the first place (e.g. for a
+            # scatter whose pen is transparent by default), so it must
+            # apply regardless of whether a line is CURRENTLY visible.
+            if not line_capable(self._curve_kind(item)):
                 return None
             pen = pg.mkPen(s['pen']) if s['pen'] is not None else pg.mkPen('k')
             color = QtGui.QColor(pen.color())
@@ -234,7 +276,9 @@ class CurveStyleMixin:
         kept, so picking a color while Line Style is 'none' doesn't make
         the line reappear)."""
         def change(item, s):
-            if not line_options_apply(self._curve_kind(item)):
+            # Same has_current_line gate as set_curve_line_width -- see
+            # its own comment.
+            if not has_current_line(self._curve_kind(item), s['pen']):
                 return None
             pen = pg.mkPen(s['pen']) if s['pen'] is not None else pg.mkPen('k')
             color = pg.mkColor(rgba)
@@ -260,6 +304,15 @@ class CurveStyleMixin:
         return series.kind if series is not None else 'line'
 
     # -- z-order within a subplot ----------------------------------------------
+    def _notify_legend_order_changed(self):
+        """Package P3 (view_ops.py) owns the legend-order-follows-z-order
+        feature; this package doesn't implement or depend on it, but any
+        z-mutating action here should still poke it if it's been wired in
+        (may not be merged yet -- see this package's own report)."""
+        refresh = getattr(self, '_refresh_legend_order', None)
+        if refresh is not None:
+            refresh()
+
     def curves_to_front(self, items, front=True):
         """Draw `items` above (front=True) or below every other data item of
         their subplot. Undoable, one entry."""
@@ -276,9 +329,11 @@ class CurveStyleMixin:
                 item.setZValue(new_z)
         if not steps:
             return
+        self._notify_legend_order_changed()
 
         def apply(which):
             for item, old, new in steps:
                 item.setZValue(new if which else old)
+            self._notify_legend_order_changed()
 
         self._push_history(lambda: apply(False), lambda: apply(True))

@@ -275,7 +275,31 @@ def test_curve_menu_has_curve_actions_only_and_a_header():
                   "Export to CSV..."):
         assert label not in texts, (label, texts)
     titles = _submenu_titles(menu)
-    assert titles == ["Line Width", "Line Style", "Marker", "Marker Size"], titles
+    assert titles == ["Line Style", "Line Width", "Marker", "Marker Size"], titles
+    f.close()
+
+
+def _curve_menu_style_entries(menu):
+    """The submenu/action sequence among the six style controls, in the
+    order they were added to the menu -- submenus and plain actions
+    interleaved, unlike _submenu_titles/_texts which only see one kind."""
+    names = []
+    wanted_submenus = ("Line Style", "Line Width", "Marker", "Marker Size")
+    wanted_actions = ("Line Color...", "Marker Color...")
+    for a in menu.actions():
+        if a.menu() is not None and a.menu().title() in wanted_submenus:
+            names.append(a.menu().title())
+        elif a.text() in wanted_actions:
+            names.append(a.text())
+    return names
+
+
+def test_curve_menu_style_controls_are_in_the_required_order():
+    f, p, c = _curve_figure()
+    menu = f._curve_context_menu(p, c)
+    assert _curve_menu_style_entries(menu) == [
+        "Line Style", "Line Width", "Line Color...", "Marker", "Marker Size", "Marker Color...",
+    ], _curve_menu_style_entries(menu)
     f.close()
 
 
@@ -319,6 +343,39 @@ def test_curve_menu_marker_color_disabled_without_a_marker():
     menu = f._curve_context_menu(p, c)
     marker_color = next(a for a in menu.actions() if a.text() == "Marker Color...")
     assert not marker_color.isEnabled(), "no marker on this curve yet"
+    f.close()
+
+
+def _submenu_by_title(menu, title):
+    return next(a.menu() for a in menu.actions() if a.menu() is not None and a.menu().title() == title)
+
+
+def test_scatter_line_style_is_never_grayed_but_width_and_color_are_until_drawn():
+    """The root bug this package fixes (see curve_style.py/menus.py): gating
+    Line Style/Width/Color purely by kind string left them permanently
+    grayed for 'scatter', even once it was visibly drawing a real line.
+    New rule: Line Style is enabled for any line-capable kind regardless of
+    whether a line is drawn right now (it's the one control that can turn
+    one on); Line Width/Color stay grayed until a line actually exists."""
+    f = m.LaFigure(empty=True)
+    ax = f.subplot(0, 0, title="Scatter")
+    s = ax.scatter(np.arange(5.0), np.arange(5.0), size=6)
+    c = s.item
+    f.show()
+    app.processEvents()
+
+    menu = f._curve_context_menu(ax.plot_item, c)
+    line_color = next(a for a in menu.actions() if a.text() == "Line Color...")
+    assert _submenu_by_title(menu, "Line Style").isEnabled(), "capable of a line: never grayed"
+    assert not _submenu_by_title(menu, "Line Width").isEnabled(), "no line drawn yet: grayed"
+    assert not line_color.isEnabled(), "no line drawn yet: grayed"
+
+    f.set_curve_line_style([c], '-')
+    menu2 = f._curve_context_menu(ax.plot_item, c)
+    line_color2 = next(a for a in menu2.actions() if a.text() == "Line Color...")
+    assert _submenu_by_title(menu2, "Line Style").isEnabled()
+    assert _submenu_by_title(menu2, "Line Width").isEnabled(), "a real line is now drawn: enabled"
+    assert line_color2.isEnabled()
     f.close()
 
 
