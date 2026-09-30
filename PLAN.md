@@ -750,3 +750,461 @@ so no collision with round 2's history.
   offscreen the way they already are, if that's already handled -- check
   first, don't add new offscreen-specific branching if the example
   doesn't already have any).
+
+# Round 4 — new plot kinds + colorbar / 3D / styling UI (2026-09-30)
+
+User request (one message, pasted verbatim into the session; plus a
+mid-turn addendum), scoped with four confirmed judgment calls:
+
+1. **Many new plot kinds**: loglog, semilogx, semilogy, bubblechart,
+   swarmchart, binscatter, spy, boxchart, violinplot, polar,
+   polarhistogram, piechart, heatmap, plotmatrix, barh, stem, contour,
+   quiver, feather, errorbar-as-shaded-band; plus bubblechart3d and
+   plot3. Explicit requirement: **"re-use in the background the same
+   base function, base plots"** — a new kind delegates to an existing
+   one (line/scatter/bar/imshow/line3d) or to a shared base in
+   `lafigure/kinds/_base.py`, never a fresh from-scratch item.
+2. **Colorbar**: two fixed, non-draggable dashed lines at the plotted
+   data's min/max, updated live when the data changes; and dragging one
+   movable limit must leave the other limit's *value* untouched (its
+   pixel position may move).
+3. **3D interaction**: a new "Rotate + Zoom" toolbar mode (right of Zoom
+   Rect) holding today's 3D camera behavior, greyed out unless the
+   focused subplot is 3D; Zoom Rect on a 3D cell becomes a real
+   drag-a-rectangle zoom; a 3D subplot's right-click menu gains 4 view
+   presets (X-Y, X-Z, Y-Z, sideway) and a parallel/perspective submenu,
+   and loses FFT.
+4. **Annotation styling**: replace "Properties..." with individual Line
+   Style / Line Width / Color menu entries plus "Arrow Style..." (a
+   popup: head length, head width, head type) where the shape has an
+   arrowhead.
+5. **Area styling**: curve-menu entries for surface color and surface
+   opacity.
+6. **Figure-browser tree**: clicking a row changes that figure's focused
+   subplot.
+7. **Examples**: more of them — a custom datatip/data-cursor one, more
+   kinds in `series_kinds_gallery.py`, and an image display/processing
+   one driven by controls.
+
+Confirmed decisions (AskUserQuestion, 2026-09-30):
+- **Polar family**: no new `axes_type`. Each polar kind converts to x/y
+  itself and draws its own radial/angular grid decoration on an ordinary
+  cartesian `PlotItem` with hidden axes and a 1:1 aspect lock.
+- **Colorbar model**: the bar's axis spans a *display range* covering
+  both the data min/max and both levels. The two movable limit lines sit
+  at their own values inside it; dragging one changes only that value and
+  the color mapping; the untouched one keeps its value and moves in
+  pixels only if the display range has to grow.
+- **Axis scale**: also add a subplot-menu "Scale" submenu (X/Y:
+  Linear/Log), undoable, so an existing plot can be switched to log.
+- **Delivery**: one push, waves of parallel agents.
+
+**Test-run budget (user request: limit full-suite runs).** A worker runs
+its own test file(s) while developing (`python run_tests.py <filter>`)
+and the **full** suite exactly once, at the end, before reporting. The
+coordinator runs the full suite **once per wave**, after merging every
+branch of that wave, not once per merge. Baseline before round 4:
+`493/493 passed`, 59 s.
+
+## Status (round 4)
+
+| WP | Title | Wave | Depends on | Model | Status |
+|----|-------|------|-----------|-------|--------|
+| R4-BASE  | Shared kind base: composite item, derived kinds, category/jitter/color/size/bin helpers | 1 | — | sonnet | todo |
+| R4-CBAR  | Interactive colorbar: fixed data-min/max lines, independent limits, live refresh | 1 | — | sonnet | todo |
+| R4-3D    | Rotate+Zoom mode, 3D rect zoom, 3D menu (views, projection, no FFT), axis Scale submenu | 1 | — | sonnet | todo |
+| R4-TREE  | Figure-browser row click sets the focused subplot | 1 | — | sonnet | todo |
+| R4-LOG   | Kinds: loglog, semilogx, semilogy | 2 | R4-BASE | sonnet | todo |
+| R4-SCAT  | Kinds: bubblechart, swarmchart, binscatter, spy | 2 | R4-BASE, R4-CBAR | sonnet | todo |
+| R4-DIST  | Kinds: boxchart, violinplot | 2 | R4-BASE | sonnet | todo |
+| R4-POLAR | Kinds: polar, polarhistogram, piechart (+ shared polar grid) | 2 | R4-BASE | sonnet | todo |
+| R4-FIELD | Kinds: quiver, feather, contour | 2 | R4-BASE | sonnet | todo |
+| R4-MISC  | Kinds: barh, stem, heatmap, errorband | 2 | R4-BASE, R4-CBAR | sonnet | todo |
+| R4-K3D   | Kinds: plot3, bubblechart3d | 2 | R4-BASE | sonnet | todo |
+| R4-PMAT  | `lafigure.plotmatrix(...)`: a grid of subplots from a DataSource | 2 | R4-BASE | sonnet | todo |
+| R4-STYLE | Annotation line style/width/color + Arrow Style popup; area surface color/opacity | 3 | R4-3D | sonnet | todo |
+| R4-EX    | Examples: custom datatip, image processing with controls, expanded gallery | 3 | every kind package | sonnet | todo |
+
+## File ownership (round 4)
+
+| File | Owner |
+|------|-------|
+| `lafigure/kinds/_base.py` (new) | R4-BASE |
+| `lafigure/colorbar.py` (new), `lafigure/kinds/imshow.py`, `lafigure/history.py` | R4-CBAR |
+| `lafigure/view3d.py`, `lafigure/view_ops.py`, `lafigure/menus.py` | R4-3D (until merged; then R4-STYLE owns `menus.py`) |
+| `lafigure/manager.py` | R4-TREE |
+| `lafigure/kinds/<new kind>.py` | the kind's own package |
+| `lafigure/kinds/__init__.py` | every kind package appends its own import line **and** reports the diff; the coordinator resolves the (trivial) merge conflicts |
+| `lafigure/annotations.py`, `lafigure/annotation_ops.py`, `lafigure/arrow_style.py` (new), `lafigure/curve_style.py`, `lafigure/menus.py` | R4-STYLE |
+| `lafigure/plotmatrix.py` (new) | R4-PMAT |
+| `examples/*.py` | R4-EX |
+| `lafigure/toolbar.py`, `lafigure/__init__.py`, `lafigure/axes.py`, `lafigure/series.py`, CLAUDE.md, PLAN.md | coordinator (report a diff) |
+
+`lafigure/axes.py` needs **no** change for a new kind: `Axes.__getattr__`
+exposes every name in `SERIES_KINDS` as `ax.<name>(...)`, routed through
+`Axes._plot_kind`. Read `_plot_kind` before designing a kind's call
+signature — for plain arrays it passes `(x, y)` positionally and
+everything else as `**style`, and `x=`/`rows=` are reserved for the
+`(source, x='col', y='col')` form, so a kind that wants coordinate arrays
+must name them something else (`x_coords=`, `u=`, `v=`, ...).
+
+## Package briefs (round 4)
+
+### R4-BASE — shared kind base (sonnet, wave 1)
+
+New file `lafigure/kinds/_base.py`, tests in `tests/test_r4_base.py`.
+This is the "re-use the same base function" requirement made concrete:
+every wave-2 kind package builds on it, so its API is **frozen by this
+brief** — if something here turns out wrong, report it, don't silently
+rename it.
+
+Provide, with a real docstring each:
+
+- `class CompositeSeriesItem(pg.GraphicsObject)` — the base for a kind
+  whose visual is *not* one `PlotDataItem` (boxchart, violin, quiver,
+  contour, pie, stem-as-one-item...). **Model it closely on
+  `view3d.Series3DItem`** (read that first): `implements('plotData')` so
+  `PlotItem.addItem` files it under `listDataItems()` (which is how
+  `figure._series_on` finds every series), `name()`/`setName()`,
+  `setPen()`, `boundingRect()`, `paint()` delegating to a subclass hook,
+  and a `getData()` returning the two representative 1-D arrays the rest
+  of the app reads. Subclasses implement `_paint(painter)` and
+  `_bounds()`. Include an `invalidate()` that does
+  `prepareGeometryChange()` + `informViewBoundsChanged()` + `update()`.
+  A composite item is **not** click-selectable (no `.curve`) and that is
+  accepted for round 4 — `_add_series` already guards for it; say so in
+  each kind's docstring rather than faking a `.curve`.
+- `class DerivedKind(SeriesKind)` — a kind that delegates to another
+  registered kind: `base = 'scatter'`, optional `create_defaults` dict,
+  and a `setup(plot_item, item, **kwargs)` hook run after the base
+  built the item. `create`/`to_dict`/`get_xy`/`set_xy` delegate to the
+  base kind by default, `capabilities` defaults to the base's. This is
+  what loglog/heatmap/plot3/barh/spy/bubblechart are built from.
+- `categories(values) -> (codes int array, labels list[str])` — stable
+  first-seen order; numeric input passes through as its own labels.
+- `apply_category_ticks(plot_item, axis, labels)` — put `labels` on that
+  `AxisItem` at integer positions (`axis.setTicks`), and a
+  `clear_category_ticks` inverse.
+- `jitter(codes, width=0.3, seed=0) -> float array` — deterministic
+  (`np.random.default_rng(seed)`), for swarmchart/violin points.
+- `value_colors(values, cmap='viridis', levels=None) -> (list[QBrush], (lo, hi))`
+  — the ONE place a numeric column becomes per-point colors.
+- `size_scale(values, lo_px=4.0, hi_px=24.0) -> float array` — bubble
+  marker sizes, area-proportional (sqrt of the normalized value), not
+  diameter-proportional.
+- `bin2d(x, y, bins=50) -> (counts 2-D array, x_edges, y_edges)` — plain
+  numpy (`np.histogram2d`), for binscatter/heatmap-of-density.
+- `quantiles(values) -> dict(q1, med, q3, lo_whisker, hi_whisker, outliers)`
+  — Tukey 1.5*IQR, for boxchart (and reusable by violin).
+- `kde(values, points=128) -> (grid, density)` — a plain-numpy Gaussian
+  KDE (Silverman bandwidth; no scipy dependency), for violinplot.
+
+Tests: pure-numpy helpers need no Qt; `CompositeSeriesItem` and
+`DerivedKind` need a figure (use `tests/helpers.py`'s factories) — assert
+a `CompositeSeriesItem` subclass added through `figure._add_series`
+appears in `plot_item.listDataItems()` and in `ax.series`, and that a
+`DerivedKind` round-trips through copy/paste (`Series.to_dict` ->
+`_add_series_from_dict`).
+
+### R4-CBAR — interactive colorbar (sonnet, wave 1)
+
+New file `lafigure/colorbar.py`; owns `lafigure/kinds/imshow.py` and
+`lafigure/history.py`. Tests in `tests/test_r4_cbar.py`.
+
+Read pyqtgraph's own `ColorBarItem` first (it is a `PlotItem` whose
+ViewBox is pinned to 0..256 with its main axis *unlinked* and set
+manually; interactive mode is a `LinearRegionItem` that is reset to
+(63, 191) after every change, and `_regionChanging` derives new levels
+from the *previous* ones — which is why today one drag perturbs the whole
+scale).
+
+Build `class LaColorBar(pg.ColorBarItem)` (subclass; keep its gradient,
+frame and axis) with:
+
+- A **display range** `(dlo, dhi)` = the union of the data min/max and
+  both current levels, padded a few percent, and the main axis set to
+  *that* (not to the levels).
+- **Two independently movable limit lines** (`pg.InfiniteLine`,
+  `angle=0`, `movable=True`, in the bar's own 0..256 view coordinates) in
+  place of the inherited `LinearRegionItem` — remove/disable
+  `self.region` rather than fighting it. Dragging one converts its
+  position to a value through the display range and sets **only that
+  level**; the other level's value is passed through unchanged. If a
+  level is dragged outside the display range, the display range grows
+  and both lines are repositioned — the untouched one keeps its value
+  and moves in pixels. One undo entry per completed drag
+  (`sigPositionChangeFinished`), live update while dragging.
+- **Two fixed dashed lines** at the plotted data's min and max
+  (`movable=False`, `Qt.DashLine`, and `setAcceptedMouseButtons(
+  Qt.NoButton)` so they can never be grabbed or hit-tested).
+- The gradient drawn so the colormap spans the *level* sub-range and is
+  flat (clamped end colors) outside it, which is what the image/scatter
+  actually shows for out-of-level values. Override `_update_items` (or
+  the pixmap build) rather than leaving the inherited full-span
+  gradient, which would now be wrong.
+- `attach(item, values_fn)` / `refresh_limits()`: `values_fn()` returns
+  the current 1-D or 2-D array whose min/max the dashed lines show, so
+  the bar works for an `ImageItem` **and** for a colored scatter (the
+  user asked for "scatter, image, ..."). Live refresh, wired at three
+  levels: `ImageItem.sigImageChanged` when the item has it; the
+  `DataSource.on_change` callback when the series has an explicit
+  source; and a figure-wide best-effort `_resync_colorbars()` you add to
+  `history.py` next to the existing `_resync_cursor_points()` call in
+  `_push_history`/`undo`/`redo` (read how the data-cursor resync does it
+  and follow that pattern exactly, including its "best effort, never
+  raise" stance).
+- `set_levels(lo, hi)` / `levels()` and a levels-changed signal so a kind
+  can recolor its own points; `imshow` just forwards to
+  `ImageItem.setLevels`.
+
+Then switch `kinds/imshow.py` from `pg.ColorBarItem` to `LaColorBar`
+(keep `item._lafigure_colorbar`, keep `to_dict`'s `levels`). Do **not**
+edit `series.py` (coordinator-owned) — report anything you need there.
+
+Tests: the two dashed lines exist at the data min/max and move after
+`item.setImage(...)` with a different range; dragging the low limit line
+with real mouse events leaves `levels()[1]` byte-identical; a drag past
+the display range grows it and keeps the other value; one undo entry per
+drag and `undo()` restores both levels.
+
+### R4-3D — 3D interaction modes and menu (sonnet, wave 1)
+
+Owns `lafigure/view3d.py`, `lafigure/view_ops.py`, `lafigure/menus.py`;
+tests in `tests/test_r4_3d.py`. The toolbar button is a **reported diff**
+(`toolbar.py` is coordinator-owned) — write it against the existing
+`action(...)`/`mode_group` code in `_build_toolbar`, placed immediately
+after `self.zoom_action`.
+
+1. **New interaction mode `'rotate'`** ("Rotate + Zoom"), a fifth member
+   of the exclusive mode group, holding exactly today's 3D camera
+   behavior (left-drag orbit, Shift/Ctrl-drag or middle-drag pan,
+   right-drag dolly, wheel dolly). Extend `set_interaction_mode`,
+   `_sync_mode_actions`, `_cursor_for_mode` (a distinct cursor — draw
+   one the way `_zoom_cursor` is drawn) and `_apply_mouse_enabled`
+   (`'rotate'` behaves like `'hand'`/`'zoom'`: the ViewBox mouse stays
+   on).
+2. **Enabled only for a 3D focused subplot.** Add one method that
+   re-evaluates the action's `setEnabled` from `focused_plot`'s
+   `axes_type` (how a 3D cell is identified today: read `layout.py`/
+   `add_subplot`), called from wherever focus changes (`focused_plot`'s
+   setter fires `registry.focusChanged` — connect to the registry, don't
+   edit `figure.py`). **If the mode is `'rotate'` and focus moves to a
+   non-3D subplot, switch to `'zoom'`** (the user's explicit rule).
+3. **Zoom Rect on a 3D cell = a real rectangle zoom.** Today
+   `View3DBox.mouseDragEvent` orbits regardless of mode. In `'zoom'`
+   mode it must instead draw a rubber-band rectangle (reuse the
+   ViewBox's own `rbScaleBox`, styled light gray — CLAUDE.md bug #8) and
+   on release move the camera so that rectangle fills the cell: pan the
+   camera so the rect's center becomes the view center, then scale
+   `camera.distance` by `rect_width / view_width` (the smaller of the
+   two axis ratios, so nothing inside the rect is cut off). One undo
+   entry per gesture, through the existing view-history mechanism if the
+   camera state is already covered by it — check `_view_snapshot`/
+   `_restore_view_snapshot` first and extend them for a 3D cell's
+   camera state if they only handle `viewRange()`.
+4. **Camera view presets and projection**, on a 3D subplot's right-click
+   menu. `Camera` gets `look_along(preset)` for `'xy'` (looking down Z),
+   `'xz'`, `'yz'` and `'sideway'` (today's default isometric), and a
+   `projection` of `'perspective'` (today) or `'orthographic'` — add an
+   orthographic branch to `projection_matrix` sized from `distance` and
+   `fov` so switching does not jump the apparent scale. Both are
+   undoable camera-state changes (`set_camera_state` already exists).
+   The 4 presets appear **only while `'rotate'` mode is active** (the
+   user's wording); the parallel/perspective submenu is always there on
+   a 3D subplot.
+5. **A 3D subplot's menu has no FFT** — hide (`setVisible(False)`), in
+   the existing `on_about_to_show` handler, the FFT action for a 3D
+   subplot; do not remove it for 2D ones.
+6. **Axis Scale submenu** (confirmed with the user, and the natural
+   partner of R4-LOG's kinds): a "Scale" submenu on the subplot menu
+   with X: Linear/Log and Y: Linear/Log, checkable and reflecting the
+   current log-mode state (read how pyqtgraph stores it —
+   `PlotItem.setLogMode`), undoable via `_push_history`, hidden for a 3D
+   subplot.
+
+Tests, all with real events where routing matters: the rotate action is
+disabled with a 2D subplot focused and enabled with a 3D one; focusing a
+2D subplot while in `'rotate'` leaves the mode `'zoom'`; a real drag on a
+3D cell in `'rotate'` mode changes the camera state and in `'zoom'` mode
+changes `distance`/`center` in the rectangle-zoom way (and *not* the
+azimuth); undo restores the previous camera state; each of the 4 presets
+sets the expected elevation/azimuth; the projection submenu switches
+`camera.projection` and the projection matrix changes accordingly; the
+FFT action is invisible on a 3D subplot's menu and visible on a 2D one;
+the Scale submenu switches log mode and undoes.
+
+### R4-TREE — figure-tree click sets focus (sonnet, wave 1)
+
+Owns `lafigure/manager.py`; tests in `tests/test_r4_tree.py`. Clicking a
+row of the **Figure browser** tree must make the clicked item's subplot
+the focused subplot of its figure (a figure row: raise/track that figure;
+a subplot row: that subplot; a curve/annotation/group child row: its
+parent subplot). Use `figure.focused_plot = plot` (its setter is the one
+place `registry.focusChanged` fires) and the same selection conventions
+the tree's existing context-menu actions already use — don't invent a
+second selection path. Beware CLAUDE.md bug #19: do not rebuild the tree
+synchronously from inside a signal that the same click also feeds;
+`QTimer.singleShot(0, ...)` if a rebuild is needed. Test with a real
+`QTest.mouseClick` on the row's rect, not only by calling the slot.
+
+### R4-LOG / R4-SCAT / R4-DIST / R4-POLAR / R4-FIELD / R4-MISC / R4-K3D — kind families (sonnet, wave 2)
+
+Common rules for **every** kind package (read `lafigure/series.py`'s
+`SeriesKind`/`Series`/`_add_series`, `lafigure/axes.py`'s `_plot_kind`,
+and two existing kinds — `kinds/scatter.py` and `kinds/bar.py` — before
+writing anything):
+
+- One module per kind under `lafigure/kinds/`, self-registering with
+  `register_series_kind` at import, added to `kinds/__init__.py`'s
+  import list (report that diff too).
+- **Delegate.** Use `_base.DerivedKind`, or call another registered
+  kind's `create` (`SERIES_KINDS['scatter'].create(...)`), or
+  `_base.CompositeSeriesItem` — never hand-roll an item that a base
+  already provides. A kind that can be a real `PlotDataItem`/
+  `ScatterPlotItem` **must** be one, so click-selection and brushing
+  keep working; declare `'brush'` in `capabilities` only when `get_xy`
+  really returns two parallel 1-D arrays of the plotted points.
+- `to_dict` must round-trip through `create` (copy/paste and undo use
+  it) — test it explicitly for every kind.
+- Honest `capabilities`, and a module docstring stating what the kind
+  does NOT support yet (click-selection, brushing, `to_plotly`).
+- HTML export (`html_export.py`) is coordinator-owned and has a generic
+  `Scattergl` fallback for an unknown kind; don't touch it, but say in
+  your report which of your kinds would need a real converter.
+- One test file per package, `tests/test_r4_<id>.py`: for each kind,
+  build it on a real figure, assert it appears in `ax.series` with the
+  right `kind`, assert the plotted geometry is what the input implies
+  (a few exact numbers, not just "it didn't raise"), and assert the
+  to_dict round-trip.
+
+Per package:
+
+- **R4-LOG** — `loglog`, `semilogx`, `semilogy`: `DerivedKind` on
+  `'line'` whose `setup` sets the subplot's log mode
+  (`plot_item.setLogMode(x, y)`). Non-positive values: document and test
+  what happens (pyqtgraph's own log handling), don't silently drop data.
+- **R4-SCAT** — `bubblechart` (scatter + `size=` column through
+  `_base.size_scale`, optional `color=` column through
+  `_base.value_colors` + a `LaColorBar` from `lafigure/colorbar.py`),
+  `swarmchart` (a category column on X via `_base.categories` +
+  `apply_category_ticks` + `_base.jitter`), `binscatter` (`_base.bin2d`
+  then either a colored scatter of bin centers or an `imshow`-style
+  image — pick one, justify it in the docstring), `spy` (nonzeros of a
+  matrix as a scatter, `DerivedKind` on `'scatter'`, Y inverted like
+  `imshow`). The colorbar's dashed data-min/max lines must follow the
+  color column, so pass `values_fn` per `LaColorBar.attach`.
+- **R4-DIST** — `boxchart` (one box per category via `_base.quantiles`,
+  a `CompositeSeriesItem`), `violinplot` (`_base.kde`, mirrored
+  outline, also composite). Both accept `(source, x='cat', y='val')` and
+  plain `(labels, values)` arrays.
+- **R4-POLAR** — a shared `kinds/_polar_base.py` (this package owns it)
+  with `polar_to_xy(theta, r)`, `draw_polar_grid(plot_item, rmax, ...)`
+  (radial rings + angular spokes + degree labels, as items added with
+  `ignoreBounds=True`), and the "hide the cartesian axes, lock a 1:1
+  aspect" setup — then `polar` (a line in polar coords),
+  `polarhistogram` (angular bins as wedges) and `piechart` (wedges by
+  value, with labels and a legend-friendly name per slice).
+- **R4-FIELD** — `quiver` (`ax.quiver(x, y, u=..., v=...)`, arrows
+  scaled to a fraction of the data range, arrowheads in **scene**
+  space — read `.claude/skills/lafigure-axes-geometry/SKILL.md` first,
+  this is exactly the case it documents), `feather` (same but all arrow
+  tails on the X axis at each sample), `contour`
+  (`ax.contour(matrix, levels=N or [..])` — marching-squares in plain
+  numpy, one polyline set per level, colored through
+  `_base.value_colors`).
+- **R4-MISC** — `barh` (`DerivedKind` on `'bar'`, horizontal), `stem`
+  (stems + markers), `heatmap` (`DerivedKind` on `'imshow'` with
+  optional `x_coords=`/`y_coords=` setting the image's rect/transform —
+  note `x=` is reserved by `_plot_kind`), `errorband` (a shaded
+  uncertainty band: the requested "errorbar with shaded area", built
+  from the `'area'`/line kinds rather than `ErrorBarItem`).
+- **R4-K3D** — `plot3` (`DerivedKind` on `'line3d'`, the MATLAB name)
+  and `bubblechart3d` (`'scatter3d'` with a per-point `size=` column via
+  `_base.size_scale`; if `Series3DItem`'s renderer only supports one
+  size per primitive, say so and degrade rather than faking it). Read
+  `view3d.py`'s `Kind3D` and the 3D known-gaps list in CLAUDE.md first;
+  a 3D cell is `axes_type='3d'`, so every test needs
+  `add_subplot(..., axes_type='3d')` and the QPainter fallback path
+  (there is no GL under `QT_QPA_PLATFORM=offscreen`, CLAUDE.md bug #10).
+
+### R4-PMAT — plotmatrix (sonnet, wave 2)
+
+New file `lafigure/plotmatrix.py`, tests `tests/test_r4_pmat.py`.
+`plotmatrix(data, columns=None, figure=None, kind='scatter', diagonal='hist')`:
+a scatter-plot matrix — one subplot per (column, column) pair on the
+figure's fractional grid via `fig.subplot(row, col)`, histograms on the
+diagonal, every off-diagonal series built from the **same** `DataSource`
+so brushing links them all automatically (that linkage is the point —
+test it: brushing rows on one cell highlights them on the others).
+Accepts a `DataSource`, a dict of arrays, or a 2-D array. Returns the
+list of `Axes`. Export from `lafigure/__init__.py` is a reported diff.
+
+### R4-STYLE — annotation and area styling menus (sonnet, wave 3)
+
+Owns `lafigure/annotations.py`, `lafigure/annotation_ops.py`,
+`lafigure/curve_style.py`, `lafigure/menus.py`, and a new
+`lafigure/arrow_style.py`. Tests `tests/test_r4_style.py`.
+
+1. **Replace the annotation menu's "Properties..."** (a chain of modal
+   dialogs, `annotation_ops._edit_annotation_properties`) with direct
+   entries on `AnnotationItem.contextMenuEvent`'s menu, mirroring how
+   the *curve* menu is already built (`menus.py`'s Line Style / Line
+   Width / Line Color submenus, and `curve_style.LINE_STYLES`/
+   `LINE_WIDTHS` — reuse those constants, don't duplicate them):
+   **Line Style**, **Line Width**, **Color...**, plus **Fill...** kept
+   for rect/ellipse. Each acts on the whole annotation selection when
+   the right-clicked one is in it (today's rule), as ONE undo entry
+   (`undo_group()`).
+2. **"Arrow Style..."**, shown only for a shape that draws an arrowhead
+   (`arrow`, `doublearrow`, `textarrow`, and `cursor` if it draws one):
+   a small modal in `arrow_style.py` with head **length**, head
+   **width** and head **type** (at minimum `arrow`, `round`, `diamond`,
+   `none`), live-previewing on the selected annotations and undoable as
+   one entry. `AnnotationItem.ARROWHEAD_PX` becomes per-instance state
+   (`head_length`/`head_width`/`head_type`, defaulting to today's
+   values) that `_draw_arrowhead` reads, serialized by the annotation's
+   `to_dict`/`from_dict` so copy/paste and undo keep it. Keep building
+   the head in **scene** space (the `lafigure-axes-geometry` skill).
+3. **Area surface color and opacity** on the curve menu: `Surface
+   Color...` and a `Surface Opacity` submenu (e.g. 0/10/25/50/75/100%),
+   enabled only for a series whose kind actually fills (`area`, and any
+   other kind whose `create` sets `fillBrush` — gate on that, not on a
+   hardcoded kind list, per CLAUDE.md bug #16's lesson). Implement as
+   new `CurveStyleMixin` setters going through the existing
+   `_edit_curve_styles` (the one highlight-aware, undoable path) and
+   store through `opts['fillBrush']` (which `kinds/area.py`'s `to_dict`
+   already reads, so copy/paste keeps it).
+
+Tests: each new annotation entry changes the pen/brush/head parameters of
+every selected annotation in one undo entry and undoes cleanly; the arrow
+dialog's values survive copy/paste; the area entries are absent for a
+plain line series and present for an area one, and an opacity change
+survives a copy/paste round-trip.
+
+### R4-EX — examples (sonnet, wave 3)
+
+Owns `examples/`. Depends on every kind package being merged — read
+`SERIES_KINDS` in the merged tree and cover what is actually there.
+
+- **Extend `series_kinds_gallery.py`** with the new kinds, grouped over
+  several figures/subplots so it stays readable (it is customer-facing
+  code: `import lafigure`, `fig.subplot`, `ax.<kind>` only — never a
+  private `_`-prefixed call except `_create_annotation`, which CLAUDE.md
+  documents as the one allowed exception).
+- **New `custom_datatip.py`**: `ax.datatip` as a format string on one
+  subplot and as a Python callable on another (read `console.py`'s
+  datatip wiring and CLAUDE.md's datatip bullet), with data cursors
+  placed non-interactively via `_create_annotation` the way the existing
+  examples do, on both a 2D and a 3D curve.
+- **New `image_processing_controls.py`**: an `imshow`/`heatmap` driven
+  live by a `ControlPanelWindow` (`controls.py`) — sliders for a
+  threshold/blur/gain, a dropdown for the colormap, a checkbox, and a
+  reactive `table(...)` of simple statistics; show the new colorbar's
+  fixed data-min/max lines moving as the image changes. Plain numpy for
+  the processing, no scipy.
+- Every example keeps the round-3 convention: `lafigure.
+  enable_debug_mode()` right after `import lafigure`, printing the log
+  path; runnable as `python examples/<name>.py` from anywhere (each
+  inserts the repo root into `sys.path` itself).
+- Confirm each script exits 0 under `QT_QPA_PLATFORM=offscreen`; no test
+  file (examples are not covered by `run_tests.py`, by decision).
