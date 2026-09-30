@@ -38,12 +38,12 @@ fresh delete_annotation call on whatever is *currently* live).
 import math
 import time
 
-from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets, QtTest
 
 from tests.helpers import (
     app, m, SHIFT, FakeClickEvent, FakeSceneEvent, FakePressEvent, shown_figure,
     first_curve, _click_annotation, _place, _two_annotation_figure,
-    _scene_pos, _vb_center,
+    _scene_pos, _vb_center, _dblclick, _editor, _type, _click_away, _drive_font_dialog,
 )
 
 
@@ -880,4 +880,183 @@ def test_textarrow_label_follows_p1_on_a_non_square_axes_subplot():
     vb.setRange(xRange=(0, 2000), yRange=(0, 1), padding=0)
     app.processEvents()
     _label_checks(ta)
+    f.close()
+
+
+# -- annotation text: in-place editing, rich text, Font... (WP-P8) ------------
+# Started by real double-clicks/right-clicks and typed with real keys (see
+# tests/test_richtext.py's docstring for why).
+
+def _text_center(ann):
+    return ann._text_scene_rect().center()
+
+
+def _text_annotation(anchor='axes', text=r"\alpha"):
+    f, p = _one_subplot_figure()
+    if anchor == 'axes':
+        vb = p.getViewBox()
+        ann = f._create_annotation('text', 'axes', p, vb.mapSceneToView(vb.sceneBoundingRect().center()),
+                                   None, text=text)
+    else:
+        ann = f._create_annotation('text', 'figure', None, QtCore.QPointF(80, 80), None, text=text)
+    f._deselect_all()
+    app.processEvents()
+    return f, p, ann
+
+
+def _no_input_dialog(*a, **k):
+    raise AssertionError("no QInputDialog popup")
+
+
+def test_double_click_annotation_text_edits_in_place():
+    f, p, ann = _text_annotation()
+    assert ann._text_item.toPlainText() == "α", "rendered rich text"
+    saved = QtWidgets.QInputDialog.getText
+    QtWidgets.QInputDialog.getText = staticmethod(_no_input_dialog)
+    try:
+        rect = ann._text_scene_rect()
+        _dblclick(f, _text_center(ann))
+        ed = _editor(f)
+        assert ed is not None, "a double-click on the text opens the in-place editor"
+        assert ed.sceneBoundingRect().intersects(rect), "over the text"
+        assert ed.text() == r"\alpha", "edits the source markup"
+        n_undo = len(f.undo_stack)
+        _type(f, r" = \beta^{2}")
+        _click_away(f)
+    finally:
+        QtWidgets.QInputDialog.getText = saved
+    assert _editor(f) is None
+    assert ann.text == r"\alpha = \beta^{2}"
+    assert ann._text_item.toPlainText() == "α = β2"
+    assert "vertical-align:super" in ann._text_item.toHtml()
+    assert len(f.undo_stack) == n_undo + 1
+    f.undo()
+    assert ann.text == r"\alpha" and ann._text_item.toPlainText() == "α"
+    f.redo()
+    assert ann.text == r"\alpha = \beta^{2}"
+    f.close()
+
+
+def test_annotation_text_shift_enter_makes_a_multi_line_label():
+    f, p, ann = _text_annotation(anchor='figure', text="one")
+    one_line = ann._text_scene_rect().height()
+    _dblclick(f, _text_center(ann))
+    QtTest.QTest.keyClick(f.layout_widget, QtCore.Qt.Key_Return, QtCore.Qt.ShiftModifier)
+    _type(f, "two")
+    QtTest.QTest.keyClick(f.layout_widget, QtCore.Qt.Key_Return)
+    app.processEvents()
+    assert ann.text == "one\ntwo"
+    assert ann._text_scene_rect().height() > 1.6 * one_line, "renders as two lines"
+    # The hit-test shape follows the taller label (P1's shape() reads the text box).
+    bottom = ann._text_scene_rect().bottomLeft() + QtCore.QPointF(10, -4)
+    assert ann.contains(ann.mapFromScene(bottom))
+    f.close()
+
+
+def _context_menu(f, scene_pt):
+    """A real QContextMenuEvent through the view (what a right-click turns
+    into), with QMenu.exec_ stubbed; returns the menu shown."""
+    shown = []
+    real_exec = QtWidgets.QMenu.exec_
+    QtWidgets.QMenu.exec_ = lambda self, *a, **k: shown.append(self)
+    try:
+        view = f.layout_widget
+        local = view.mapFromScene(scene_pt)
+        ev = QtGui.QContextMenuEvent(QtGui.QContextMenuEvent.Mouse, local,
+                                     view.viewport().mapToGlobal(local))
+        QtWidgets.QApplication.sendEvent(view.viewport(), ev)
+        app.processEvents()
+    finally:
+        QtWidgets.QMenu.exec_ = real_exec
+    return shown[-1] if shown else None
+
+
+def test_annotation_font_applies_to_the_selected_text_annotations_undoably():
+    f, p, a = _text_annotation(anchor='figure', text="first")
+    b = f._create_annotation('text', 'figure', None, QtCore.QPointF(200, 120), None, text="second")
+    rect = f._create_annotation('rect', 'figure', None, QtCore.QPointF(300, 150), QtCore.QPointF(30, 20))
+    f._deselect_all()
+    f._select_annotation(a)
+    f._select_annotation(b, additive=True)
+    f._select_annotation(rect, additive=True)
+    app.processEvents()
+    before = (a.font_spec(), b.font_spec())
+    menu = _context_menu(f, _text_center(a))
+    assert menu is not None
+    texts = [x.text() for x in menu.actions()]
+    assert "Font..." in texts and "Edit Text" in texts and "Properties..." in texts, texts
+    chosen = {'family': QtGui.QFont().defaultFamily(), 'size': 20.0, 'bold': True,
+              'italic': False, 'color': (10, 120, 30, 255)}
+    n_undo = len(f.undo_stack)
+    opened = _drive_font_dialog(chosen, [x for x in menu.actions() if x.text() == "Font..."][0].trigger)
+    assert opened == [before[0]], "the dialog starts from the clicked annotation's font"
+    for ann in (a, b):
+        spec = ann.font_spec()
+        assert spec['bold'] and not spec['italic'] and spec['size'] == 20.0, spec
+        assert spec['color'] == chosen['color']
+    assert len(f.undo_stack) == n_undo + 1, "one undo entry for the whole selection"
+    # A shape without text offers no Font...
+    rect_menu = _context_menu(f, rect.mapToScene(rect.p1_local / 2))
+    assert rect_menu is not None and "Font..." not in [x.text() for x in rect_menu.actions()]
+    f.undo()
+    assert (a.font_spec(), b.font_spec()) == before
+    f.redo()
+    assert a.font_spec()['size'] == 20.0
+    f.close()
+
+
+def test_annotation_copy_paste_round_trips_the_source_and_font():
+    f, p, ann = _text_annotation(anchor='axes', text=r"\textbf{Peak} at 3\pm0.1 \mu s")
+    ann._apply_font({'family': ann.font_spec()['family'], 'size': 15.0, 'bold': False,
+                     'italic': True, 'color': (0, 0, 200, 255)})
+    f._select_annotation(ann)
+    f.focused_plot = p
+    f.copy_annotation()
+    f.paste_annotation()
+    pasted = f.annotations[-1]
+    assert pasted is not ann
+    assert pasted.text == r"\textbf{Peak} at 3\pm0.1 \mu s", "the SOURCE, not the rendered HTML"
+    assert pasted._text_item.toPlainText() == "Peak at 3±0.1 μ s"
+    spec = pasted.font_spec()
+    assert spec['italic'] and spec['size'] == 15.0 and spec['color'] == (0, 0, 200, 255), spec
+    # Editing the pasted one shows the original markup.
+    f._deselect_all()
+    app.processEvents()
+    _dblclick(f, _text_center(pasted))
+    assert _editor(f) is not None and _editor(f).text() == r"\textbf{Peak} at 3\pm0.1 \mu s"
+    QtTest.QTest.keyClick(f.layout_widget, QtCore.Qt.Key_Escape)
+    app.processEvents()
+    assert _editor(f) is None and pasted.text == r"\textbf{Peak} at 3\pm0.1 \mu s"
+    f.close()
+
+
+def test_start_text_edit_select_all_lets_typing_replace_a_placeholder():
+    """What a just-placed text annotation would use (see the report's
+    annotation_ops.py diff): typing replaces the "Text" placeholder."""
+    f, p, ann = _text_annotation(anchor='figure', text="Text")
+    f.activateWindow()
+    app.processEvents()
+    ed = ann.start_text_edit(select_all=True)
+    assert ed is _editor(f) and ed.textCursor().selectedText() == "Text"
+    _type(f, "Hello")
+    QtTest.QTest.keyClick(f.layout_widget, QtCore.Qt.Key_Return)
+    app.processEvents()
+    assert ann.text == "Hello"
+    rect = f._create_annotation('rect', 'figure', None, QtCore.QPointF(300, 150), QtCore.QPointF(30, 20))
+    assert rect.start_text_edit() is None, "a shape without text has nothing to edit"
+    f.close()
+
+
+def test_textarrow_label_edits_in_place_too():
+    f, p = _one_subplot_figure()
+    start = p.getViewBox().sceneBoundingRect().center() - QtCore.QPointF(60, 0)
+    ta = f._create_annotation('textarrow', 'figure', None, start, QtCore.QPointF(120, 0), text='label')
+    f._deselect_all()
+    app.processEvents()
+    _dblclick(f, _text_center(ta))
+    assert _editor(f) is not None and _editor(f).text() == 'label'
+    _type(f, "!")
+    _click_away(f)
+    assert ta.text == 'label!'
+    _label_checks(ta)  # still laid out beside p1 (P1's geometry untouched)
     f.close()

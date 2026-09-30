@@ -296,3 +296,81 @@ def _ramp_figure():
     p.plot(x, x)
     f._hover_plot = p
     return f, p.getViewBox()
+
+
+# -- in-place text editing (editable_text.py, WP-P8) ---------------------------
+def _dblclick(f, scene_pt):
+    """A real double-click at scene_pt: press, release, double-click,
+    release -- the sequence Qt itself delivers."""
+    f.activateWindow()
+    app.processEvents()
+    L = QtCore.Qt.LeftButton
+    _mouse(f, QtCore.QEvent.MouseButtonPress, scene_pt, L)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, scene_pt, QtCore.Qt.NoButton)
+    _mouse(f, QtCore.QEvent.MouseButtonDblClick, scene_pt, L)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, scene_pt, QtCore.Qt.NoButton)
+
+
+def _editor(f):
+    """The in-place text editor open on f, or None."""
+    from lafigure.editable_text import active_editor
+    return active_editor(f.layout_widget.scene())
+
+
+def _type(f, text):
+    """Real key events to the figure's view, as typing does."""
+    QtTest.QTest.keyClicks(f.layout_widget, text)
+    app.processEvents()
+
+
+def _click_away(f):
+    """A real click on empty figure margin: commits an in-place edit."""
+    pt = _empty_scene_point(f)
+    _mouse(f, QtCore.QEvent.MouseButtonPress, pt, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, pt, QtCore.Qt.NoButton)
+    app.processEvents()
+
+
+def _right_click_menu(f, scene_pt):
+    """A real right-click at scene_pt; returns the QMenu it opened (its
+    exec_ stubbed, so nothing blocks), or None."""
+    shown = []
+    real_exec = QtWidgets.QMenu.exec_
+    QtWidgets.QMenu.exec_ = lambda self, *a, **k: shown.append(self)
+    try:
+        R = QtCore.Qt.RightButton
+        _mouse(f, QtCore.QEvent.MouseButtonPress, scene_pt, R, button=R)
+        _mouse(f, QtCore.QEvent.MouseButtonRelease, scene_pt, QtCore.Qt.NoButton, button=R)
+    finally:
+        QtWidgets.QMenu.exec_ = real_exec
+    return shown[-1] if shown else None
+
+
+def _drive_font_dialog(chosen, trigger):
+    """Run trigger() with editable_text.ask_font answering through the REAL
+    FontDialog (built, filled from the `chosen` spec, read back) instead
+    of a modal exec_(). Returns the specs the dialog was opened with."""
+    from lafigure import editable_text
+    opened = []
+
+    def ask(spec, parent=None):
+        opened.append(spec)
+        dialog = editable_text.FontDialog(spec)
+        font = QtGui.QFont(chosen['family'])
+        font.setPointSizeF(chosen['size'])
+        font.setBold(chosen['bold'])
+        font.setItalic(chosen['italic'])
+        dialog.set_font(font)
+        dialog.set_color(QtGui.QColor(*chosen['color']))
+        result = dialog.spec()
+        dialog.deleteLater()
+        return result
+
+    real = editable_text.ask_font
+    editable_text.ask_font = ask
+    try:
+        trigger()
+        app.processEvents()
+    finally:
+        editable_text.ask_font = real
+    return opened

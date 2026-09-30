@@ -34,6 +34,8 @@ import contextlib
 
 from pyqtgraph.Qt import QtCore, QtWidgets
 
+from lafigure.editable_text import active_editor
+
 from tests.helpers import (
     app, m, SHIFT, shown_figure, first_curve, _click_subplot, _click_curve,
     _click_annotation, _selection_figure, _press_escape, _key, _band_drag,
@@ -122,13 +124,12 @@ def test_legend_rename_propagates_everywhere_and_is_undoable():
     sample, label = p.legend.items[0]
     assert sample.item is curve
     n_undo = len(f.undo_stack)
-    saved = QtWidgets.QInputDialog.getText
-    QtWidgets.QInputDialog.getText = staticmethod(lambda *a, **k: ("Renamed", True))
     with _recording(f.registry.subplotsChanged, f) as changed:
-        try:
-            label.mouseDoubleClickEvent(FakePressEvent(QtCore.QPointF(0, 0)))
-        finally:
-            QtWidgets.QInputDialog.getText = saved
+        # WP-P8: an in-place editor replaced the QInputDialog popup.
+        label.mouseDoubleClickEvent(FakePressEvent(QtCore.QPointF(0, 0)))
+        editor = active_editor(f.layout_widget.scene())
+        editor.setPlainText("Renamed")
+        editor.commit()
         assert curve.name() == "Renamed", "must go through _apply_curve_rename, not just label.setText"
         assert changed, "the Curve/Figure Browser rebuild from this signal"
     assert len(f.undo_stack) == n_undo + 1

@@ -27,7 +27,9 @@ names. Every rename is undoable.
 """
 from pyqtgraph.Qt import QtWidgets
 
-from .editable_text import wire_legend_editable
+from .editable_text import (
+    wire_legend_editable, edit_in_place, AxisLabelTarget, LegendEntryTarget,
+)
 
 
 class NamingMixin:
@@ -72,20 +74,37 @@ class NamingMixin:
 
     # -- curve names and axis labels -----------------------------------------
     def _apply_curve_rename(self, plot_item, curve, new_name):
+        """The one rename path (curve menu, legend in-place edit, Curve
+        browser): `new_name` is a source string (richtext.py markup), kept
+        as is in curve.opts['name']; only the legend renders it. The legend
+        is rebuilt through _refresh_legend_order, so a "_"-prefixed name
+        drops out of it (and back in) and the z-order is kept."""
         old_name = curve.name() or ""
         curve.opts['name'] = new_name
-        if plot_item.legend is not None:
-            plot_item.legend.removeItem(old_name)
-            plot_item.legend.addItem(curve, new_name)
-            wire_legend_editable(self, plot_item, plot_item.legend)
+        legend = plot_item.legend
+        if legend is not None:
+            if hasattr(self, '_refresh_legend_order'):
+                self._refresh_legend_order(plot_item)
+            else:
+                legend.removeItem(old_name)
+                legend.addItem(curve, new_name)
+            wire_legend_editable(self, plot_item, legend)
         self.registry.notify_subplots_changed(self)
 
     def _rename_curve(self, plot_item, curve):
         """Renames every selected curve to the same new name if `curve`
         (the one picked from the right-click submenu) is part of the
         current multi-select (Shift+click to select more than one), else
-        just `curve` alone."""
+        just `curve` alone. In place, over the curve's legend entry, when
+        it has one on screen; otherwise there is no text to edit in place,
+        so a small dialog asks."""
         targets = self.selected_curves if curve in self.selected_curves else [curve]
+        entry = LegendEntryTarget(self, plot_item, curve)
+        if entry.text_item() is not None:
+            others = tuple(LegendEntryTarget(self, p, c) for c in targets if c is not curve
+                           for p in [self._curve_plot(c)] if p is not None)
+            edit_in_place(entry, also=others)
+            return
         old_names = {c: c.name() or "" for c in targets}
         new_name, ok = QtWidgets.QInputDialog.getText(
             None, "Rename curve", "New name:", QtWidgets.QLineEdit.Normal, old_names[curve]
@@ -120,21 +139,7 @@ class NamingMixin:
         if not targets:
             return
         p = self.focused_plot if self.focused_plot in targets else targets[0]
-        prompt = "X-axis label:" if axis_name == 'bottom' else "Y-axis label:"
-        text, ok = QtWidgets.QInputDialog.getText(
-            None, "Edit label", prompt, QtWidgets.QLineEdit.Normal, p.getAxis(axis_name).labelText
-        )
-        if not ok:
-            return
-        old_texts = {t: t.getAxis(axis_name).labelText for t in targets}
-
-        def apply_new():
-            for t in targets:
-                t.getAxis(axis_name).setLabel(text)
-
-        def undo_fn():
-            for t, old_text in old_texts.items():
-                t.getAxis(axis_name).setLabel(old_text)
-
-        apply_new()
-        self._push_history(undo_fn=undo_fn, redo_fn=apply_new)
+        # In place over p's label (or where it would be, if still empty);
+        # the committed text goes to every target, one undo entry.
+        edit_in_place(AxisLabelTarget(self, p, axis_name),
+                      also=tuple(AxisLabelTarget(self, t, axis_name) for t in targets if t is not p))
