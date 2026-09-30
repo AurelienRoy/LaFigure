@@ -263,48 +263,32 @@ def test_dragging_a_selected_annotation_moves_the_whole_group():
     f.close()
 
 
-def test_properties_apply_to_every_selected_annotation():
+def test_style_menu_applies_to_every_selected_annotation():
     f, curve, rect, ellipse = _two_annotation_figure()
     line = _place(f, 'line', f.plots[2])
     old_line_brush = line.brush
     _click_annotation(f, rect)
     _click_annotation(f, ellipse, modifiers=SHIFT)
     _click_annotation(f, line, modifiers=SHIFT)
-    red, fill = QtGui.QColor(255, 0, 0), QtGui.QColor(0, 0, 255, 60)
-    colors = iter([red, fill])
-    saved = (QtWidgets.QColorDialog.getColor, QtWidgets.QInputDialog.getDouble,
-             QtWidgets.QMessageBox.question)
-    QtWidgets.QColorDialog.getColor = staticmethod(lambda *a, **k: next(colors))
-    QtWidgets.QInputDialog.getDouble = staticmethod(lambda *a, **k: (4.0, True))
-    QtWidgets.QMessageBox.question = staticmethod(lambda *a, **k: QtWidgets.QMessageBox.Yes)
-    try:
-        f._edit_annotation_properties(rect)
-    finally:
-        (QtWidgets.QColorDialog.getColor, QtWidgets.QInputDialog.getDouble,
-         QtWidgets.QMessageBox.question) = saved
-    for a in (rect, ellipse, line):
-        assert a.pen.color() == red and a.pen.widthF() == 4.0, a.kind
-    assert rect.brush.color() == fill and ellipse.brush.color() == fill
+    targets = [rect, ellipse, line]
+    f.set_annotation_color(targets, (255, 0, 0))
+    f.set_annotation_line_width(targets, 4.0)
+    f.set_annotation_fill(targets, QtGui.QBrush(QtGui.QColor(0, 0, 255, 60)))
+    for a in targets:
+        assert a.pen.color() == QtGui.QColor(255, 0, 0) and a.pen.widthF() == 4.0, a.kind
+    assert rect.brush.color() == QtGui.QColor(0, 0, 255, 60)
+    assert ellipse.brush.color() == QtGui.QColor(0, 0, 255, 60)
     assert line.brush is old_line_brush, "fill only applies to rect/ellipse"
     f.close()
 
 
-def test_multi_properties_is_one_undo_entry():
+def test_multi_style_edit_is_one_undo_entry():
     f, curve, rect, ellipse = _two_annotation_figure()
     old = {a: (a.pen.color(), a.pen.widthF()) for a in (rect, ellipse)}
     _click_annotation(f, rect)
     _click_annotation(f, ellipse, modifiers=SHIFT)
     n_undo = len(f.undo_stack)
-    saved = (QtWidgets.QColorDialog.getColor, QtWidgets.QInputDialog.getDouble,
-             QtWidgets.QMessageBox.question)
-    QtWidgets.QColorDialog.getColor = staticmethod(lambda *a, **k: QtGui.QColor(255, 0, 0))
-    QtWidgets.QInputDialog.getDouble = staticmethod(lambda *a, **k: (4.0, True))
-    QtWidgets.QMessageBox.question = staticmethod(lambda *a, **k: QtWidgets.QMessageBox.No)
-    try:
-        f._edit_annotation_properties(rect)
-    finally:
-        (QtWidgets.QColorDialog.getColor, QtWidgets.QInputDialog.getDouble,
-         QtWidgets.QMessageBox.question) = saved
+    f.set_annotation_color([rect, ellipse], (255, 0, 0))
     assert len(f.undo_stack) == n_undo + 1
     f.undo()
     assert {a: (a.pen.color(), a.pen.widthF()) for a in (rect, ellipse)} == old
@@ -515,11 +499,10 @@ def test_arrowhead_is_a_real_triangle_pointing_at_the_tip():
     def dist(a, b):
         return math.hypot(a.x() - b.x(), a.y() - b.y())
 
-    # The two back corners must be exactly ARROWHEAD_PX away from the tip,
-    # in scene (screen-pixel) space, straddling the tip->tail line.
-    assert abs(dist(tip_scene, p1_scene) - arrow.ARROWHEAD_PX) < 0.5
-    assert abs(dist(tip_scene, p2_scene) - arrow.ARROWHEAD_PX) < 0.5
-    assert dist(tip_scene, back_scene) > 0
+    expected = math.hypot(arrow.head_length, arrow.head_width / 2)
+    assert abs(dist(tip_scene, p1_scene) - expected) < 0.5
+    assert abs(dist(tip_scene, p2_scene) - expected) < 0.5
+    assert abs(dist(tip_scene, back_scene) - arrow.head_length) < 0.5
     f.close()
 
 
@@ -1011,7 +994,7 @@ def test_annotation_font_applies_to_the_selected_text_annotations_undoably():
     menu = _context_menu(f, _text_center(a))
     assert menu is not None
     texts = [x.text() for x in menu.actions()]
-    assert "Font..." in texts and "Edit Text" in texts and "Properties..." in texts, texts
+    assert "Font..." in texts and "Edit Text" in texts, texts
     chosen = {'family': QtGui.QFont().defaultFamily(), 'size': 20.0, 'bold': True,
               'italic': False, 'underline': True, 'strikeout': True, 'color': (10, 120, 30, 255)}
     n_undo = len(f.undo_stack)

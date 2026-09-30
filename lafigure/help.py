@@ -121,8 +121,11 @@ class HelpMixin:
   direction, and rotation snaps to 45° steps
 - **Ctrl+C / Ctrl+V** copy/paste the selected annotation(s) too (offset a
   few pixels so a same-window paste doesn't land exactly on the original)
-- **Right-click** an annotation for Copy/Paste Annotation, Properties...
-  (color/width/fill), Link to... (click a subplot to reparent) -- an
+- **Right-click** an annotation for Copy/Paste Annotation, Line Style/Line
+  Width/Color... (Fill... too for a rectangle/ellipse), Arrow Style...
+  (head length/width/type -- arrow/round/diamond/none, for a
+  line/arrow/double arrow/text+arrow), Link to... (click a subplot to
+  reparent) -- an
   unlinked annotation also lists a direct **Link to subplot `<name>`**
   shortcut for every subplot its own bounding box currently overlaps --
   and Delete
