@@ -41,6 +41,32 @@ ICON_DIR = os.path.join(
 )
 
 
+def _hide_points_icon():
+    """"Hide Brushed Points" toolbar icon: an eye with a diagonal slash,
+    distinct from Delete (which reused SP_DialogDiscardButton -- read as
+    "delete", not "hide"). Drawn the same way _fit_icon (and view_ops.py's
+    _zoom_cursor) draw their own: a small QPixmap painted once and cached
+    by the QIcon it returns."""
+    size = 18
+    pix = QtGui.QPixmap(size, size)
+    pix.fill(QtCore.Qt.transparent)
+    painter = QtGui.QPainter(pix)
+    painter.setRenderHint(QtGui.QPainter.Antialiasing)
+    pen = QtGui.QPen(QtGui.QColor(40, 40, 40), 1.6)
+    painter.setPen(pen)
+    outline = QtGui.QPainterPath()
+    outline.moveTo(2, 9)
+    outline.quadTo(9, 1, 16, 9)
+    outline.quadTo(9, 17, 2, 9)
+    painter.drawPath(outline)
+    painter.setBrush(QtGui.QBrush(QtGui.QColor(40, 40, 40)))
+    painter.drawEllipse(QtCore.QPointF(9, 9), 2.4, 2.4)
+    painter.setPen(QtGui.QPen(QtGui.QColor(40, 40, 40), 2.0))
+    painter.drawLine(QtCore.QPointF(2, 16), QtCore.QPointF(16, 2))
+    painter.end()
+    return QtGui.QIcon(pix)
+
+
 def _fit_icon(vertical):
     """Fit Vertical / Fit Horizontal toolbar icon, drawn here since icons/
     has none: a double arrow between two end bars."""
@@ -142,10 +168,14 @@ class ToolbarMixin:
             icon='tool_data_brush.png',
             tooltip="Drag a rectangle to select points for editing",
         )
-        action("Hide Brushed Points", self.hide_brushed_points, icon=SP.SP_DialogDiscardButton,
-               tooltip="Stop drawing brushed points; data stays intact")
-        action("Show All Points", self.show_all_hidden_points, icon=SP.SP_DialogResetButton,
-               tooltip="Redraw every hidden point")
+        self.hide_points_action = action(
+            "Hide Brushed Points", self.hide_brushed_points,
+            tooltip="Stop drawing brushed points; data stays intact")
+        self.hide_points_action.setIcon(_hide_points_icon())
+        self.show_all_points_action = action(
+            "Show All Points", self.show_all_hidden_points, icon=SP.SP_DialogResetButton,
+            tooltip="Redraw every hidden point")
+        self.show_all_points_action.setEnabled(False)
 
         tb.addSeparator()
         mode_group = QtGui.QActionGroup(self)
