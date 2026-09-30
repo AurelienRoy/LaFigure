@@ -202,6 +202,40 @@ def test_has_hidden_points_toggles_with_hide_and_show_all():
     f.close()
 
 
+def test_show_all_toolbar_action_enabled_state_is_kept_in_sync():
+    """toolbar.py (coordinator-owned) is expected to expose the "Show All
+    Points" QAction as self.show_all_points_action; brushing.py refreshes
+    its enabled state at every hide/show/undo/redo. Simulated here with a
+    plain QAction, since this test file doesn't own toolbar.py."""
+    from pyqtgraph.Qt import QtGui
+    f, (ax,) = _figure()
+    src = _linear_source()
+    ax.scatter(src, x='t', y='z', size=6)
+    vb = ax.plot_item.getViewBox()
+    vb.setRange(xRange=(0, 100), yRange=(-1, 1), padding=0)
+    app.processEvents()
+    f.brush_action.trigger()
+
+    f.show_all_points_action = QtGui.QAction("Show All Points")
+    f.show_all_points_action.setEnabled(True)  # deliberately wrong at first
+    f._refresh_show_all_action()
+    assert not f.show_all_points_action.isEnabled(), "nothing hidden yet -- must be disabled"
+
+    xr, yr = vb.viewRange()
+    _brush_drag(f, ax.plot_item, (xr[0], yr[0]), (xr[0] + (xr[1] - xr[0]) * 0.2, yr[1]))
+    f.hide_brushed_points()
+    assert f.show_all_points_action.isEnabled()
+    f.undo()
+    assert not f.show_all_points_action.isEnabled()
+    f.redo()
+    assert f.show_all_points_action.isEnabled()
+    f.show_all_hidden_points()
+    assert not f.show_all_points_action.isEnabled()
+    f.undo()
+    assert f.show_all_points_action.isEnabled()
+    f.close()
+
+
 # -- delete_brushed_points must notify the source, without shrinking it -----
 def test_delete_brushed_points_notifies_source_on_change():
     f, (ax,) = _figure()

@@ -335,6 +335,19 @@ class BrushingMixin:
         return series
 
     # -- Hide Brushed Points / Show All --------------------------------------
+    def _refresh_show_all_action(self):
+        """Keep the toolbar's "Show All Points" QAction's enabled state in
+        sync with has_hidden_points() -- the subplot menu already does
+        this itself, on its own aboutToShow (menus.py); a toolbar button
+        has no such hook, so every place below that can change whether
+        anything is hidden calls this directly. `show_all_points_action`
+        is created by toolbar.py (a coordinator diff, not owned here) --
+        guarded so this is a no-op before that diff lands / in a test
+        LaFigure with no toolbar."""
+        action = getattr(self, 'show_all_points_action', None)
+        if action is not None:
+            action.setEnabled(self.has_hidden_points())
+
     def hide_brushed_points(self):
         """Stop drawing the brushed rows everywhere they're shown: hidden on
         their DataSource (the data stays intact), so every series of that
@@ -361,6 +374,7 @@ class BrushingMixin:
             for series, entries in private:
                 self._set_private_hidden(series, entries, hidden)
             self._refresh_sources(sources)
+            self._refresh_show_all_action()
 
         apply(True)
         self._push_history(undo_fn=lambda: apply(False), redo_fn=lambda: apply(True))
@@ -387,6 +401,7 @@ class BrushingMixin:
             for series, entries in private:
                 self._set_private_hidden(series, entries, False)
             self._refresh_sources(sources)
+            self._refresh_show_all_action()
 
         def hide():
             for src, rows in sources.items():
@@ -394,6 +409,7 @@ class BrushingMixin:
             for series, entries in private:
                 self._set_private_hidden(series, entries, True)
             self._refresh_sources(sources)
+            self._refresh_show_all_action()
 
         show()
         self._push_history(undo_fn=hide, redo_fn=show)
