@@ -810,10 +810,10 @@ branch of that wave, not once per merge. Baseline before round 4:
 
 | WP | Title | Wave | Depends on | Model | Status |
 |----|-------|------|-----------|-------|--------|
-| R4-BASE  | Shared kind base: composite item, derived kinds, category/jitter/color/size/bin helpers | 1 | — | sonnet | todo |
-| R4-CBAR  | Interactive colorbar: fixed data-min/max lines, independent limits, live refresh | 1 | — | sonnet | todo |
-| R4-3D    | Rotate+Zoom mode, 3D rect zoom, 3D menu (views, projection, no FFT), axis Scale submenu | 1 | — | sonnet | todo |
-| R4-TREE  | Figure-browser row click sets the focused subplot | 1 | — | sonnet | todo |
+| R4-BASE  | Shared kind base: composite item, derived kinds, category/jitter/color/size/bin helpers | 1 | — | sonnet | running |
+| R4-CBAR  | Interactive colorbar: fixed data-min/max lines, independent limits, live refresh | 1 | — | sonnet | running |
+| R4-3D    | Rotate+Zoom mode, 3D rect zoom, 3D menu (views, projection, no FFT), axis Scale submenu | 1 | — | sonnet | running |
+| R4-TREE  | Figure-browser row click sets the focused subplot | 1 | — | sonnet | running |
 | R4-LOG   | Kinds: loglog, semilogx, semilogy | 2 | R4-BASE | sonnet | todo |
 | R4-SCAT  | Kinds: bubblechart, swarmchart, binscatter, spy | 2 | R4-BASE, R4-CBAR | sonnet | todo |
 | R4-DIST  | Kinds: boxchart, violinplot | 2 | R4-BASE | sonnet | todo |
