@@ -204,11 +204,12 @@ def test_curves_to_front_and_back_are_undoable():
 
 def test_curves_to_front_pokes_refresh_legend_order_only_if_present():
     """Package P3 (view_ops.py) owns _refresh_legend_order; this package
-    must call it if present and do nothing (not raise) if it isn't --
-    see this package's report on why (P3 may not be merged yet)."""
+    must call it if present. P3 is merged now, so the real method exists --
+    monkeypatch it on the instance to observe the call sites without
+    depending on its own implementation."""
     f, p, c = _line_figure()
     c2 = f._add_series(p, 'line', np.arange(10.0), np.arange(10.0), name="lin").item
-    assert not hasattr(f, '_refresh_legend_order'), "control: not wired in this package"
+    assert hasattr(f, '_refresh_legend_order'), "P3's real method should be present"
     f.curves_to_front([c], True)   # must not raise
     f.undo()
 
