@@ -35,6 +35,7 @@ safely undo() twice in a row past a create/delete pair that itself already
 replaced the object once -- pair every undo with its matching redo (or a
 fresh delete_annotation call on whatever is *currently* live).
 """
+import logging
 import math
 import time
 
@@ -44,7 +45,33 @@ from tests.helpers import (
     app, m, SHIFT, FakeClickEvent, FakeSceneEvent, FakePressEvent, shown_figure,
     first_curve, _click_annotation, _place, _two_annotation_figure,
     _scene_pos, _vb_center, _dblclick, _editor, _type, _click_away, _drive_font_dialog,
+    _press_escape,
 )
+
+
+class _ListHandler(logging.Handler):
+    """Appends each record's rendered message to a list. This project has
+    no pytest (no caplog fixture), so this small handler stands in for it
+    -- see PLAN.md's Round 3 preamble, which explicitly allows every
+    debug-logging package to build its own tiny copy of this rather than
+    share a file neither owns (tests/test_brushing.py has an identical
+    one of its own)."""
+
+    def __init__(self):
+        super().__init__()
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+def _attached_handler():
+    logger = logging.getLogger('lafigure')
+    handler = _ListHandler()
+    old_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    return handler, logger, old_level
 
 
 def test_annotation_lifecycle():
@@ -1062,4 +1089,115 @@ def test_textarrow_label_edits_in_place_too():
     _click_away(f)
     assert ta.text == 'label!'
     _label_checks(ta)  # still laid out beside p1 (P1's geometry untouched)
+
+
+# -- WP-DBG4: debug logging of annotation placement gestures -----------------
+def test_rect_placement_gesture_logs_start_and_completion():
+    """A real press-drag-release gesture (the same eventFilter path
+    test_annotation_lifecycle drives) must log one "start" record (kind,
+    anchor) and one "completed" record with the final geometry."""
+    f = shown_figure()
+    p1 = f.plots[0]
+    scene = f.layout_widget.scene()
+    vb1_center = _vb_center(p1)
+    f.start_placing_annotation('rect')
+
+    handler, logger, old_level = _attached_handler()
+    try:
+        f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMousePress, vb1_center))
+        f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMouseRelease,
+                                             vb1_center + QtCore.QPointF(80, 60)))
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+    assert len(f.annotations) == 1 and f.annotations[0].kind == 'rect', "control: really placed"
+    starts = [msg for msg in handler.messages if msg.startswith("annotation placement start")]
+    completions = [msg for msg in handler.messages if msg.startswith("annotation placement completed")]
+    assert len(starts) == 1 and "kind=rect" in starts[0] and "anchor=axes" in starts[0], handler.messages
+    assert len(completions) == 1 and "kind=rect" in completions[0] and "anchor=axes" in completions[0], \
+        handler.messages
+    f.close()
+
+
+def test_negligible_drag_placement_is_completed_not_cancelled():
+    """A press+release with no real movement still places the shape at its
+    default extent (see eventFilter's own docstring) -- that's a
+    completion, not a cancellation, and the log must say so."""
+    f = shown_figure()
+    p1 = f.plots[0]
+    scene = f.layout_widget.scene()
+    vb1_center = _vb_center(p1)
+    f.start_placing_annotation('ellipse')
+
+    handler, logger, old_level = _attached_handler()
+    try:
+        f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMousePress, vb1_center))
+        f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMouseRelease, vb1_center))
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+    assert len(f.annotations) == 1 and f.annotations[0].kind == 'ellipse'
+    completions = [msg for msg in handler.messages if msg.startswith("annotation placement completed")]
+    cancels = [msg for msg in handler.messages if msg.startswith("annotation placement cancelled")]
+    assert len(completions) == 1 and "default extent" in completions[0], handler.messages
+    assert not cancels, handler.messages
+    f.close()
+
+
+def test_esc_mid_placement_logs_cancellation_not_completion():
+    """Esc (the real toolbar shortcut, via _press_escape) mid-gesture must
+    log a cancellation record, and must NOT be misread as a completion --
+    _cancel_placing() is also called as plain cleanup right after every
+    successful placement (see its own docstring), so this specifically
+    guards against that cleanup call being mistaken for a cancel."""
+    f = shown_figure()
+    p1 = f.plots[0]
+    scene = f.layout_widget.scene()
+    f.start_placing_annotation('line')
+    f.eventFilter(scene, FakeSceneEvent(QtCore.QEvent.GraphicsSceneMousePress, _vb_center(p1)))
+    assert f._placing_state is not None, "control: a placement really is in progress"
+    n_before = len(f.annotations)
+
+    handler, logger, old_level = _attached_handler()
+    try:
+        _press_escape(f)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+    assert f._placing_kind is None and f._placing_state is None, "control: Esc cancelled it"
+    assert len(f.annotations) == n_before, "control: nothing got created"
+    cancels = [msg for msg in handler.messages if msg.startswith("annotation placement cancelled")]
+    completions = [msg for msg in handler.messages if msg.startswith("annotation placement completed")]
+    assert len(cancels) == 1 and "kind=line" in cancels[0], handler.messages
+    assert not completions, handler.messages
+    f.close()
+
+
+def test_successful_placement_does_not_also_log_a_spurious_cancellation():
+    """The inverse of the guard above: a completed placement's own
+    cleanup call to _cancel_placing() must not ALSO emit a "cancelled"
+    record alongside the "completed" one."""
+    f = shown_figure()
+    p1 = f.plots[0]
+    scene = f.layout_widget.scene()
+    f.start_placing_annotation('cursor')
+    c1 = first_curve(p1)
+    sample_pos = p1.getViewBox().mapViewToScene(QtCore.QPointF(float(c1.xData[50]), float(c1.yData[50])))
+
+    handler, logger, old_level = _attached_handler()
+    try:
+        f._on_scene_clicked(FakeClickEvent(sample_pos))
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+    assert f._placing_kind is None, "control: the cursor was actually placed"
+    completions = [msg for msg in handler.messages if msg.startswith("annotation placement completed")]
+    cancels = [msg for msg in handler.messages if msg.startswith("annotation placement cancelled")]
+    assert completions and "kind=cursor" in completions[0], handler.messages
+    assert not cancels, handler.messages
+    f.close()
     f.close()

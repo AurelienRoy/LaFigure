@@ -52,12 +52,16 @@ plain arrays has nothing shared to protect and is still edited in place.
 FFT results never had the time series' rows, so a source series' FFT gets
 a new DataSource of its own (view_ops.py).
 """
+import logging
+
 import numpy as np
 from pyqtgraph.Qt import QtCore, QtWidgets
 import pyqtgraph as pg
 
 from .datasource import DataSource
 from .selection import positions_of_rows
+
+logger = logging.getLogger('lafigure.brushing')
 
 # Attribute holding a series item's _RowView -- on the item, like the Series
 # itself, so it dies with it.
@@ -143,12 +147,67 @@ class BrushingMixin:
         is a figure-wide concept: a fresh, non-additive brush drag anywhere
         unbrushes every other subplot in this figure first; a Shift-held
         drag instead adds to whatever's already selected everywhere. Either
-        way the result is shown on every series sharing a source."""
+        way the result is shown on every series sharing a source.
+
+        Debug logging: RectBrush (selection.py) only calls back here once,
+        at the end of the drag -- modifiers are themselves read once, at
+        release (see _wrap_drag's own comment on why) -- so there is no
+        separate at-press hook into this file to log a true "drag started"
+        record from. Both the start and end debug lines below are logged
+        here, back to back, rather than truly bracketing the real
+        mouse-down/mouse-up moments. The drawn rectangle itself isn't
+        passed to on_finished either, so the logged "rect" is the bounding
+        box of the rows actually caught (see _matches_bbox) -- an
+        approximation, but arguably a more useful one for a bug report:
+        it's exactly the region that ended up selected, not just what was
+        dragged over empty space."""
+        plot_name = self.subplot_name(plot_item)
+        logger.debug(
+            "brush drag on subplot %r: %s (%d series hit)",
+            plot_name, "additive (shift-held)" if additive else "replace", len(matches),
+        )
         keyed = self._brushed_rows() if additive else {}
         for item, rows in matches.items():
             key = self._brush_key(self._series_of(item))
             keyed[key] = np.union1d(keyed[key], rows) if key in keyed else rows
         self._show_brushed_rows(keyed)
+        total_rows = sum(len(rows) for rows in matches.values())
+        logger.debug(
+            "brush drag finished on subplot %r: rect(bbox of caught points)=%s rows_caught=%d",
+            plot_name, self._matches_bbox(matches), total_rows,
+        )
+
+    def _matches_bbox(self, matches):
+        """(xmin, ymin, xmax, ymax) bounding box of every point `matches`
+        (item -> rows) caught, or None if nothing point-like was caught --
+        for the brush-drag debug log (see _on_rect_brush_finished).
+
+        A 3D kind's get_xy is (positions (N, 3), None) -- not the (x, y)
+        pair self._item_xy assumes -- so this reads get_xy directly and
+        takes the x/y columns for that shape, mirroring selection.py's own
+        _point_xy (bug #20's fix for the same "3D isn't (x, y)" mismatch)."""
+        xs, ys = [], []
+        for item, rows in matches.items():
+            series = self._series_of(item)
+            if series is None:
+                continue
+            mask = positions_of_rows(series, rows)
+            if mask is None or not mask.any():
+                continue
+            x, y = series.kind_obj.get_xy(item)
+            x = np.asarray(x)
+            if y is None:
+                if x.ndim != 2 or x.shape[1] != 3:
+                    continue
+                xs.append(x[mask, 0])
+                ys.append(x[mask, 1])
+                continue
+            xs.append(x[mask])
+            ys.append(np.asarray(y)[mask])
+        if not xs:
+            return None
+        xs, ys = np.concatenate(xs), np.concatenate(ys)
+        return (float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max()))
 
     def _clear_all_brush_selection(self, except_plot=None):
         for plot_item, brusher in self._brushers.items():
