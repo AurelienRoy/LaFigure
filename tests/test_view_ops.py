@@ -119,6 +119,45 @@ def test_remove_average_undo_redo():
     win.close()
 
 
+def test_remove_average_folds_the_mean_of_the_transformed_y_into_dy():
+    """WP-P7: Remove Average is a transform edit (dy -= mean of what's
+    drawn), not a derived column or an in-place edit -- so it shows in the
+    Transform popup and Reset undoes it exactly."""
+    from lafigure.datasource import DataSource
+    from lafigure.transform import IDENTITY, Transform
+    f = m.LaFigure(empty=True)
+    ax = f.subplot(0, 0)
+    t = np.arange(10, dtype=float)
+    src = DataSource({'t': t, 'v': t + 7.0})
+    s = ax.plot(src, x='t', y='v')
+    xs, ys = np.arange(4.0), np.array([1.0, 2.0, 3.0, 6.0])
+    s2 = ax.plot(xs, ys)
+    f.set_series_transform(s, Transform(dy=1.0, sy=2.0))   # drawn: 2t + 15, mean 24
+    f.focused_plot = ax.plot_item
+    n_undo = len(f.undo_stack)
+    f.remove_average()
+    assert len(f.undo_stack) == n_undo + 1, "every series of the subplot: one undo entry"
+    assert s.transform == Transform(dy=1.0 - 24.0, sy=2.0)
+    assert s2.transform == Transform(dy=-3.0)
+    assert abs(float(np.mean(s.y))) < 1e-9 and abs(float(np.mean(s2.y))) < 1e-9
+    assert src.columns == ('t', 'v'), "no derived column"
+    np.testing.assert_array_equal(src['v'], t + 7.0)
+    np.testing.assert_array_equal(ys, [1.0, 2.0, 3.0, 6.0])
+    assert s.columns == ('t', 'v') and s.source is src
+
+    dlg = f.open_transform_dialog(s.item)
+    assert dlg.dy_spin.value() == -23.0 and dlg.sy_spin.value() == 2.0, "the popup shows it"
+    dlg.reset()
+    dlg.accept()
+    assert s.transform == IDENTITY
+    np.testing.assert_array_equal(s.y, src['v'])
+
+    f.undo()   # the Reset
+    f.undo()   # the Remove Average
+    assert s.transform == Transform(dy=1.0, sy=2.0) and s2.transform == IDENTITY
+    f.close()
+
+
 def test_new_subplot_adopts_link_x():
     f = m.LaFigure()
     f.link_x_action.trigger()

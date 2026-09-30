@@ -405,24 +405,23 @@ def test_del_key_in_brush_mode_deletes_brushed_points_not_the_selection():
 
 
 # -- derived columns ---------------------------------------------------------
-def test_remove_average_on_a_source_series_writes_a_derived_column():
+def test_remove_average_on_a_source_series_is_a_display_transform():
+    """Was ..._writes_a_derived_column: since WP-P7, Remove Average folds
+    the mean into the series' display transform (dy) instead -- the source
+    gains no column and stays untouched either way."""
     f, (ax,) = _figure()
     t = np.arange(50, dtype=float)
     src = DataSource({'t': t, 'v': t + 7.0})
     s = ax.plot(src, x='t', y='v')
     f.focused_plot = ax.plot_item
     f.remove_average()
-    derived = s.columns[1]
-    assert derived != 'v' and derived in src.columns
+    assert s.columns == ('t', 'v') and src.columns == ('t', 'v')
     np.testing.assert_array_equal(src['v'], t + 7.0)  # original never overwritten
-    np.testing.assert_allclose(src[derived], t - t.mean())
     np.testing.assert_allclose(s.y, t - t.mean())
-    assert s.source is src
+    assert s.source is src and s.transform.dy == -(t + 7.0).mean()
     f.undo()
-    assert s.columns == ('t', 'v')
     np.testing.assert_array_equal(s.y, t + 7.0)
     f.redo()
-    assert s.columns[1] == derived
     np.testing.assert_allclose(s.y, t - t.mean())
     f.close()
 

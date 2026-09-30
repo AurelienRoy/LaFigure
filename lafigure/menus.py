@@ -42,6 +42,7 @@ import pyqtgraph as pg
 
 from .curve_style import (LINE_STYLES, LINE_WIDTHS, MARKERS, MARKER_SIZES,
                           has_current_line, line_capable, marker_options_apply, pen_style_of)
+from .transform import transform_applies
 
 
 def _marker_color(state):
@@ -336,6 +337,11 @@ class MenusMixin:
         marker_color_action.triggered.connect(pick_marker_color)
         menu.addSeparator()
 
+        # Per curve, like the popup it opens (transform.py): the clicked
+        # curve only, never the wider curve selection.
+        transform_action = menu.addAction("Transform...")
+        transform_action.setEnabled(transform_applies(kind))
+        transform_action.triggered.connect(lambda: self.open_transform_dialog(curve))
         menu.addAction("Rename Curve...").triggered.connect(
             lambda: self._rename_curve(plot_item, curve))
 

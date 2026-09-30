@@ -301,3 +301,245 @@ def test_add_series_does_not_crash_for_an_item_without_a_curve_attribute():
     assert s.kind == 'test_no_curve'
     assert list(s.x) == [1, 2, 3] and list(s.y) == [4, 5, 6]
     f.close()
+
+
+# -- WP-P7: the per-series display transform (transform.py) -------------------
+# Display-only (PLAN.md round 2, decision 2): what's drawn -- and hence
+# Series.x/.y and everything reading the item's data -- is raw * scale +
+# offset; the DataSource / the caller's arrays are never written.
+from pyqtgraph.Qt import QtCore, QtWidgets   # noqa: E402
+
+from lafigure.transform import IDENTITY, Transform   # noqa: E402
+from tests.helpers import app, _brush_drag   # noqa: E402
+
+
+def _shown_transform_figure(n=101):
+    f = m.LaFigure(empty=True)
+    f.show()
+    app.processEvents()
+    ax = f.subplot(0, 0)
+    t = np.linspace(0, 100, n)
+    src = DataSource({'t': t, 'v': t.copy()})
+    s = ax.plot(src, x='t', y='v', name="ramp")
+    return f, ax, src, s
+
+
+def test_transform_is_display_only_and_keeps_the_raw_data_intact():
+    f, p = _figure_with_plot()
+    src = DataSource({'t': np.arange(5.0), 'a': np.arange(5.0) * 2})
+    src_bytes = (src['t'].tobytes(), src['a'].tobytes())
+    s1 = f._add_series(p, 'line', src['t'], src['a'], source=src, columns=('t', 'a'))
+    xs, ys = np.array([0.0, 1.0, 2.0]), np.array([3.0, 4.0, 5.0])
+    arr_bytes = (xs.tobytes(), ys.tobytes())
+    s2 = f._add_series(p, 'line', xs, ys)
+    assert s1.transform == IDENTITY and s2.transform == IDENTITY
+    t = Transform(dx=1.0, dy=-2.0, sx=10.0, sy=0.5)
+    for s in (s1, s2):
+        f._apply_series_transform(s, t)
+    np.testing.assert_allclose(s1.x, np.arange(5.0) * 10 + 1)
+    np.testing.assert_allclose(s1.y, np.arange(5.0) * 2 * 0.5 - 2)
+    np.testing.assert_allclose(s2.item.yData, ys * 0.5 - 2, err_msg="the drawn item data is transformed")
+    raw_x, raw_y = s1.raw_xy()
+    np.testing.assert_array_equal(raw_y, src['a'])
+    assert (src['t'].tobytes(), src['a'].tobytes()) == src_bytes, "the DataSource is never written"
+    assert (xs.tobytes(), ys.tobytes()) == arr_bytes, "the caller's arrays are never written"
+    for s in (s1, s2):
+        f._apply_series_transform(s, IDENTITY)
+    np.testing.assert_array_equal(s1.y, src['a'])   # exact, not approximately
+    np.testing.assert_array_equal(s2.y, ys)
+    np.testing.assert_array_equal(s2.x, xs)
+    f.close()
+
+
+def test_a_zero_scale_is_refused():
+    try:
+        Transform(sx=0.0)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a 0 scale would make the raw data unrecoverable")
+
+
+def test_set_series_transform_is_one_undo_entry():
+    f, p = _figure_with_plot()
+    s = f._add_series(p, 'line', [0.0, 1.0], [2.0, 3.0])
+    n_undo = len(f.undo_stack)
+    f.set_series_transform(s, Transform(dy=10.0))
+    assert len(f.undo_stack) == n_undo + 1 and list(s.y) == [12.0, 13.0]
+    f.undo()
+    assert s.transform == IDENTITY and list(s.y) == [2.0, 3.0]
+    f.redo()
+    assert s.transform == Transform(dy=10.0) and list(s.y) == [12.0, 13.0]
+    f.close()
+
+
+def test_set_data_on_a_transformed_series_takes_raw_values():
+    f, p = _figure_with_plot()
+    s = f._add_series(p, 'line', [0.0, 1.0], [2.0, 3.0])
+    f.set_series_transform(s, Transform(dy=10.0))
+    s.set_data([0.0, 1.0], [5.0, 6.0])
+    assert list(s.y) == [15.0, 16.0], "set_data is raw data, drawn through the transform"
+    f.undo()
+    assert list(s.y) == [12.0, 13.0]
+    f.close()
+
+
+def test_transform_survives_the_to_dict_round_trip():
+    f, p = _figure_with_plot()
+    s = f._add_series(p, 'line', [0.0, 1.0, 2.0], [3.0, 4.0, 5.0], name='a')
+    t = Transform(dx=0.5, dy=7.0, sx=2.0, sy=3.0)
+    f.set_series_transform(s, t)
+    d = s.to_dict()
+    assert d['transform'] == tuple(t)
+    q = f.add_subplot(row=1, col=0)
+    s2 = f._add_series_from_dict(q, d)
+    assert s2.transform == t
+    np.testing.assert_array_equal(s2.y, s.y)
+    f._apply_series_transform(s2, IDENTITY)
+    np.testing.assert_array_equal(s2.y, [3.0, 4.0, 5.0])
+    f.close()
+
+
+def test_copy_paste_curve_and_subplot_carry_the_transform():
+    f, p = _figure_with_plot()
+    src = DataSource({'t': np.arange(5.0), 'a': np.arange(5.0) * 2})
+    s = f._add_series(p, 'line', src['t'], src['a'], source=src, columns=('t', 'a'), name='a')
+    t = Transform(dy=100.0, sy=2.0)
+    f.set_series_transform(s, t)
+    f._select_curve(s.item)
+    f.copy_curve()
+    q = f.add_subplot(row=1, col=0)
+    f.focused_plot = q
+    f.paste_curve()
+    (pasted,) = f._series_on(q)
+    assert pasted.transform == t and pasted.source is src
+    np.testing.assert_array_equal(pasted.y, s.y)
+
+    f._deselect_all()
+    f._on_plot_clicked(p)
+    f.copy_subplot()
+    f.paste_subplot()
+    (pasted2,) = f._series_on(f.plots[-1])
+    assert pasted2.transform == t
+    np.testing.assert_array_equal(pasted2.y, src['a'] * 2 + 100)
+    f._apply_series_transform(pasted2, IDENTITY)
+    np.testing.assert_array_equal(pasted2.y, src['a'])
+    f.close()
+
+
+def test_hidden_rows_come_back_through_the_current_transform():
+    """A row hidden before the transform changed is drawn with the NEW
+    transform when shown again, not the one it was hidden under."""
+    f, p = _figure_with_plot()
+    src = DataSource({'t': np.arange(6.0), 'a': np.arange(6.0)})
+    s = f._add_series(p, 'line', src['t'], src['a'], source=src, columns=('t', 'a'))
+    src.hide_rows([2, 3])
+    f._refresh_sources({src: None})
+    assert list(s.rows) == [0, 1, 4, 5]
+    f.set_series_transform(s, Transform(dy=10.0))
+    src.show_all()
+    f._refresh_sources({src: None})
+    np.testing.assert_allclose(s.y, np.arange(6.0) + 10)
+    f.close()
+
+
+def test_a_real_brush_drag_hits_the_transformed_points():
+    """The brush hit-tests what's drawn: after dy=+1000 the raw positions
+    are empty space, the transformed ones are hit."""
+    f, ax, src, s = _shown_transform_figure()
+    f.set_series_transform(s, Transform(dy=1000.0))
+    vb = ax.plot_item.getViewBox()
+    vb.setRange(xRange=(0, 100), yRange=(0, 1100), padding=0)
+    app.processEvents()
+    f.brush_action.trigger()
+    # Both drags start inside the data area: a press on the axis beside it
+    # isn't a ViewBox drag at all.
+    _brush_drag(f, ax.plot_item, (19.5, 10), (40.5, 500))   # the RAW points' place
+    assert not f._figure_brush_items(), "nothing is drawn where the raw points would be"
+    _brush_drag(f, ax.plot_item, (19.5, 950), (40.5, 1099))  # where they are drawn
+    items = f._figure_brush_items()
+    assert len(items) == 1 and items[0][0] is s.item
+    hit = s.x[items[0][1]]
+    assert (hit.min(), hit.max()) == (20.0, 40.0), (hit.min(), hit.max())
+    f.close()
+
+
+def _capture_message_box(fn):
+    """Run fn with QMessageBox.information captured (a real modal box
+    segfaults under offscreen -- CLAUDE.md bug #20); returns the texts."""
+    seen = []
+    saved = QtWidgets.QMessageBox.information
+    QtWidgets.QMessageBox.information = staticmethod(lambda parent, title, text, *a: seen.append(text))
+    try:
+        fn()
+    finally:
+        QtWidgets.QMessageBox.information = saved
+    return seen
+
+
+def test_selection_stats_and_fit_use_the_transformed_values():
+    f, ax, src, s = _shown_transform_figure()
+    f.set_series_transform(s, Transform(dy=1000.0, sy=2.0))
+    f.brush_action.trigger()
+    f._on_rect_brush_finished(ax.plot_item, {s.item: np.arange(len(src))}, False)
+    (text,) = _capture_message_box(f.show_selection_stats)
+    # y drawn = 2 * t + 1000 over t in [0, 100]: mean 1100.
+    assert "y: mean=1100" in text, text
+    f.fit_brushed_points(ax.plot_item, degree=1)
+    fit = [c for c in ax.plot_item.listDataItems() if c is not s.item][-1]
+    slope, intercept = np.polyfit(fit.xData, fit.yData, 1)
+    assert abs(slope - 2.0) < 1e-9 and abs(intercept - 1000.0) < 1e-6, (slope, intercept)
+    f.close()
+
+
+def test_csv_export_writes_the_transformed_values():
+    import csv
+    import tempfile
+    f, ax, src, s = _shown_transform_figure(n=5)
+    f.set_series_transform(s, Transform(dx=0.5, dy=-3.0))
+    fd, path = tempfile.mkstemp(suffix='.csv')
+    os.close(fd)
+    try:
+        f._export_subplot_csv(ax.plot_item, path)
+        with open(path, newline='') as fh:
+            rows = list(csv.reader(fh))
+    finally:
+        os.remove(path)
+    assert rows[0] == ["ramp x", "ramp y"]
+    np.testing.assert_allclose([float(r[0]) for r in rows[1:]], np.linspace(0, 100, 5) + 0.5)
+    np.testing.assert_allclose([float(r[1]) for r in rows[1:]], np.linspace(0, 100, 5) - 3.0)
+    f.close()
+
+
+def test_html_export_of_a_plain_array_series_uses_the_transformed_values():
+    try:
+        from lafigure import html_export
+        html_export._require_plotly()
+    except Exception:
+        return   # plotly is optional
+    f = m.LaFigure(empty=True)
+    s = f.subplot(0, 0).plot([0.0, 1.0, 2.0], [3.0, 4.0, 5.0], name='a')
+    f.set_series_transform(s, Transform(dy=10.0, sx=2.0))
+    pfig = html_export.build_plotly_figure(f)
+    (trace,) = [tr for tr in pfig.data if tr.name == 'a']
+    np.testing.assert_allclose(trace.x, [0.0, 2.0, 4.0])
+    np.testing.assert_allclose(trace.y, [13.0, 14.0, 15.0])
+    f.close()
+
+
+def test_a_pinned_data_cursor_follows_its_transformed_point():
+    f, ax, src, s = _shown_transform_figure()
+    row = 10
+    x0, y0 = float(s.item.xData[row]), float(s.item.yData[row])
+    items = f._plot_data_items_for_ref(ax.plot_item, False)
+    point_ref = {'is_3d': False, 'curve_index': items.index(s.item), 'row': f._row_id(s, row)}
+    ann = f._create_annotation('cursor', 'axes', ax.plot_item, QtCore.QPointF(x0, y0), None,
+                               text="", point_ref=point_ref)
+    f._apply_series_transform(s, Transform(dx=5.0, dy=500.0))   # live, as the popup does
+    assert abs(ann.pos().x() - (x0 + 5)) < 1e-9 and abs(ann.pos().y() - (y0 + 500)) < 1e-9
+    f._apply_series_transform(s, IDENTITY)
+    f.set_series_transform(s, Transform(sy=3.0))                # committed
+    assert abs(ann.pos().y() - 3 * y0) < 1e-9
+    f.undo()
+    assert abs(ann.pos().y() - y0) < 1e-9, "undo moves the cursor back with its point"
+    f.close()
