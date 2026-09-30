@@ -85,9 +85,22 @@ LaFigure/
     handles.py                       # DragHandle base + ResizeHandle, MoveHandle,
                                       # AnnotationHandle (child-parented resize/
                                       # rotate/endpoint grip for one AnnotationItem)
-    editable_text.py                  # click-to-edit title/axis-label/legend text
+    editable_text.py                  # in-place rich-text editing (title/axis-label/
+                                       # legend/annotation text), FontDialog, the
+                                       # font-spec dict, set_text/set_font undo paths
+    richtext.py                        # to_html/to_plain/to_plotly: a small LaTeX-ish
+                                        # subset -> Qt rich text / Unicode (bold,
+                                        # italic, super/subscript, Greek, math symbols;
+                                        # no dependency, no real LaTeX math)
     annotations.py                     # AnnotationItem (all 8 shape kinds) + the
                                         # figure/border/axes filiation model
+    transform.py                        # per-series display Transform (dx/dy/sx/sy) +
+                                         # its modeless popup -- display-only, the
+                                         # DataSource/raw array is never written;
+                                         # Remove Average is dy = -mean through this
+    debug.py                             # enable_debug_mode(): logging + faulthandler +
+                                          # exception hook + Qt message bridge, one
+                                          # fixed overwritten log file for bug reports
   icons/
   tests/                   # helpers.py (Fake*Event, _mouse/_key, figure
                             # factories) + one test_<mixin>.py per module above
@@ -271,7 +284,28 @@ the actual code — this list is a summary, not a substitute for checking.
       set, mirroring Marker Size). Recoloring a line kept invisible by
       Line Style "none" preserves the alpha-0 invisibility (keeps the
       new color parked underneath, same trick as bug #15) rather than
-      making it reappear.
+      making it reappear. **Menu order and gating fixed** (2026-09-29,
+      P2): the submenu order is now Line Style / Line Width / Line Color
+      / Marker / Marker Size / Marker Color; a scatter series with a
+      visible connecting line now correctly enables Line Style/Width/
+      Color (the old gate was purely by kind string, so a scatter could
+      never show them regardless of whether a line was actually drawn —
+      see bug #15's own "no line is three different states" lesson,
+      recurring here). **Transform...** (2026-09-30, P7): a modeless
+      per-curve popup — offset X/Y, scale X/Y, live-applied, OK/Reset/
+      Cancel — display-only (`transform.py`): the underlying `DataSource`/
+      raw array is never written, so Reset is exact and free forever;
+      brushing, Selection Stats, Fit, and CSV/HTML export all see the
+      transformed values because they already read the item's drawn
+      data. Applies to `line`/`scatter`/`stairs`/`area` only. Remove
+      Average is now `dy = -mean` through this same mechanism (no more
+      derived column for this path), so its effect is visible in, and
+      resettable from, the popup. Click/selection tolerance on a curve
+      or scatter point is also widened a few screen pixels beyond the
+      exact drawn path (`selection_ui.py`), and a right-click on an
+      already-selected curve reliably keeps it selected while its own
+      menu opens (traced to click-cycling firing on right-clicks too,
+      not just left — see bug #22 for the click-tolerance mechanism).
 - [ ] Manipulate individual numeric points (drag a sample to edit its
       value) — not implemented
 - [x] Add/remove a legend (toolbar toggle, or the subplot right-click
@@ -281,7 +315,14 @@ the actual code — this list is a summary, not a substitute for checking.
       the same day: a legend toggled on over existing curves was **empty**
       (zero size, invisible) — pyqtgraph enters an item in a legend only
       from `PlotItem.addItem`, and only if the legend already exists, so
-      `_show_legend` adds the named plot-data items itself.
+      `_show_legend` adds the named plot-data items itself. **Underscore-
+      hiding and z-order (2026-09-29, P3):** a curve named with a leading
+      `_` (matplotlib's `"_nolegend_"` convention — used by this
+      project's own `line_signal_annotations.py` example) is never
+      listed; entries are ordered front-most (highest z-order) first,
+      ties by creation order, via `LaFigure._refresh_legend_order()`,
+      called from `_show_legend`, `curves_to_front`/`send_to_back`, and a
+      curve rename.
 - [x] **Right-click menus split by target** (2026-09-29, `menus.py`), each
       starting with a disabled bold header ("Subplot: <title>" / "Curve:
       <name>"). A right-click on a curve reaches the ViewBox, not the
@@ -304,6 +345,29 @@ the actual code — this list is a summary, not a substitute for checking.
       via dedicated "X Label"/"Y Label" toolbar buttons (same effect,
       discoverable without knowing the double-click gesture — useful right
       after adding a new, unlabeled subplot)
+- [x] **All four of the above (title/axis-label/legend/annotation text)
+      edit in place now, not via a popup** (2026-09-30, P8,
+      `editable_text.py`): double-click opens a real caret-visible editor
+      positioned over the text itself, showing the SOURCE markup; Enter
+      commits, Shift+Enter inserts a line break (multi-line supported
+      everywhere, including a growable title row), Esc cancels, clicking
+      elsewhere commits — one undo entry per commit (title edits are now
+      undoable at all, which they weren't before). **Rich text**: a small
+      LaTeX-ish subset (`richtext.py`) translates to Qt rich text/Unicode
+      — `\textbf{}`/`\textit{}`, `^{}`/`_{}` (braces required, so
+      `sensor_1`/`_nolegend_` don't turn into subscripts), ~30 Greek
+      letters, ~60 math symbols, `\textcolor{}{}` — deliberately **not**
+      real LaTeX math (no fractions/integrals/matrices), no new
+      dependency; an unrecognized token renders literally, never raises.
+      The stored source string (not the rendered HTML) is what
+      copy/paste and rename round-trip. **Right-click → Font...**
+      (`QFontDialog` + a color button) on all four, undoable — including
+      underline/strikeout (bug #25's fix: applied via
+      `QTextCursor.mergeCharFormat`, since rich-text HTML doesn't let the
+      base font supply that the way it does bold/italic/family/size).
+      HTML export runs title/axis/legend/annotation text through the
+      same translator (`to_plotly`) so the markup isn't shown literally
+      in exported figures.
 - [x] Toolbar with custom buttons, using the MATLAB-style icons in `icons/`
       where one matches (pointer/hand/zoom/legend/linked-plots/data-brush/
       text-box); a few actions without a matching icon in that set keep a
@@ -806,6 +870,29 @@ the actual code — this list is a summary, not a substitute for checking.
         `AnnotationItem.END_HANDLE_PULLBACK` (0.7): the end handle sits
         70% of the way from p0 to the label point instead of exactly on
         it, where the label's own white text bubble is centered too.
+- [x] **Debug mode** (2026-09-30, `lafigure/debug.py`): `lafigure.
+      enable_debug_mode(log_path=None) -> str` configures the root
+      `'lafigure'` logger (every `logging.getLogger('lafigure.<module>')`
+      child is affected for free — no import needed from `debug.py`
+      itself) to write DEBUG-level, human-readable lines to one fixed
+      log file (`lafigure_debug.log` by default, overwritten every run —
+      a user's deliberate choice over a timestamped-per-run file) and to
+      stderr. Also enables `faulthandler` (writes to the same file — the
+      one thing that can leave any trace of a native crash with **no**
+      Python traceback at all, exactly bug #24's class), wraps
+      `sys.excepthook` (logs, then still chains to whatever hook was
+      installed), and bridges Qt's own C++-side warnings via
+      `qInstallMessageHandler`. Idempotent (a second call replaces
+      handlers rather than stacking them). Every example script under
+      `examples/` calls it automatically and prints the log path, so
+      running any of them produces something a user can copy/paste back
+      for a bug report. On top of the crash-safety foundation, three
+      more modules log at their own central choke points: interaction-
+      mode changes and every undo/redo push/run (`view_ops.py`/
+      `history.py`), click/selection dispatch — gesture, what was hit,
+      the resulting selection (`selection_ui.py`), and brush-drag/
+      annotation-placement gesture start/end (`brushing.py`/
+      `annotation_ops.py`).
 
 ## Roadmap (agreed with the user 2026-09-28) — live backlog
 
@@ -1011,6 +1098,19 @@ against memory of having launched the package.)
       checkboxes are view state (not undo). An `AnnotationItem` row shows
       no editor controls yet (only Delete) — its own right-click
       "Properties…" in the figure itself still covers full editing.
+      **Two top-level categories, "Curves" and "Annotations"** (2026-09-29,
+      P5), each with its own tristate checkbox (unchecking it hides every
+      descendant recursively through groups; checking one child while its
+      category is unchecked re-checks the category — same True/False/None
+      convention `Group.visible` already used). Tree row order stays
+      creation order (a deliberate decision, so groups stay visually
+      grouped — z-order drives the legend only, not this tree). Also
+      fixed the same day: the tree could go stale after re-clicking an
+      already-focused subplot (`focused_plot`'s setter only fires
+      `registry.focusChanged` on an actual change) — an app-wide mouse-
+      press event filter now touches the "most recently active figure"
+      tracker on every real click, independent of whether `focused_plot`
+      itself changed.
 - [x] **Groups** (hierarchy for series and annotations, nestable; **a group
       never spans subplots** — user decision, enforced by raising on a
       mismatched member): group / ungroup (Ctrl+G / Ctrl+Shift+G,
@@ -1945,6 +2045,158 @@ every single call (`print`/file-append, not relying on default buffering
 even with `python -u` — a genuine segfault can still lose already-written
 buffered output), never by staring at the last line of a traceback that
 doesn't exist.
+
+### 21. A pyqtgraph `ViewBox` clips its children, so Qt ignores a custom `shape()` for hit-testing unless `contains()`/`collidesWithPath()` are also overridden
+
+**Symptom (found tightening annotation hit-tests, 2026-09-29):** giving
+`AnnotationItem` a real `shape()` override — the dashed selection outline
+instead of the padded `boundingRect()` — worked for a `'figure'`-anchored
+annotation but had **no effect at all** for an `'axes'`-anchored one: a
+click well outside the tight shape, in the old padded corner, still
+selected it.
+
+**Root cause:** `QGraphicsItem.contains()` (what a real mouse press's
+`collidesWithPath()` hit-test actually calls) uses the item's **clip
+path**, not `shape()`, whenever the item is clipped by an ancestor — and
+`shape()` is only consulted for an item that clips *itself*
+(`ItemClipsToShape`). A `PlotItem`'s `ViewBox` clips its children to its
+own data-area rect, so every `'axes'`-anchored item was silently hit-tested
+against that ancestor clip rect, never the item's own `shape()`. Only
+visible by testing an axes-anchored shape with real mouse events (a
+`'figure'`-anchored one, or a direct method call, never exercises the clip
+path at all) — CLAUDE.md's own recurring lesson (items 7/11/14/19) that a
+real event, not a direct call, is what surfaces this class of bug.
+
+**Fix:** override both `contains()` and `collidesWithPath()` on the item
+to intersect `shape()` with whatever clip path is already in effect,
+instead of relying on Qt's default (clip-path-only) behavior.
+
+**Lesson:** a tight custom `shape()` on any `QGraphicsItem` living inside
+a clipping ancestor (any pyqtgraph `ViewBox`, not just this project's own
+code) needs the same two-method override, or it silently has no effect on
+hit-testing for that specific case — a gap invisible from `boundingRect()`
+being correct and `shape()` "looking right" in isolation.
+
+### 22. `GraphicsScene`'s click-candidate search filters by a fixed radius/`boundingRect()` *before* an item's own hit-test ever runs
+
+**Symptom (found widening click tolerance, 2026-09-29):** padding
+`ScatterPlotItem.pointsAt()`'s own per-point hit-test by a few screen
+pixels did nothing for a near-miss click on an isolated marker — the
+click simply never reached that method at all.
+
+**Root cause:** pyqtgraph's `GraphicsScene.itemsNearEvent` (the function
+that decides which items are even *candidates* for a click, before
+calling any item's own `mouseClickEvent`) filters first by each item's
+`shape()`/`boundingRect()` within a small, separate `_clickRadius`
+(default 2px) — an item whose own drawn extent doesn't reach that far
+from the click point is never handed the event, regardless of how
+generous its own hit-test method is.
+
+**Fix:** widen both — the item-level hit-test (via a small per-instance
+monkeypatch of `pointsAt`) **and** the scene's own `_clickRadius`
+(`GraphicsScene.setClickRadius`). Padding only one silently fixes nothing
+for a truly isolated point/curve.
+
+**Lesson:** pyqtgraph's click dispatch has two independent filters in
+series (scene-level candidate search, then item-level hit-test) — widening
+click/selection tolerance needs both, and only a real `QMouseEvent` sent
+to the viewport (not a direct call to the item's own hit-test method)
+shows whether the *first* filter is even letting the click through.
+
+### 23. A function monkeypatched onto a Qt/pyqtgraph item must reach that item only through a `weakref`
+
+**Symptom (found building in-place rich-text editing, 2026-09-29):** the
+full test suite passed, but stderr showed
+`'LabelItem' object has no attribute '_sizeHint'` and several pyqtgraph
+error blocks that master's own baseline run never produced — a real
+regression a passing suite alone didn't surface.
+
+**Root cause:** a closure stored directly on an item as `label.setText =
+closure` held a **strong** reference back to `label` inside the closure's
+own cell — `item.__dict__` holds the closure, the closure holds the item:
+a reference cycle. Once the item is dropped from Python (e.g. a legend
+label replaced on rename), the garbage collector breaks the cycle by
+clearing the item's `__dict__` while the underlying Qt/C++ object is still
+alive and in use — so the *next* call into it (Qt's own `sizeHint()`)
+fails on a pyqtgraph attribute that's simply gone.
+
+**Fix:** reach the item only through a `weakref` captured inside the
+closure, and call the class's own method (`type(item).setText(item, ...)`)
+rather than a previously-saved bound method.
+
+**Lesson:** monkeypatching a method onto a live Qt/pyqtgraph instance is
+sometimes unavoidable (see item 25 below for another instance) — but the
+replacement must never close over a strong reference back to that same
+instance. And: **check stderr for stray tracebacks, not just the test
+count** — a passing suite can still be quietly leaking broken objects.
+
+### 24. A focused, editable `QGraphicsTextItem` can crash outright — a real access violation, no Python traceback — when painted through an OpenGL-backed `GraphicsView` viewport with an incomplete GL context
+
+**Symptom (reported live, 2026-09-30):** right-clicking a subplot title
+and choosing "Edit Text" crashed the whole app with **no error message at
+all** — not a Python exception, a native crash.
+
+**Investigation:** reproduced 100% reliably by giving a
+`QGraphicsTextItem` (`TextEditorInteraction`, focused via `setFocus()`)
+keyboard focus while it sits in a scene whose `GraphicsView` viewport is
+GL-backed (`pg.setConfigOptions(useOpenGL=True)`, this project's own
+shipped-app default — see "What worked well") **and** the GL context
+itself is incomplete or unavailable — confirmed exactly reproducing under
+`QT_QPA_PLATFORM=offscreen` on Windows (item 10's own "no OpenGL at all"
+finding), and NOT reproducing with a real, working GL context in the same
+environment. A plain `QGraphicsView`, pyqtgraph's own bare `GraphicsView`
+with no `PlotItem`, and a `GraphicsLayoutWidget` with a `PlotItem` but
+outside this project's own `LaFigure` window all survived the identical
+focused item fine — the crash needed the *combination* of this project's
+real window setup and a broken/absent GL context, so a fix couldn't be
+"just don't use `useOpenGL`" (the millions-of-points feature needs it).
+
+**Fix:** `setCacheMode(QGraphicsItem.DeviceCoordinateCache)` on the
+editor item. This renders it to an ordinary `QPixmap` once, through Qt's
+normal raster paint engine, and blits that onto the GL surface — sidestepping
+whatever inside Qt's native text-control caret painting doesn't get along
+with a GL paint engine that has nothing real behind it.
+
+**Lesson:** a "no error message at all" crash report is a native crash,
+not a silently-swallowed exception — reach for `faulthandler.enable()`
+immediately (see the new debug mode, `lafigure/debug.py`) rather than
+guessing from behavior alone. And: a bug that can't be reproduced with a
+real, working GL context but reproduces 100% under this project's own
+`offscreen` test platform (item 10) may still be a real risk on a user's
+actual machine, if *their* GL context is similarly limited (remote
+desktop, a VM without GPU passthrough, a broken driver) — ship the
+defensive fix anyway rather than dismissing it as a test-environment
+artifact.
+
+### 25. Rich-text HTML always fully specifies `text-decoration` per span — unlike font-family/size/weight/style, it does not inherit from the item's own base `QFont`
+
+**Symptom (reported live, 2026-09-30):** the Font dialog's
+Underline/Strikeout checkboxes had no visible effect, and reopening the
+dialog always showed them unchecked again, even though the same dialog's
+Bold/Italic/Color all worked and persisted correctly.
+
+**Root cause:** every rich-text item in this project (`pg.LabelItem`'s
+CSS-based `setText`, and `richtext.to_html` for annotation text) renders
+through per-character HTML spans. Empirically confirmed: setting the
+item's own base `font.setUnderline(True)` has no effect on the rendered
+text once *any* styled span exists, because Qt's rich-text engine always
+resolves `text-decoration` explicitly per span (defaulting to none)
+instead of falling through to the base font the way it does for
+font-family/size/weight/style.
+
+**Fix:** apply underline/strikeout via `QTextCursor.mergeCharFormat` over
+the whole document, not via the item's base font — and reapply it after
+any subsequent full-document rebuild (a later plain text edit calls
+`setHtml`/`setText` again, which wipes the previous `mergeCharFormat`;
+`editable_text.set_text`'s `_retext_keeping_decoration` reads the current
+decoration before a text change and reapplies it after, in the one shared
+choke point every text edit already goes through).
+
+**Lesson:** don't assume every `QFont` property behaves the same way once
+rich text is involved — verify empirically (read back the actual
+`QTextCursor.charFormat()`, not just that `setFont()` was called) which
+properties the base font actually supplies as a fallback and which a
+styled span always pins down itself.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 

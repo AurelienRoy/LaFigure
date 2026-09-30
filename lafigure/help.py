@@ -95,7 +95,8 @@ class HelpMixin:
   commits, **Shift+Enter** starts a new line, **Esc** cancels, clicking
   elsewhere commits
 - **Right-click** a title, axis label, legend entry or annotation text for
-  **Edit Text** and **Font...** (family, size, bold, italic, color; undoable)
+  **Edit Text** and **Font...** (family, size, bold, italic, underline,
+  strikeout, color; undoable)
 - Text markup: `\textbf{{..}}` `\textit{{..}}` `x^{{2}}` `x_{{i}}` `\alpha`
   `\times` `\leq` `\pm` `\infty` ... `\textcolor{{red}}{{..}}`; braces are
   required for super/subscript, and unknown commands show as typed
@@ -156,8 +157,12 @@ Every zoom and pan (rectangle, wheel, drag, Home, Fit, View All) is one
 ## Other Features
 
 - **Figure Manager** (toolbar, leftmost) to open the Figure Browser /
-  Curve Browser window
-- **Toggle Legend** to show/hide curve names
+  Curve Browser window -- the Curve Browser lists **Curves** and
+  **Annotations** as two separate categories, each with its own
+  checkbox that shows/hides every item under it
+- **Toggle Legend** to show/hide curve names; a curve named with a
+  leading `_` (matplotlib's `"_nolegend_"` convention) is never listed;
+  entries are ordered front-most (highest z-order) first
 - **Link X** to link X axes across all subplots
 - **FFT** to compute and display FFT of the selected curve
 - **Remove Average** to subtract the mean from all curves on the active subplot
