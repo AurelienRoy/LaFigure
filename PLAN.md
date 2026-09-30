@@ -607,11 +607,11 @@ print it.
 
 | WP | Title | Wave | Depends on | Model | Status |
 |----|-------|------|-----------|-------|--------|
-| DBG1 | Debug core: logging setup, faulthandler, exception hook, Qt message bridge | 1 | -- | sonnet | todo |
+| DBG1 | Debug core: logging setup, faulthandler, exception hook, Qt message bridge | 1 | -- | sonnet | merged (7d36c7d); idempotency implemented as replace-not-stack; root `'lafigure'` logger's `propagate=False` (own addition, not spec'd) |
 | DBG2 | Log interaction-mode changes + undo/redo push/run | 1 | -- | sonnet | merged (fd5c95a); a grouped undo_group() logs exactly one "landed on stack" line for the whole group, not one per inner _push_history call, since the group's own finally already resets state before its own push |
 | DBG3 | Log click/selection dispatch | 1 | -- | sonnet | todo |
 | DBG4 | Log brushing + annotation placement gestures | 1 | -- | sonnet | todo |
-| DBG5 | Enable debug mode in all 7 example scripts | 1 | DBG1 (interface frozen above; codes in parallel, merges after) | sonnet | todo |
+| DBG5 | Enable debug mode in all 7 example scripts | 1 | DBG1 (interface frozen above; codes in parallel, merges after) | sonnet | merged (531b5c1) |
 
 All five run in parallel worktrees; DBG5 codes against the frozen
 `enable_debug_mode()` signature above without waiting for DBG1's branch
