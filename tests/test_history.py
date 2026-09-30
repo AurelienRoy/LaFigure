@@ -30,16 +30,13 @@ from tests.helpers import (
 
 
 def test_axis_label_history_round_trip():
-    """X/Y label toolbar buttons open a modal dialog, so this exercises the
-    same undo/redo push set_axis_label makes internally."""
+    """Exercises the same undo/redo push set_axis_label makes internally
+    (kept as a direct push rather than driving the real in-place editor
+    WP-P8 added, so this test stays independent of that editor's own
+    coverage in tests/test_richtext.py)."""
     win = shown_figure()
     p1, p2, p3, p4 = win.plots
 
-    # X/Y label toolbar buttons (set_axis_label) open a modal QInputDialog,
-    # which would block this headless script waiting for input -- so this
-    # exercises the same undo/redo push it makes internally rather than calling
-    # set_axis_label() itself. Test the button interactively: select a
-    # subplot, click X Label / Y Label, confirm the dialog + resulting label.
     win._on_plot_clicked(p1)
     old_xlabel = p1.getAxis('bottom').labelText
     win._push_history(

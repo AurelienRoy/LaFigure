@@ -90,10 +90,19 @@ class HelpMixin:
 - **Shift+Arrow keys** to nudge selected annotations (10 pixels)
 - **Tab / Shift+Tab** to cycle through items
 - **Esc** to deselect everything or cancel operations
-- **Double-click** a subplot/curve/annotation to edit or deselect
+- **Double-click** a subplot/curve to deselect; **double-click a title, axis
+  label, legend entry or annotation text** to edit it in place: **Enter**
+  commits, **Shift+Enter** starts a new line, **Esc** cancels, clicking
+  elsewhere commits
+- **Right-click** a title, axis label, legend entry or annotation text for
+  **Edit Text** and **Font...** (family, size, bold, italic, color; undoable)
+- Text markup: `\textbf{{..}}` `\textit{{..}}` `x^{{2}}` `x_{{i}}` `\alpha`
+  `\times` `\leq` `\pm` `\infty` ... `\textcolor{{red}}{{..}}`; braces are
+  required for super/subscript, and unknown commands show as typed
 - **Click a legend** to select it; drag it to move it (undoable); Del hides it
-- **Right-click a curve** for its own menu: copy/paste, front/back, line width,
-  line style, line color, marker, marker size, marker color, rename, delete
+- **Right-click a curve** for its own menu: copy/paste, front/back, line
+  style, line width, line color, marker, marker size, marker color,
+  Transform... (per-curve display offset/scale, resettable), rename, delete
 - **Right-click a subplot** (off any curve or annotation) for the subplot
   menu: copy/paste subplot, paste curve, front/back, legend, Reorder
   Curves..., Remove Average, FFT, CSV

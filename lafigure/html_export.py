@@ -86,6 +86,7 @@ import numpy as np
 from pyqtgraph.Qt import QtCore, QtWidgets
 
 from . import grid
+from .richtext import to_plotly
 
 # -- threshold / decimation --------------------------------------------
 
@@ -388,7 +389,7 @@ def _hover_kwargs_for_series(plot_item, series, rows):
 def _line_trace(series, x, y, extra):
     go = _require_plotly()
     pen = series.item.opts.get('_orig_pen', series.item.opts.get('pen'))
-    return go.Scattergl(x=x, y=y, mode='lines', name=series.name or '',
+    return go.Scattergl(x=x, y=y, mode='lines', name=to_plotly(series.name or ''),
                         line=dict(color=_pen_color(pen)), **extra)
 
 
@@ -397,7 +398,7 @@ def _scatter_trace(series, x, y, extra):
     opts = series.item.opts
     color = _pen_color(opts.get('symbolPen')) or _brush_color(opts.get('symbolBrush'))
     size = opts.get('symbolSize', 8)
-    return go.Scattergl(x=x, y=y, mode='markers', name=series.name or '',
+    return go.Scattergl(x=x, y=y, mode='markers', name=to_plotly(series.name or ''),
                         marker=dict(color=color, size=size), **extra)
 
 
@@ -411,7 +412,7 @@ def _stairs_trace(series, x, y, extra):
     y_ext = np.append(values, values[-1]) if len(values) else values
     pen = series.item.opts.get('_orig_pen', series.item.opts.get('pen'))
     return go.Scatter(x=edges, y=y_ext, mode='lines', line_shape='hv',
-                      name=series.name or '', line=dict(color=_pen_color(pen)), **extra)
+                      name=to_plotly(series.name or ''), line=dict(color=_pen_color(pen)), **extra)
 
 
 def _area_trace(series, x, y, extra):
@@ -427,7 +428,7 @@ def _area_trace(series, x, y, extra):
         fill = 'tonexty'
     else:
         fill = 'tozeroy'
-    traces.append(go.Scatter(x=x, y=y, mode='lines', fill=fill, name=series.name or '',
+    traces.append(go.Scatter(x=x, y=y, mode='lines', fill=fill, name=to_plotly(series.name or ''),
                              line=dict(color=_pen_color(pen)), **extra))
     return traces
 
@@ -443,16 +444,16 @@ def _hist_trace(series, x, y, extra):
     raw = getattr(item, '_lafigure_hist_raw', None)
     bins = getattr(item, '_lafigure_hist_bins', 30)
     if raw is not None:
-        return go.Histogram(x=np.asarray(raw), nbinsx=bins, name=series.name or '', **extra)
+        return go.Histogram(x=np.asarray(raw), nbinsx=bins, name=to_plotly(series.name or ''), **extra)
     edges = np.asarray(x, dtype=float)
     counts = np.asarray(y, dtype=float) if y is not None else np.array([])
     centers = (edges[:-1] + edges[1:]) / 2 if len(edges) > 1 else edges
-    return go.Bar(x=centers, y=counts, name=series.name or '', **extra)
+    return go.Bar(x=centers, y=counts, name=to_plotly(series.name or ''), **extra)
 
 
 def _bar_trace(series, x, y, extra):
     go = _require_plotly()
-    return go.Bar(x=x, y=y, name=series.name or '', **extra)
+    return go.Bar(x=x, y=y, name=to_plotly(series.name or ''), **extra)
 
 
 def _errorbar_trace(series, x, y, extra):
@@ -465,7 +466,7 @@ def _errorbar_trace(series, x, y, extra):
         if height is not None:
             yerr = np.asarray(height, dtype=float) / 2.0
     pen = item.opts.get('_orig_pen', item.opts.get('pen'))
-    kwargs = dict(x=x, y=y, mode='markers+lines', name=series.name or '',
+    kwargs = dict(x=x, y=y, mode='markers+lines', name=to_plotly(series.name or ''),
                  marker=dict(color=_pen_color(pen)))
     if yerr is not None:
         kwargs['error_y'] = dict(type='data', array=yerr, visible=True)
@@ -481,7 +482,7 @@ def _imshow_trace(series, x, y, extra):
     cmap = getattr(item, '_lafigure_cmap', 'viridis')
     cmap_name = cmap if isinstance(cmap, str) else 'viridis'
     colorscale = _PLOTLY_COLORSCALE.get(cmap_name.lower(), 'Viridis')
-    kwargs = dict(z=x, colorscale=colorscale, name=series.name or '')
+    kwargs = dict(z=x, colorscale=colorscale, name=to_plotly(series.name or ''))
     levels = item.getLevels()
     if levels is not None:
         kwargs['zmin'], kwargs['zmax'] = levels
@@ -499,7 +500,7 @@ def _generic_fallback_trace(series, x, y, extra):
     """Any kind without its own entry in KIND_CONVERTERS -- a plain
     Scattergl line through whatever get_xy() returns."""
     go = _require_plotly()
-    return go.Scattergl(x=x, y=y, mode='lines', name=series.name or '', **extra)
+    return go.Scattergl(x=x, y=y, mode='lines', name=to_plotly(series.name or ''), **extra)
 
 
 KIND_CONVERTERS = {
@@ -554,14 +555,14 @@ def _subplot_domain(figure, plot_item):
 
 def _plot_title(plot_item):
     try:
-        return plot_item.titleLabel.text
+        return to_plotly(plot_item.titleLabel.text)
     except Exception:
         return ''
 
 
 def _axis_label(plot_item, axis):
     try:
-        return plot_item.getAxis(axis).labelText
+        return to_plotly(plot_item.getAxis(axis).labelText)
     except Exception:
         return ''
 
@@ -634,13 +635,13 @@ def _add_annotation(fig, figure, ann, plot_item, xaxis_name, yaxis_name, x_domai
                      x0=x0, y0=y0, x1=x1, y1=y1, line=dict(color=color, width=width))
         return
     if ann.kind == 'text':
-        fig.add_annotation(x=x0, y=y0, xref=this_xref, yref=this_yref, text=ann.text,
+        fig.add_annotation(x=x0, y=y0, xref=this_xref, yref=this_yref, text=to_plotly(ann.text),
                            showarrow=False, font=dict(color=color))
         return
     if ann.kind in ('arrow', 'textarrow'):
         fig.add_annotation(x=x1, y=y1, ax=x0, ay=y0, xref=this_xref, yref=this_yref,
                            axref=this_xref, ayref=this_yref, showarrow=True,
-                           arrowcolor=color, text=ann.text if ann.kind == 'textarrow' else '')
+                           arrowcolor=color, text=to_plotly(ann.text) if ann.kind == 'textarrow' else '')
         return
     if ann.kind == 'doublearrow':
         fig.add_annotation(x=x1, y=y1, ax=x0, ay=y0, xref=this_xref, yref=this_yref,
@@ -651,7 +652,7 @@ def _add_annotation(fig, figure, ann, plot_item, xaxis_name, yaxis_name, x_domai
                            arrowcolor=color, text='')
         return
     if ann.kind == 'cursor':
-        label = f"({ann.text})" if ann.text else ''
+        label = f"({to_plotly(ann.text)})" if ann.text else ''
         fig.add_annotation(x=x0, y=y0, ax=x1, ay=y1, xref=this_xref, yref=this_yref,
                            axref=this_xref, ayref=this_yref, showarrow=True,
                            arrowcolor=color, text=label)
@@ -659,7 +660,7 @@ def _add_annotation(fig, figure, ann, plot_item, xaxis_name, yaxis_name, x_domai
     # Any future/unmapped shape kind: degrade to a plain text label
     # rather than dropping it silently.
     fig.add_annotation(x=x0, y=y0, xref=this_xref, yref=this_yref,
-                       text=ann.text or ann.kind, showarrow=False)
+                       text=to_plotly(ann.text) or ann.kind, showarrow=False)
 
 
 # -- building the whole plotly Figure -------------------------------------

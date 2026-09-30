@@ -317,16 +317,11 @@ class AnnotationOpsMixin:
 
         p0 = (parent_plot.getViewBox().mapSceneToView(scene_pos) if anchor == 'axes'
               else QtCore.QPointF(scene_pos))
-        text = ''
-        if kind == 'text':
-            text, ok = QtWidgets.QInputDialog.getText(
-                None, "Add text", "Text:", QtWidgets.QLineEdit.Normal, "Text"
-            )
-            if not ok:
-                self._cancel_placing()
-                return
-        self._create_annotation(kind, anchor, parent_plot, p0, None, text)
+        ann = self._create_annotation(kind, anchor, parent_plot, p0, None,
+                                       "Text" if kind == 'text' else '')
         self._cancel_placing()
+        if kind == 'text':
+            ann.start_text_edit(select_all=True)
 
     def eventFilter(self, obj, event):
         """Intercept raw press/move/release on the shared scene to place
@@ -380,16 +375,11 @@ class AnnotationOpsMixin:
                           else QtCore.QPointF(end_scene_pos))
                     p1_local = p1 - p0
                 kind = self._placing_kind
-                text = ''
-                if kind == 'textarrow':
-                    text, ok = QtWidgets.QInputDialog.getText(
-                        None, "Add text", "Text:", QtWidgets.QLineEdit.Normal, "Text"
-                    )
-                    if not ok:
-                        self._cancel_placing()
-                        return True
-                self._create_annotation(kind, anchor, parent_plot, p0, p1_local, text)
+                ann = self._create_annotation(kind, anchor, parent_plot, p0, p1_local,
+                                               "Text" if kind == 'textarrow' else '')
                 self._cancel_placing()
+                if kind == 'textarrow':
+                    ann.start_text_edit(select_all=True)
                 return True
         if obj is self.layout_widget.scene():
             if self._band_event(event):
