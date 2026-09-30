@@ -35,6 +35,7 @@ all of them; a future kind package adds its module to the import list
 below, not to lafigure/__init__.py."""
 from . import scatter, stairs, area, hist, bar, errorbar, imshow
 from . import scatter3d, line3d, surface  # 3D kinds, for axes_type='3d' subplots (view3d.py)
+<<<<<<< HEAD
 from . import log_kinds  # loglog/semilogx/semilogy (R4-LOG)
 from . import boxchart, violinplot  # R4-DIST
 from . import plot3, bubblechart3d  # R4-K3D
@@ -50,3 +51,9 @@ __all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
            "bubblechart", "swarmchart", "binscatter", "spy",
            "quiver", "feather", "contour",
            "barh", "stem", "heatmap", "errorband"]
+=======
+from . import plot3, bubblechart3d  # R4-K3D: more 3D kinds, delegating to line3d/scatter3d
+
+__all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
+           "scatter3d", "line3d", "surface", "plot3", "bubblechart3d"]
+>>>>>>> wp/r4-k3d
