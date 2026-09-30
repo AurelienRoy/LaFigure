@@ -41,6 +41,8 @@ import sys
 import time
 import traceback
 
+from pyqtgraph.Qt import QtWidgets
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -73,6 +75,20 @@ def main(filters):
             traceback.print_exc()
         else:
             print(f'ok   {name} ({time.perf_counter() - start:.2f}s)')
+        app.processEvents()
+        # Most tests build a LaFigure (or a FigureManager/dialog) and never
+        # close it -- each one stays referenced forever by the process-wide
+        # FigureRegistry (registry.py's `self.figures.append`, only removed
+        # by LaFigure.closeEvent -> registry.unregister). Left unclosed
+        # across the whole suite, this accumulated enough live QMainWindows/
+        # native Qt resources to crash the process outright (no Python
+        # traceback -- a native STATUS_STACK_BUFFER_OVERRUN on Windows,
+        # reproducing deterministically ~500 tests in) once round 4 added
+        # ~70 more tests on top of round 3's total. closeAllWindows() sends
+        # a real close event to every top-level widget, which for a
+        # LaFigure runs its closeEvent -> registry.unregister, so this is
+        # cheap, safe cleanup rather than a workaround for any one test.
+        QtWidgets.QApplication.closeAllWindows()
         app.processEvents()
     print(f'\n{len(tests) - len(failures)}/{len(tests)} passed')
     if failures:

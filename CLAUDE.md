@@ -2198,6 +2198,52 @@ rich text is involved — verify empirically (read back the actual
 properties the base font actually supplies as a fallback and which a
 styled span always pins down itself.
 
+### 26. `run_tests.py` never closed a test's `LaFigure` windows, so the whole suite eventually crashed the process outright — with no Python traceback
+
+**Symptom (found merging round 4's wave 1, 2026-09-30):** the full suite
+(`QT_QPA_PLATFORM=offscreen python run_tests.py`) crashed the whole
+process with exit code `-1073740791` (`0xC0000409`,
+`STATUS_STACK_BUFFER_OVERRUN` — a native fastfail, the same "no Python
+traceback at all" class as bug #24) about 500 tests in, reproducing
+deterministically at the exact same test both times. Running just the
+tests immediately before and after that point (even a much wider slice)
+never reproduced it — only the full run did.
+
+**Root cause:** almost every test builds a `LaFigure` (a `QMainWindow`)
+and never calls `.close()`. `registry.py`'s `FigureRegistry.register`
+appends every one to `self.figures` and nothing ever removes it except
+`LaFigure.closeEvent -> registry.unregister` — so an unclosed test
+figure is kept alive **forever**, by a process-wide singleton, for the
+rest of the run. By ~500 tests in, hundreds of live `QMainWindow`s (each
+with its own `GraphicsView`, `PlotItem`s, and — after round 4 added the
+Rotate+Zoom/3D work — extra per-cell render state) had accumulated
+enough native Qt/Windows resources to crash outright, not fail
+gracefully. This had been silently growing since the very first test
+package (WP-01) — round 4 simply added enough tests (and enough
+per-figure state) to finally cross the threshold; the crash is not a bug
+in any round-4 package's own logic, confirmed by bisection (isolated
+slices of the new tests all passed cleanly on their own).
+
+**Fix:** `run_tests.py`'s main loop calls
+`QtWidgets.QApplication.closeAllWindows()` after every test (before
+`app.processEvents()`), which sends a real close event to every
+top-level widget still open — for a `LaFigure` this runs its
+`closeEvent`, which unregisters it, letting Python (and Qt) actually
+free it. One line, no test file needed to change.
+
+**Lesson:** a process-wide registry that a per-test fixture registers
+itself with, but not explicitly out of, is a leak by construction —
+Python's own reference counting can't save you if the registry itself
+holds the strong reference. This is invisible for a long time (each
+individual test, and even a moderate slice of the suite, looks fine) and
+then fails catastrophically once some resource limit is finally crossed,
+with a native crash that carries no hint of *which* recent change is at
+fault (bisecting on suspicion of the newest code is the wrong move here
+— the real fix is almost always "the accumulation itself," not the last
+thing that happened to tip it over). When a shared singleton is involved,
+audit the register/unregister pair, not the code that runs right before
+the crash.
+
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 
 **This section described the codebase from the original single-file POC

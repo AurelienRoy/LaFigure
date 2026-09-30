@@ -195,11 +195,18 @@ class ToolbarMixin:
             icon='tool_zoom_in.png',
             tooltip="Drag a rectangle to zoom in",
         )
+        self.rotate_action = action(
+            "Rotate + Zoom", lambda checked: self.set_interaction_mode('rotate'), checkable=True,
+            icon='tool_rotate_3d.png',
+            tooltip="Orbit/pan/dolly a 3D subplot's camera (enabled only while one is focused)",
+        )
         mode_group.addAction(self.select_action)
         mode_group.addAction(self.hand_action)
         mode_group.addAction(self.zoom_action)
+        mode_group.addAction(self.rotate_action)
         mode_group.addAction(self.brush_action)
         self.select_action.setChecked(True)
+        self._update_rotate_action_enabled()
         action("Home", self.reset_view, icon='ico_breadcrumb_home_on.png',
                tooltip="Reset the view to show all data")
         fit_y = action("Fit Vertical", self.fit_view_vertical,

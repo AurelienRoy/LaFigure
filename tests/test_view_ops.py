@@ -310,7 +310,8 @@ def test_home_and_fit_buttons_follow_zoom_and_zoom_box_is_gray():
     a subplot created while already zooming."""
     f, vb = _ramp_figure()
     labels = [a.text() for a in f.findChild(QtWidgets.QToolBar).actions()]
-    i = labels.index("Zoom Rect")
+    # "Rotate + Zoom" (R4-3D) now sits between the mode buttons and Home/Fit.
+    i = labels.index("Rotate + Zoom")
     assert labels[i + 1:i + 4] == ["Home", "Fit Vertical", "Fit Horizontal"], labels
     for _ in range(2):
         f.zoom_action.trigger()
