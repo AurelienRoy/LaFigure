@@ -77,6 +77,22 @@ class InlineTextEditor(QtWidgets.QGraphicsTextItem):
         self.setDefaultTextColor(QtGui.QColor('black'))
         self.setTextInteractionFlags(QtCore.Qt.TextEditorInteraction)
         self.setZValue(self.Z)
+        # A focused, editable QGraphicsTextItem's native caret painting can
+        # crash outright (a real access violation, no Python traceback) the
+        # instant it's drawn directly through pyqtgraph's OpenGL-backed
+        # GraphicsView viewport (useOpenGL=True is the shipped app's
+        # default -- see CLAUDE.md's "Millions-of-points performance" note).
+        # Reproduced 100% of the time under an incomplete/unavailable GL
+        # context (e.g. QT_QPA_PLATFORM=offscreen on Windows, CLAUDE.md bug
+        # #10) and is a real risk on any real session whose OpenGL context
+        # is similarly limited (remote desktop / a VM without GPU
+        # passthrough / a broken driver). DeviceCoordinateCache renders
+        # this item into an ordinary QPixmap once (through Qt's normal,
+        # non-GL raster paint engine) and blits that onto the GL surface,
+        # sidestepping whatever in Qt's text-control caret painting doesn't
+        # get along with a GL paint engine -- confirmed to still commit
+        # real typed edits correctly with this mode on.
+        self.setCacheMode(QtWidgets.QGraphicsItem.DeviceCoordinateCache)
         self.document().contentsChanged.connect(self.update)
         # Caret at the end; or everything selected, so typing replaces it
         # (a placeholder, e.g. a just-placed annotation's "Text").
@@ -208,7 +224,7 @@ def start_inline_edit(scene, text_rect, source, on_commit, font=None, hidden_ite
 
 # -- font specs ---------------------------------------------------------------
 # A font spec is a plain, serializable dict: {'family', 'size' (points),
-# 'bold', 'italic', 'color' (r, g, b, a)}.
+# 'bold', 'italic', 'underline', 'strikeout', 'color' (r, g, b, a)}.
 def font_from_spec(spec, base=None):
     font = QtGui.QFont(base) if base is not None else QtGui.QFont(QtWidgets.QApplication.font())
     if spec.get('family'):
@@ -217,6 +233,8 @@ def font_from_spec(spec, base=None):
         font.setPointSizeF(float(spec['size']))
     font.setBold(bool(spec.get('bold')))
     font.setItalic(bool(spec.get('italic')))
+    font.setUnderline(bool(spec.get('underline')))
+    font.setStrikeOut(bool(spec.get('strikeout')))
     return font
 
 
@@ -226,7 +244,44 @@ def spec_from_font(font, color):
     if size <= 0:  # a pixel-sized font
         size = QtWidgets.QApplication.font().pointSizeF()
     return {'family': font.family(), 'size': round(size, 2), 'bold': font.bold(),
-            'italic': font.italic(), 'color': (c.red(), c.green(), c.blue(), c.alpha())}
+            'italic': font.italic(), 'underline': font.underline(),
+            'strikeout': font.strikeOut(), 'color': (c.red(), c.green(), c.blue(), c.alpha())}
+
+
+def _apply_text_decoration(text_item, underline, strikeout):
+    """Underline/strikeout on a rich-text QGraphicsTextItem (title/axis/
+    legend labels and annotation text are all rendered as per-character
+    HTML spans, via pg.LabelItem.setText's CSS or richtext.to_html) can't
+    be set through the item's own base QFont: an HTML span with ANY style
+    always fully specifies text-decoration, defaulting it to 'none'
+    regardless of the base font -- confirmed empirically, unlike
+    font-family/size/weight/style, which the span DOES inherit from the
+    base font when not overridden. A QTextCursor.mergeCharFormat over the
+    whole document is the one mechanism that actually sticks."""
+    if text_item is None:
+        return
+    doc = text_item.document()
+    cursor = QtGui.QTextCursor(doc)
+    cursor.select(QtGui.QTextCursor.Document)
+    fmt = QtGui.QTextCharFormat()
+    fmt.setFontUnderline(bool(underline))
+    fmt.setFontStrikeOut(bool(strikeout))
+    cursor.mergeCharFormat(fmt)
+
+
+def _read_text_decoration(text_item):
+    """(underline, strikeout) as _apply_text_decoration last set them --
+    read from the document's own char format, the same place it wrote
+    them, rather than from the item's base font (see that function's
+    docstring for why the base font doesn't reflect it)."""
+    if text_item is None:
+        return False, False
+    doc = text_item.document()
+    cursor = QtGui.QTextCursor(doc)
+    cursor.setPosition(0)
+    cursor.setPosition(min(1, doc.characterCount() - 1), QtGui.QTextCursor.KeepAnchor)
+    fmt = cursor.charFormat()
+    return fmt.fontUnderline(), fmt.fontStrikeOut()
 
 
 def _css_pt(value, default):
@@ -403,6 +458,9 @@ class AxisLabelTarget(TextTarget):
         font.setPointSizeF(_css_pt(style.get('font-size'), font.pointSizeF()))
         font.setBold(style.get('font-weight') == 'bold')
         font.setItalic(style.get('font-style') == 'italic')
+        underline, strikeout = _read_text_decoration(axis.label)
+        font.setUnderline(underline)
+        font.setStrikeOut(strikeout)
         color = QtGui.QColor(style['color']) if style.get('color') else axis.textPen().color()
         return spec_from_font(font, color)
 
@@ -415,6 +473,9 @@ class AxisLabelTarget(TextTarget):
                  'color': c.name(QtGui.QColor.HexArgb)}
         axis.setLabel(axis.labelText, units=axis.labelUnits or None,
                       unitPrefix=axis.labelUnitPrefix or None, **style)
+        # AxisItem.setLabel has no underline/strikeout of its own -- same
+        # second-pass reasoning as _apply_label_item_spec.
+        _apply_text_decoration(axis.label, spec.get('underline'), spec.get('strikeout'))
 
     def text_item(self):
         return self.axis.label
@@ -519,6 +580,9 @@ def _label_item_spec(label):
     font.setPointSizeF(_css_pt(opts.get('size'), font.pointSizeF()))
     font.setBold(bool(opts.get('bold', False)))
     font.setItalic(bool(opts.get('italic', False)))
+    underline, strikeout = _read_text_decoration(label.item)
+    font.setUnderline(underline)
+    font.setStrikeOut(strikeout)
     color = opts.get('color')
     color = pg.mkColor(color if color is not None else pg.getConfigOption('foreground'))
     return spec_from_font(font, color)
@@ -528,9 +592,29 @@ def _apply_label_item_spec(label, spec):
     label.setText(label.text, family=spec['family'], size=f"{spec['size']}pt",
                   bold=bool(spec['bold']), italic=bool(spec['italic']),
                   color=QtGui.QColor(*spec['color']))
+    # pg.LabelItem.setText has no underline/strikeout kwarg of its own
+    # (see _apply_text_decoration's docstring) -- apply it as a second pass.
+    _apply_text_decoration(label.item, spec.get('underline'), spec.get('strikeout'))
 
 
 # -- undoable edits (shared by every target) ----------------------------------
+def _retext_keeping_decoration(target, text):
+    """apply_source(text), preserving whatever underline/strikeout was
+    showing beforehand. Every target's rich text (pg.LabelItem's CSS, or
+    richtext.to_html for an annotation) is fully rebuilt by a text change,
+    which wipes the document-level mergeCharFormat _apply_text_decoration
+    uses (see its own docstring) -- title/axis labels and annotation text
+    have nowhere else that decoration is durably stored, unlike bold/
+    italic/color/family (pg.LabelItem.opts persists those across a plain
+    setText, and a legend rename separately reapplies its own persisted
+    _lafigure_legend_font spec) -- so this is the one place that has to
+    survive every target kind's own apply_source."""
+    item = target.text_item()
+    decoration = _read_text_decoration(item)
+    target.apply_source(text)
+    _apply_text_decoration(target.text_item(), *decoration)
+
+
 def set_text(targets, text):
     """Set `text` (a source string) on every target, one undo entry."""
     targets = [t for t in targets if t.source() != text]
@@ -541,11 +625,11 @@ def set_text(targets, text):
 
     def apply_new():
         for t in targets:
-            t.apply_source(text)
+            _retext_keeping_decoration(t, text)
 
     def undo_fn():
         for t, source in old:
-            t.apply_source(source)
+            _retext_keeping_decoration(t, source)
 
     apply_new()
     figure._push_history(undo_fn=undo_fn, redo_fn=apply_new)

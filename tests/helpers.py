@@ -360,6 +360,8 @@ def _drive_font_dialog(chosen, trigger):
         font.setPointSizeF(chosen['size'])
         font.setBold(chosen['bold'])
         font.setItalic(chosen['italic'])
+        font.setUnderline(chosen.get('underline', False))
+        font.setStrikeOut(chosen.get('strikeout', False))
         dialog.set_font(font)
         dialog.set_color(QtGui.QColor(*chosen['color']))
         result = dialog.spec()

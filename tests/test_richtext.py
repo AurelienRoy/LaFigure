@@ -151,6 +151,29 @@ def test_double_click_title_edits_in_place_and_click_away_commits():
     f.close()
 
 
+def test_inline_editor_caches_to_a_pixmap_so_a_focused_paint_never_hits_the_gl_engine():
+    """A focused, editable QGraphicsTextItem's native caret painting can
+    segfault (a real access violation, no Python traceback -- see
+    CLAUDE.md) the instant it paints directly through pyqtgraph's
+    OpenGL-backed viewport with an incomplete/unavailable GL context
+    (confirmed 100% reproducible under QT_QPA_PLATFORM=offscreen on
+    Windows with useOpenGL forced back on, matching the shipped app's
+    default -- see CLAUDE.md bug #10). DeviceCoordinateCache renders the
+    item to an ordinary QPixmap once, through Qt's normal raster paint
+    engine, sidestepping it. This suite always runs with useOpenGL=False
+    (tests/helpers.py), so it can't reproduce the crash itself -- this is
+    a guard that the mitigation stays in place, not a repro of the bug."""
+    f = shown_figure()
+    p = f.plots[1]
+    _dblclick(f, _title_center(p))
+    ed = _editor(f)
+    assert ed is not None
+    assert ed.hasFocus()
+    assert ed.cacheMode() == QtWidgets.QGraphicsItem.DeviceCoordinateCache
+    _click_away(f)
+    f.close()
+
+
 def test_enter_commits_esc_cancels_and_keys_never_reach_the_figure_shortcuts():
     f = shown_figure()
     p = f.plots[1]
@@ -372,7 +395,7 @@ def test_subplot_copy_paste_keeps_title_and_axis_label_sources():
 
 def _font_on(f, open_menu, spec_check, undo_check):
     chosen = {'family': QtGui.QFont().defaultFamily(), 'size': 17.0, 'bold': True,
-              'italic': True, 'color': (200, 30, 40, 255)}
+              'italic': True, 'underline': True, 'strikeout': True, 'color': (200, 30, 40, 255)}
     menu = open_menu()
     texts = [a.text() for a in menu.actions()]
     assert "Font..." in texts and "Edit Text" in texts, texts
@@ -395,12 +418,63 @@ def test_right_click_title_offers_font_and_applies_it_undoably():
     def check(chosen):
         spec = editable_text.TitleTarget(f, p).font_spec()
         assert spec['bold'] and spec['italic'] and spec['size'] == 17.0, spec
+        assert spec['underline'] and spec['strikeout'], spec
         assert spec['color'] == chosen['color']
         font = p.titleLabel.item.document().firstBlock().begin().fragment().charFormat().font()
         assert font.bold() and font.italic() and abs(font.pointSizeF() - 17) < 0.01, "rendered"
+        assert font.underline() and font.strikeOut(), "rendered underline/strikeout"
 
     _font_on(f, lambda: _right_click_menu(f, _title_center(p)), check,
              lambda: _assert_eq(editable_text.TitleTarget(f, p).font_spec(), before))
+    f.close()
+
+
+def test_underline_and_strikeout_apply_show_as_checked_on_reopen_and_survive_a_text_edit():
+    """The two symptoms as reported: choosing Underline/Strikeout in the
+    Font dialog didn't change anything, and reopening the dialog always
+    showed them unchecked again -- both because spec_from_font/
+    font_from_spec silently dropped the two properties (QFontDialog's own
+    checkboxes worked fine; nothing downstream read them). Also covers a
+    gap found while fixing it: rich-text HTML always resets
+    text-decoration per span, so a later, unrelated text edit would
+    otherwise silently drop it again -- see set_text's
+    _retext_keeping_decoration."""
+    f = shown_figure()
+    p = f.plots[1]
+    target = editable_text.TitleTarget(f, p)
+    assert target.font_spec()['underline'] is False
+    assert target.font_spec()['strikeout'] is False
+
+    on_spec = dict(target.font_spec(), underline=True, strikeout=True)
+    _drive_font_dialog(on_spec, lambda: editable_text.edit_font(target))
+    assert target.font_spec()['underline'] and target.font_spec()['strikeout'], \
+        "choosing Underline/Strikeout in the dialog must actually apply them"
+    font = p.titleLabel.item.document().firstBlock().begin().fragment().charFormat().font()
+    assert font.underline() and font.strikeOut(), "rendered, not just recorded in the spec"
+
+    # Reopen: the dialog must be SEEDED from the current (now on) state.
+    seen2 = []
+    real_ask = editable_text.ask_font
+    editable_text.ask_font = lambda spec, parent=None: (seen2.append(spec), None)[1]
+    try:
+        editable_text.edit_font(target)
+    finally:
+        editable_text.ask_font = real_ask
+    assert seen2[0]['underline'] and seen2[0]['strikeout'], \
+        "reopening the dialog must show the CURRENT state, not reverted to unchecked"
+
+    # A subsequent, ordinary text edit (double-click, retype, commit) must
+    # not silently drop the underline/strikeout that was already applied.
+    _dblclick(f, _title_center(p))
+    ed = _editor(f)
+    assert ed is not None
+    _type(f, " v2")
+    _click_away(f)
+    spec = editable_text.TitleTarget(f, p).font_spec()
+    assert spec['underline'] and spec['strikeout'], \
+        "underline/strikeout must survive an unrelated text edit"
+    font = p.titleLabel.item.document().firstBlock().begin().fragment().charFormat().font()
+    assert font.underline() and font.strikeOut(), "still rendered after the text edit"
     f.close()
 
 
@@ -416,6 +490,7 @@ def test_right_click_axis_label_offers_font_and_applies_it_undoably():
     def check(chosen):
         spec = target.font_spec()
         assert spec['bold'] and spec['italic'] and spec['size'] == 17.0 and spec['color'] == chosen['color']
+        assert spec['underline'] and spec['strikeout'], spec
         assert "font-weight: bold" in axis.labelString()
 
     center = axis.label.mapToScene(axis.label.boundingRect().center())
@@ -437,6 +512,7 @@ def test_right_click_legend_entry_offers_font_for_the_whole_legend():
         for _s, lab in p.legend.items:
             spec = editable_text._label_item_spec(lab)
             assert spec['bold'] and spec['italic'] and spec['size'] == 17.0, spec
+            assert spec['underline'] and spec['strikeout'], spec
 
     center = label.item.mapToScene(label.item.boundingRect().center())
     _font_on(f, lambda: _right_click_menu(f, center), check,

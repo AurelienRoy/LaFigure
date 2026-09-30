@@ -986,14 +986,17 @@ def test_annotation_font_applies_to_the_selected_text_annotations_undoably():
     texts = [x.text() for x in menu.actions()]
     assert "Font..." in texts and "Edit Text" in texts and "Properties..." in texts, texts
     chosen = {'family': QtGui.QFont().defaultFamily(), 'size': 20.0, 'bold': True,
-              'italic': False, 'color': (10, 120, 30, 255)}
+              'italic': False, 'underline': True, 'strikeout': True, 'color': (10, 120, 30, 255)}
     n_undo = len(f.undo_stack)
     opened = _drive_font_dialog(chosen, [x for x in menu.actions() if x.text() == "Font..."][0].trigger)
     assert opened == [before[0]], "the dialog starts from the clicked annotation's font"
     for ann in (a, b):
         spec = ann.font_spec()
         assert spec['bold'] and not spec['italic'] and spec['size'] == 20.0, spec
+        assert spec['underline'] and spec['strikeout'], spec
         assert spec['color'] == chosen['color']
+        font = ann._text_item.document().firstBlock().begin().fragment().charFormat().font()
+        assert font.underline() and font.strikeOut(), "rendered, not just recorded"
     assert len(f.undo_stack) == n_undo + 1, "one undo entry for the whole selection"
     # A shape without text offers no Font...
     rect_menu = _context_menu(f, rect.mapToScene(rect.p1_local / 2))

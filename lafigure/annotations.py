@@ -905,7 +905,11 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         """The text's current font, as editable_text's plain spec dict."""
         if self._text_item is None:
             return None
-        return editable_text.spec_from_font(self._text_item.font(), self._text_item.defaultTextColor())
+        font = QtGui.QFont(self._text_item.font())
+        underline, strikeout = editable_text._read_text_decoration(self._text_item)
+        font.setUnderline(underline)
+        font.setStrikeOut(strikeout)
+        return editable_text.spec_from_font(font, self._text_item.defaultTextColor())
 
     def _apply_font(self, spec):
         if self._text_item is None or spec is None:
@@ -913,6 +917,11 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         self.prepareGeometryChange()
         self._text_item.setFont(editable_text.font_from_spec(spec, self._text_item.font()))
         self._text_item.setDefaultTextColor(QtGui.QColor(*spec['color']))
+        # setHtml-rendered rich text (to_html) always fully specifies
+        # text-decoration per span, so the base font's underline/strikeout
+        # above doesn't show through on its own -- see
+        # editable_text._apply_text_decoration's docstring.
+        editable_text._apply_text_decoration(self._text_item, spec.get('underline'), spec.get('strikeout'))
         self._font_set = True
         self._layout_label()
         self.update()
