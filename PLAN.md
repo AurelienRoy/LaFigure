@@ -297,7 +297,7 @@ planning; they are requirements, not suggestions:
 | P4 | Brushing: post-hide brush bug, Show-All enabled state, delete signal, example | 1 | — | sonnet | merged (7d481b6 + toolbar diff 22cea61); the post-hide lockup was investigated extensively with real, correctly-paced drags and NOT reproduced — traced the one apparent repro to the test harness reusing a stale `viewRange()` across a data-narrowing action, not a real bug (CLAUDE.md bug #5's rule); two regression tests kept for the exact reported sequence anyway |
 | P5 | Curve Browser: focus divergence, Curves/Annotations categories + parent checkboxes | 1 | — | sonnet | merged (3573b94); found a real bug — `focused_plot`'s setter only fires `focusChanged` on an actual change, so re-clicking an already-focused subplot never re-notified the tree; fixed via an app-wide mouse-press event filter, not a registry-signal change |
 | P7 | Transform popup (display-only) + Remove Average rebuilt on it | 2 | P2, P3, P4 | opus | merged (21a5fa3 + cross-file diffs d8cf553); transform lives in the drawn data itself (not a Qt item transform, not a proxy), so brushing/stats/fit/CSV/most exports see it for free; two gaps needed coordinator diffs (html_export.py's DataSource-backed path, console.py's src.filter refresh — both re-derived drawn data straight from source columns, bypassing the transform); applies to line/scatter/stairs/area only (not hist/bar/errorbar/imshow/3d) |
-| P8 | In-place rich-text editing for every plot text + Font dialog | 2 | P1 | opus | todo |
+| P8 | In-place rich-text editing for every plot text + Font dialog | 2 | P1 | opus | merged (63e3539 + cross-file diffs 4add3cb); found a real reference-cycle bug — a monkeypatched closure held a strong ref back to the pyqtgraph item it was attached to, so GC clearing the item's `__dict__` on rename corrupted pyqtgraph's own internal state (silent unless stderr is checked, not just the pass count); font choice is untestable headlessly (`offscreen` has no fonts on Windows at all) |
 
 Waves: **{P1, P2, P3, P4, P5} in parallel** then **{P7, P8} in parallel**.
 (No P6: the example-script fix folded into P4, which owns the signal it
@@ -533,3 +533,44 @@ of its cases.
   a package cannot reproduce its bug with real Qt events, it reports that
   — with what it tried — rather than shipping a speculative fix, per
   CLAUDE.md bug #5's standing rule.
+
+## Round 2 — known gaps after both waves (2026-09-30)
+
+Round 2 (P1-P5, P7-P8) is fully merged, 471/471 tests green. These are
+real, reported gaps left deliberately unfixed (either genuinely out of
+scope, or needing a file no round-2 package owned) -- not regressions.
+Worth picking up in a future pass, not urgent:
+
+- **Font choice is untestable headlessly.** `QT_QPA_PLATFORM=offscreen`
+  on Windows has no fonts installed at all (`QFontDatabase().families()`
+  is empty), so `QFontDialog`'s own family/size list can't be exercised by
+  the suite. P8 tested everything around it (the dialog opens, undo,
+  serialization) but not a real font pick -- try that once by hand.
+- **Curve-menu Rename with no legend showing still opens a `QInputDialog`**
+  (editable_text.py/naming.py): there's no on-screen text to attach an
+  in-place editor to in that case.
+- **Subplot copy/paste doesn't carry title/axis fonts** (only the text
+  markup) -- the font lives on the pyqtgraph item, and `clip_ops.py`
+  wasn't owned by P8.
+- **Stale-reference risk on undo/redo of an annotation text/font edit**,
+  same class as `set_data`'s existing pattern: if the annotation was
+  recreated by an intervening delete-undo or create-undo-redo, a later
+  undo of the edit targets the dead object. Not new to this round, just
+  inherited by the new editor.
+- **Possible drag conflict**: a mouse-drag *inside* an open in-place text
+  editor (to select text) might also start the Select-mode rubber band,
+  since `_band_event` doesn't know an editor is open. Not reproduced or
+  tested.
+- **An open Transform popup doesn't refresh if the transform changes out
+  from under it** (an undo, or Remove Average run while it's open), and
+  committing after the curve was deleted while the popup was open pushes
+  an undo entry for a dead series -- both harmless no-ops today, not
+  crashes.
+- **Hidden rows round-tripped through a transform change can be off by
+  about one ulp** (invert-then-reapply); drawn rows are always exact.
+- **A custom `ax.datatip` format string on a source-backed, transformed
+  series still shows raw source columns**, not the transformed values (the
+  default, non-custom datatip text is correct).
+- Transform applies to `line`/`scatter`/`stairs`/`area` only -- not
+  `hist` (rebins), `bar`/`errorbar` (a scale wouldn't mean bar
+  width/error height), `imshow` or any 3D kind.
