@@ -29,6 +29,7 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore
 
+from lafigure.curve_style import has_current_line, line_capable
 from tests.helpers import app, m
 
 
@@ -154,6 +155,41 @@ def test_scatter_marker_color_applies_line_color_does_not():
     f.close()
 
 
+def test_scatter_is_line_capable_but_has_no_current_line_by_default():
+    f = m.LaFigure(empty=True)
+    ax = f.subplot(0, 0)
+    s = ax.scatter(np.arange(5.0), np.arange(5.0), size=4)
+    c = s.item
+    assert line_capable('scatter'), "a scatter's item is a real PlotDataItem: it CAN draw a line"
+    assert not has_current_line('scatter', c.opts['pen']), "but not by default (transparent pen)"
+    f.close()
+
+
+def test_scatter_line_style_turns_a_real_line_on_then_width_and_color_apply():
+    """The root bug this package fixes: gating Line Width/Style/Color
+    purely by kind string ('scatter' not in the old _LINE_KINDS) meant
+    these never applied even once a scatter was visibly drawing a real
+    line. Line Style must be able to turn one on regardless of kind
+    membership; once a real line is visible, Width/Color must actually
+    apply too, not just report as "enabled" cosmetically."""
+    f = m.LaFigure(empty=True)
+    ax = f.subplot(0, 0)
+    s = ax.scatter(np.arange(5.0), np.arange(5.0), size=4)
+    c = s.item
+    n = len(f.undo_stack)
+    f.set_curve_line_style([c], '-')
+    pen = pg.mkPen(c.opts['pen'])
+    assert pen.color().alpha() == 255 and pen.style() == QtCore.Qt.SolidLine
+    assert len(f.undo_stack) == n + 1
+    assert has_current_line('scatter', c.opts['pen']), "now a real line is drawn"
+
+    f.set_curve_line_width([c], 5)
+    assert pg.mkPen(c.opts['pen']).widthF() == 5, "width now applies: a real line exists"
+    f.set_curve_line_color([c], (0, 255, 0))
+    assert pg.mkPen(c.opts['pen']).color().getRgb()[:3] == (0, 255, 0)
+    f.close()
+
+
 def test_curves_to_front_and_back_are_undoable():
     f, p, c = _line_figure()
     c2 = f._add_series(p, 'line', np.arange(10.0), np.arange(10.0), name="lin").item
@@ -163,4 +199,28 @@ def test_curves_to_front_and_back_are_undoable():
     assert c.zValue() < c2.zValue()
     f.undo()
     assert c.zValue() > c2.zValue()
+    f.close()
+
+
+def test_curves_to_front_pokes_refresh_legend_order_only_if_present():
+    """Package P3 (view_ops.py) owns _refresh_legend_order; this package
+    must call it if present and do nothing (not raise) if it isn't --
+    see this package's report on why (P3 may not be merged yet)."""
+    f, p, c = _line_figure()
+    c2 = f._add_series(p, 'line', np.arange(10.0), np.arange(10.0), name="lin").item
+    assert not hasattr(f, '_refresh_legend_order'), "control: not wired in this package"
+    f.curves_to_front([c], True)   # must not raise
+    f.undo()
+
+    calls = []
+    f._refresh_legend_order = lambda: calls.append(True)
+    try:
+        f.curves_to_front([c], True)
+        assert calls, "called on the initial apply"
+        f.undo()
+        assert len(calls) == 2, "called on undo too"
+        f.redo()
+        assert len(calls) == 3, "called on redo too"
+    finally:
+        del f._refresh_legend_order
     f.close()

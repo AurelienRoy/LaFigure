@@ -30,6 +30,7 @@ not direct method calls: the band relies on pyqtgraph emitting exactly
 one click after a drag whose moves it never saw, and the keys on Qt's
 shortcut routing -- only the real event path can show either works.
 """
+import math
 import time
 
 import numpy as np
@@ -474,4 +475,125 @@ def test_click_cycling_only_applies_in_select_mode():
     time.sleep(0.6)
     _real_click(f, pt)
     assert _click_selection(f) == first, "Hand mode: no cycling, not a selection mode at all"
+    f.close()
+
+
+# -- click hit-tolerance and right-click stickiness (P2) --------------------
+R = QtCore.Qt.RightButton
+NO = QtCore.Qt.NoButton
+
+
+def _perp_direction(vb, cx, cy):
+    """Screen-space unit vector perpendicular to the data-space line
+    through (cx-1, cy-1) -> (cx+1, cy+1) -- computed in SCENE (pixel)
+    space, not assumed from the data-space slope, since a view's X/Y data-
+    per-pixel scale isn't necessarily 1:1 (lafigure-axes-geometry)."""
+    p1 = vb.mapViewToScene(QtCore.QPointF(cx - 1, cy - 1))
+    p2 = vb.mapViewToScene(QtCore.QPointF(cx + 1, cy + 1))
+    d = p2 - p1
+    length = math.hypot(d.x(), d.y())
+    return QtCore.QPointF(-d.y(), d.x()) / length
+
+
+def _fixed_line_figure():
+    """One subplot, a fixed (non-auto-ranging) view, a 45-degree ramp --
+    same "robust for real mouse-event tests" pattern as _overlap_figure."""
+    f = m.LaFigure(empty=True)
+    p = f.add_subplot(row=0, col=0)
+    x = np.linspace(0, 100, 200)
+    c = f._add_series(p, 'line', x, x, name='ramp', pen=pg.mkPen('r', width=2)).item
+    f.show()
+    app.processEvents()
+    app.processEvents()  # let the ViewBox's lazy auto-range settle first
+    vb = p.getViewBox()
+    vb.setRange(xRange=(0, 100), yRange=(0, 100), padding=0)
+    app.processEvents()
+    return f, p, c
+
+
+def _fixed_scatter_figure():
+    """One subplot, a single, isolated scatter point -- no neighboring
+    point for the (otherwise invisible) connecting line to pass near, so
+    a hit only ever comes from the marker's own (padded) hit-test."""
+    f = m.LaFigure(empty=True)
+    ax = f.subplot(0, 0)
+    s = ax.scatter(np.array([40.0]), np.array([40.0]), size=4)
+    f.show()
+    app.processEvents()
+    app.processEvents()  # let the ViewBox's lazy auto-range settle first
+    vb = ax.plot_item.getViewBox()
+    vb.setRange(xRange=(-20, 100), yRange=(-20, 100), padding=0)
+    app.processEvents()
+    return f, ax.plot_item, s.item
+
+
+def test_real_click_a_few_px_off_a_curves_path_still_selects_it():
+    """A click perpendicular to the line's own screen-space path by a few
+    pixels -- a clean miss under the old width=8 mouseWidth (half-width 4)
+    -- must still select it once padded a few pixels wider
+    (selection_ui._wire_curve_clickable)."""
+    f, p, c = _fixed_line_figure()
+    vb = p.getViewBox()
+    center = vb.mapViewToScene(QtCore.QPointF(50, 50))
+    off = center + _perp_direction(vb, 50, 50) * 6
+    f._click_cycle = None
+    _mouse(f, QtCore.QEvent.MouseButtonPress, off, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, off, NO)
+    assert f.selected_curves == [c], "a few px off the line's path still selects it"
+    f.close()
+
+
+def test_real_click_a_few_px_off_a_scatter_point_still_selects_it():
+    """Same as above for a scatter marker: an offset a dead-center-only
+    hit test (pyqtgraph's own ScatterPlotItem._maskAt, with no tolerance
+    at all) would miss must still select it, via _padded_points_at."""
+    f, p, c = _fixed_scatter_figure()
+    vb = p.getViewBox()
+    center = vb.mapViewToScene(QtCore.QPointF(40.0, 40.0))
+    off = center + QtCore.QPointF(6, 0)
+    f._click_cycle = None
+    _mouse(f, QtCore.QEvent.MouseButtonPress, off, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, off, NO)
+    assert f.selected_curves == [c], "a few px off the marker still selects it"
+    f.close()
+
+
+def test_dead_center_scatter_click_selects_it_too():
+    """Root-cause regression guard: before this fix, pyqtgraph's own
+    ScatterPlotItem.mouseClickEvent already accepted a dead-center click on
+    its own marker (hit-testing it correctly), but with nothing connected
+    to curve.scatter.sigClicked the accepted click was silently swallowed
+    -- nothing was ever selected, even exactly on the point (verified live
+    before this fix; see this package's final report)."""
+    f, p, c = _fixed_scatter_figure()
+    vb = p.getViewBox()
+    center = vb.mapViewToScene(QtCore.QPointF(40.0, 40.0))
+    f._click_cycle = None
+    _mouse(f, QtCore.QEvent.MouseButtonPress, center, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, center, NO)
+    assert f.selected_curves == [c]
+    f.close()
+
+
+def test_right_click_on_an_already_selected_curve_keeps_it_selected():
+    """Reproduced with real QMouseEvents, not a direct method call
+    (CLAUDE.md bugs #11/#19 both warn a direct call can hide exactly this
+    class of bug): a right-click landing at the same spot as the left
+    click that just selected the curve used to also feed click-cycling
+    (_apply_click_cycle), which -- since the right click looked like a
+    repeat click "at the same spot" -- silently advanced the selection to
+    the NEXT stacked target (the subplot), right after the curve's own
+    context menu had already opened (correctly) for that right-click."""
+    f, p, c = _fixed_line_figure()
+    vb = p.getViewBox()
+    center = vb.mapViewToScene(QtCore.QPointF(50, 50))
+    f._click_cycle = None
+    _mouse(f, QtCore.QEvent.MouseButtonPress, center, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, center, NO)
+    assert f.selected_curves == [c], "control: the left click selected the curve"
+
+    _mouse(f, QtCore.QEvent.MouseButtonPress, center, R, button=R)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, center, NO, button=R)
+    assert f.selected_curves == [c], "the right-click must keep the curve selected"
+    assert f.selected_plots == [], "must not flip the selection to the subplot"
     f.close()

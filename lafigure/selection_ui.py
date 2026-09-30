@@ -41,6 +41,12 @@ from .annotations import AnnotationItem, TWO_CLICK_KINDS
 
 CLICK_CYCLE_TOLERANCE_PX = 4
 CLICK_CYCLE_TIMEOUT_S = 1.0
+# A real click landing this many screen pixels off a curve's own drawn
+# line/marker still selects it -- MATLAB/LibreOffice style, not a
+# razor-thin hit region. Applied on top of whatever the curve/marker
+# already draws (a line's own width, a marker's own radius), never
+# instead of it.
+CLICK_HIT_TOLERANCE_PX = 4
 
 
 def selection_op(fn):
@@ -181,7 +187,18 @@ class SelectionUIMixin:
             # it -- that's genuinely empty space.
             self._deselect_all()
 
-        if not additive:
+        if not additive and ev.button() == QtCore.Qt.LeftButton:
+            # Left-click-only: a right-click on an already-selected curve
+            # lands at the same spot as the left click that selected it,
+            # so treating it as a click-cycling step too would silently
+            # advance to the NEXT stacked target (typically the subplot)
+            # right after its own context menu already popped up (menus.py
+            # raises it earlier in the same dispatch, via ViewBox's own
+            # mouseClickEvent -- see raise_context_menu), flipping the
+            # selection out from under the just-opened menu. Right-clicks
+            # have their own "keep the existing selection" rule already
+            # (_curve_menu_targets/_on_plot_context) and must never read or
+            # write the click-cycle state.
             self._apply_click_cycle(pos)
 
     # -- click-cycling: repeated clicks at (about) the same spot step
@@ -350,11 +367,65 @@ class SelectionUIMixin:
             self._hide_handles()
 
     # -- curve selection -------------------------------------------------
+    @staticmethod
+    def _padded_points_at(scatter_item, orig_points_at, pos):
+        """ScatterPlotItem.pointsAt (and the _maskAt it delegates to) only
+        hit-tests a marker's own drawn radius, with no click tolerance at
+        all -- unlike PlotCurveItem, which already gets one via
+        setClickable's own `width`. Padding it CLICK_HIT_TOLERANCE_PX
+        screen pixels wider (converted to this item's local/data units via
+        its own pixelVectors, the same conversion _maskAt itself already
+        does for a pxMode symbol) makes a near-miss click still land a
+        small/thin marker, not just a dead-center one. `pos` may already be
+        a QRectF (e.g. menus.py's own _curves_at, or a caller that wants an
+        unpadded region test) -- passed through as-is."""
+        if isinstance(pos, QtCore.QRectF):
+            return orig_points_at(pos)
+        px, py = scatter_item.pixelVectors()
+        dx = (px.length() if px is not None else 0) * CLICK_HIT_TOLERANCE_PX
+        dy = (py.length() if py is not None else 0) * CLICK_HIT_TOLERANCE_PX
+        if dx <= 0 and dy <= 0:
+            return orig_points_at(pos)
+        rect = QtCore.QRectF(pos.x() - dx, pos.y() - dy, 2 * dx, 2 * dy)
+        return orig_points_at(rect)
+
     def _wire_curve_clickable(self, plot_item, curve):
-        """Make a curve's line clickable; clicking it selects it (visual
-        highlight) and makes it the target for Copy / FFT, instead of those
-        actions always guessing the subplot's first curve."""
-        curve.curve.setClickable(True, width=8)
+        """Make a curve's line AND its markers (if any) clickable; clicking
+        either selects it (visual highlight) and makes it the target for
+        Copy / FFT, instead of those actions always guessing the subplot's
+        first curve.
+
+        Before this fix, only curve.curve.sigClicked (the invisible-or-not
+        connecting line) was wired -- a scatter's own ScatterPlotItem
+        (curve.scatter) already handles and *accepts* a click landing
+        exactly on one of its markers (pyqtgraph's own
+        ScatterPlotItem.mouseClickEvent), but with nothing connected to
+        curve.scatter.sigClicked, that accepted click silently selected
+        nothing: a dead-center click on an isolated marker (one the
+        invisible connecting line's own mouseShape stroke doesn't happen
+        to cover) never reached this handler at all. Both signals carry
+        (..., ev) as their last argument, so the same handler works
+        unmodified for either."""
+        curve.curve.setClickable(True, width=8 + 2 * CLICK_HIT_TOLERANCE_PX)
+        orig_points_at = curve.scatter.pointsAt
+        curve.scatter.pointsAt = (
+            lambda pos, _s=curve.scatter, _orig=orig_points_at: self._padded_points_at(_s, _orig, pos))
+        # _padded_points_at alone isn't enough: pyqtgraph's GraphicsScene
+        # first narrows candidates to items near the click via its OWN
+        # click radius (items(point) plus a small search rect,
+        # GraphicsScene._clickRadius, default 2px) using each item's
+        # shape()/boundingRect() -- unaffected by the pointsAt override
+        # above -- BEFORE ever calling an item's mouseClickEvent at all. A
+        # tight, isolated marker's own boundingRect can be smaller than
+        # that default radius, so a near-miss click on it never even
+        # reaches ScatterPlotItem.mouseClickEvent to test (verified live:
+        # pointsAt was never called at all for such a click before this).
+        # Widen the whole scene's radius to match -- safe: it only affects
+        # which items are OFFERED a click to test, never how any of them
+        # decide to handle it.
+        scene = plot_item.getViewBox().scene()
+        if scene is not None and scene._clickRadius < CLICK_HIT_TOLERANCE_PX:
+            scene.setClickRadius(CLICK_HIT_TOLERANCE_PX)
 
         def handler(*args, plot_item=plot_item, curve=curve):
             # Guard: this fires before sigMouseClicked/_on_scene_clicked, which
@@ -374,6 +445,7 @@ class SelectionUIMixin:
             self._mark_active(plot_item, keep_selection=True)
 
         curve.curve.sigClicked.connect(handler)
+        curve.scatter.sigClicked.connect(handler)
 
     def _highlight_curve_pen(self, curve):
         """Selection highlight. The un-highlighted style is parked in
