@@ -45,11 +45,23 @@ until someone asks. A series built from an explicit DataSource keeps that
 object and the row indices it shows (`rows`), so several series from one
 source are linked by construction; brushing across them is a later
 package's job.
+
+Display transform (WP-P7, transform.py): a Series carries `transform`
+(dx, dy, sx, sy) and its item draws raw * scale + offset. The item's data
+-- hence `x`/`y`, get_xy, and everything reading them (brush hit-test,
+Stats, Fit, CSV/HTML export, data cursors) -- is the TRANSFORMED data;
+every write through get_xy/set_xy/_apply stays in that drawn space, so
+brushing's snapshots and row views need no change. The raw data is what
+the DataSource / caller's arrays hold, never written: `raw_xy()` recovers
+it exactly (a cached copy while the drawn data is still what the
+transform produced, else by inverting the transform). Code that re-derives
+drawn data from raw source columns must pass it through `transform_xy`.
 """
 import numpy as np
 import pyqtgraph as pg
 
 from .datasource import DataSource
+from .transform import IDENTITY, Transform, TransformDialog, transform_applies
 
 # Attribute holding an item's Series. On the item itself, so the Series
 # lives and dies with it and needs no bookkeeping on removal.
@@ -62,6 +74,15 @@ def _read_only(arr):
     view = np.asarray(arr).view()
     view.flags.writeable = False
     return view
+
+
+def _same_data(a, b):
+    if a is b:
+        return True
+    if a is None or b is None:
+        return False
+    a, b = np.asarray(a), np.asarray(b)
+    return a.shape == b.shape and np.array_equal(a, b)
 
 
 class SeriesKind:
@@ -171,6 +192,11 @@ class Series:
         self._rows = None if rows is None else np.asarray(rows, dtype=np.intp)
         self.columns = columns  # (x column, y column) in an explicit source
         self._private = None    # (x array, y array, DataSource), rebuilt when the data changes
+        self._transform = IDENTITY
+        # (drawn x, drawn y, raw x, raw y) as last written through the
+        # transform: raw_xy's exact answer while the drawn data is unchanged.
+        self._raw_cache = None
+        self._transform_dialog = None   # its open TransformDialog, if any
 
     def __repr__(self):
         return f"<Series {self.kind} {self.name!r}>"
@@ -225,31 +251,98 @@ class Series:
         return self._private[2]
 
     def _apply(self, x, y, source, rows):
+        """x/y are DRAWN data (already transformed) -- brushing's
+        snapshots and row views write through here."""
         self.kind_obj.set_xy(self.item, x, y)
         self._source, self._rows = source, rows
 
+    # -- display transform (transform.py) ----------------------------------
+    @property
+    def transform(self):
+        """The display Transform (dx, dy, sx, sy); IDENTITY by default."""
+        return self._transform
+
+    def transform_xy(self, x, y):
+        """Raw arrays -> what this series draws for them."""
+        return self._transform.apply(x, y)
+
+    def raw_xy(self):
+        """The untransformed data of what's drawn (never a copy the caller
+        may write into -- treat as read-only)."""
+        x, y = self.kind_obj.get_xy(self.item)
+        t = self._transform
+        if t.is_identity:
+            return x, y
+        cache = self._raw_cache
+        if cache is not None and _same_data(cache[0], x) and _same_data(cache[1], y):
+            return cache[2], cache[3]
+        # Redrawn since (a brushing delete, hide/show...): the drawn data is
+        # still transform(raw), so invert it.
+        return t.invert(x, y)
+
+    def _write_raw(self, x, y):
+        """Draw raw arrays through the transform."""
+        self.kind_obj.set_xy(self.item, *self._transform.apply(x, y))
+        if self._transform.is_identity:
+            self._raw_cache = None
+        else:
+            self._raw_cache = (*self.kind_obj.get_xy(self.item), x, y)
+
+    def _set_transform(self, t):
+        """Change the transform and redraw -- view only, no undo entry
+        (SeriesMixin.set_series_transform is the undoable path). Entries a
+        brushing row view keeps undrawn (hidden rows) are re-mapped too, so
+        they come back through the new transform when shown."""
+        if not isinstance(t, Transform):
+            t = Transform(*t)
+        old = self._transform
+        if t == old:
+            return
+        raw_x, raw_y = self.raw_xy()
+        synced = getattr(self.figure, '_synced_row_view', None)
+        view = synced(self) if synced is not None else None
+        self._transform = t
+        self._write_raw(raw_x, raw_y)
+        if view is not None:
+            from .brushing import ROW_VIEW_ATTR
+            vx, vy = t.apply(*old.invert(view.x, view.y))
+            drawn_x, drawn_y = self.kind_obj.get_xy(self.item)
+            vx, vy = np.array(vx, dtype=float), np.array(vy, dtype=float)
+            vx[view.shown], vy[view.shown] = drawn_x, drawn_y   # the drawn ones exactly
+            setattr(self.item, ROW_VIEW_ATTR, view.replace(x=vx, y=vy))
+
+    def _apply_raw(self, x, y, source, rows):
+        self._write_raw(x, y)
+        self._source, self._rows = source, rows
+
     def set_data(self, x, y):
-        """Replace the data, undoably. A series from an explicit source stays
-        linked to it if the length is unchanged (the same rows, new values);
-        otherwise it detaches to a private source."""
+        """Replace the (raw) data, undoably; it's drawn through the current
+        transform. A series from an explicit source stays linked to it if
+        the length is unchanged (the same rows, new values); otherwise it
+        detaches to a private source."""
         x, y = np.array(x, copy=True), np.array(y, copy=True)
         if len(x) != len(y):
             raise ValueError(f"set_data: x has {len(x)} points, y has {len(y)}")
-        old = (*self.kind_obj.get_xy(self.item), self._source, self._rows)
+        old = (*self.raw_xy(), self._source, self._rows)
         keep = self._rows is not None and len(self._rows) == len(x)
         new = (x, y, self._source if keep else None, self._rows if keep else None)
-        self._apply(*new)
-        self.figure._push_history(lambda: self._apply(*old), lambda: self._apply(*new))
+        self._apply_raw(*new)
+        self.figure._push_history(lambda: self._apply_raw(*old), lambda: self._apply_raw(*new))
 
     def to_dict(self):
         """The kind's to_dict plus 'kind' and the source linkage -- the
         clipboard/undo format. The DataSource is kept by reference: the
-        clipboard is process-wide, so a pasted series stays linked."""
+        clipboard is process-wide, so a pasted series stays linked.
+        'x'/'y' stay the drawn data; 'transform' is (dx, dy, sx, sy), and
+        a transformed series also records 'raw' so a paste's Reset is exact."""
         d = self.kind_obj.to_dict(self.item)
         d['kind'] = self.kind
         d['source'] = self._source
         d['rows'] = None if self._rows is None else self._rows.copy()
         d['columns'] = self.columns
+        d['transform'] = tuple(self._transform)
+        if not self._transform.is_identity:
+            d['raw'] = tuple(None if a is None else np.array(a, copy=True) for a in self.raw_xy())
         return d
 
 
@@ -283,10 +376,58 @@ class SeriesMixin:
         return series
 
     def _add_series_from_dict(self, plot_item, d):
-        """Inverse of Series.to_dict (paste, undo of a delete, FFT redo)."""
-        return self._add_series(plot_item, d['kind'], d['x'], d['y'], pen=d['pen'], name=d['name'],
-                                source=d.get('source'), rows=d.get('rows'),
-                                columns=d.get('columns'), **d.get('style', {}))
+        """Inverse of Series.to_dict (paste, undo of a delete, FFT redo).
+        d['x']/d['y'] are drawn data, so the item is built from them as-is
+        and the transform is only recorded, never applied a second time."""
+        series = self._add_series(plot_item, d['kind'], d['x'], d['y'], pen=d['pen'], name=d['name'],
+                                  source=d.get('source'), rows=d.get('rows'),
+                                  columns=d.get('columns'), **d.get('style', {}))
+        t = Transform(*d.get('transform', IDENTITY))
+        if not t.is_identity:
+            series._transform = t
+            raw = d.get('raw')
+            if raw is not None:
+                drawn = series.kind_obj.get_xy(series.item)
+                if all(_same_data(a, b) for a, b in zip(t.apply(*raw), drawn)):
+                    series._raw_cache = (*drawn, *raw)
+        return series
+
+    # -- display transform (transform.py) -----------------------------------
+    def _apply_series_transform(self, series, t):
+        """Redraw `series` through transform `t` -- view only, what the
+        Transform popup does live on every edit. Brush highlights and data
+        cursors pinned to its points follow."""
+        series._set_transform(t)
+        self._redraw_brush()
+        self._resync_cursor_points()
+
+    def set_series_transform(self, series, t, before=None):
+        """Set `series`' display transform, as one undo entry going back to
+        `before` (default: its current transform) -- the popup passes the
+        values it opened with, so a whole live-edit session is one entry."""
+        t = t if isinstance(t, Transform) else Transform(*t)
+        before = series.transform if before is None else before
+        self._apply_series_transform(series, t)
+        if before == t:
+            return
+        self._push_history(lambda: self._apply_series_transform(series, before),
+                           lambda: self._apply_series_transform(series, t))
+
+    def open_transform_dialog(self, curve):
+        """The curve menu's Transform...: the series' modeless popup (the
+        already-open one, raised, if there is one). None for a kind a
+        transform doesn't apply to (transform.TRANSFORM_KINDS)."""
+        series = self._series_of(curve)
+        if series is None or not transform_applies(series.kind):
+            return None
+        dlg = series._transform_dialog
+        if dlg is None:
+            dlg = TransformDialog(self, series, parent=self)
+            series._transform_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
 
     # -- item <-> Series ---------------------------------------------------
     def _series_of(self, item):

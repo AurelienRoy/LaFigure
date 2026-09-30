@@ -225,3 +225,26 @@ def test_curves_to_front_pokes_refresh_legend_order_only_if_present():
     finally:
         del f._refresh_legend_order
     f.close()
+
+
+def test_style_edits_and_selection_keep_a_curve_transform():
+    """WP-P7: the transform lives in the drawn data, the style in the pen --
+    restyling, marking and (de)selecting a transformed curve touch neither
+    the transform nor the transformed data."""
+    from lafigure.transform import IDENTITY, Transform
+    f, p, c = _line_figure()
+    s = f._series_of(c)
+    t = Transform(dx=1.0, dy=-5.0, sx=2.0, sy=0.5)
+    f.set_series_transform(s, t)
+    drawn = np.array(s.y, copy=True)
+    f._select_curve(c)
+    f.set_curve_line_width([c], 3)
+    f.set_curve_marker([c], 'o')
+    f.set_curve_line_style([c], '--')
+    f._deselect_curve()
+    assert s.transform == t
+    np.testing.assert_array_equal(s.y, drawn)
+    f._apply_series_transform(s, IDENTITY)
+    np.testing.assert_array_equal(s.y, np.arange(10.0) ** 2)
+    assert pg.mkPen(c.opts['pen']).widthF() == 3
+    f.close()

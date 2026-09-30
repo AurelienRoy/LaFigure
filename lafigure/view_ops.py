@@ -34,6 +34,7 @@ import pyqtgraph as pg
 from .datasource import DataSource
 from .editable_text import wire_legend_editable
 from .selection_ui import selection_op
+from .transform import Transform, transform_applies
 
 # Qt has no built-in "magnifying glass" cursor shape, so Zoom Rect gets a
 # drawn one (same technique as toolbar.py's _fit_icon): a lens with a "+"
@@ -520,9 +521,11 @@ class ViewOpsMixin:
             self._push_view_change(gesture[0], self._view_snapshot())
 
     def remove_average(self):
-        """Subtract the mean of what's drawn. A series whose y is a column
-        of a DataSource gets a new derived column instead of an edit (see
-        brushing.py, "Derived columns")."""
+        """Subtract the mean of what's drawn (the transformed y, visible
+        rows only) by folding it into each series' display transform:
+        dy -= mean (WP-P7, transform.py). Nothing is written to a
+        DataSource or array, and the Transform popup shows -- and its Reset
+        undoes -- the offset."""
         p = self.focused_plot
         if p is None:
             return
@@ -530,14 +533,14 @@ class ViewOpsMixin:
         with self.undo_group():
             for s in self._series_on(p):
                 y = s.y
-                if 'remove_average' not in s.capabilities or y is None or y.size == 0:
+                if ('remove_average' not in s.capabilities or not transform_applies(s.kind)
+                        or y is None or y.size == 0):
                     continue
-                mean = np.mean(y)
-                source = self._column_backed(s)
-                if source is not None:
-                    self._derive_y_column(s, "- mean", np.asarray(source[s.columns[1]], dtype=float) - mean)
-                else:
-                    s.set_data(s.x, y - mean)
+                mean = float(np.nanmean(y))
+                if not np.isfinite(mean):
+                    continue
+                t = s.transform
+                self.set_series_transform(s, Transform(t.dx, t.dy - mean, t.sx, t.sy))
         self._redraw_brush()
 
     def fft_below(self):

@@ -417,3 +417,193 @@ def test_right_click_on_an_annotation_opens_neither_the_curve_nor_subplot_menu()
         vb.menu.popup = real_popup
         f._curve_context_menu = real_curve_menu
     f.close()
+
+
+# -- WP-P7: Transform... (transform.py) ---------------------------------------
+from lafigure.datasource import DataSource   # noqa: E402
+from lafigure.transform import IDENTITY, Transform, TransformDialog   # noqa: E402
+from pyqtgraph.Qt import QtTest   # noqa: E402
+
+
+def _red_ramp_figure():
+    """A thick red y = x line over [0, 100], from a DataSource, with the
+    view pinned (no autorange) so a transform visibly moves it on screen."""
+    f = m.LaFigure(empty=True)
+    ax = f.subplot(0, 0, title="Ramp")
+    t = np.linspace(0, 100, 1001)
+    src = DataSource({'t': t, 'v': t.copy()})
+    s = ax.plot(src, x='t', y='v', name="ramp", pen=pg.mkPen((255, 0, 0), width=5))
+    f.resize(800, 600)
+    f.show()
+    app.processEvents()
+    vb = ax.plot_item.getViewBox()
+    vb.setRange(xRange=(0, 100), yRange=(0, 100), padding=0)
+    vb.disableAutoRange()
+    app.processEvents()
+    return f, ax.plot_item, s, src
+
+
+def _is_red_at(f, plot_item, x, y):
+    """Is the rendered pixel at data point (x, y) the curve's red? (Its
+    selection highlight -- the curve menu selects it -- is a darker red.)"""
+    f.layout_widget.viewport().repaint()
+    app.processEvents()
+    img = f.layout_widget.viewport().grab().toImage()
+    pt = f.layout_widget.mapFromScene(plot_item.getViewBox().mapViewToScene(QtCore.QPointF(x, y)))
+    c = QtGui.QColor(img.pixel(pt.x(), pt.y()))
+    return c.red() > 150 and c.green() < 80 and c.blue() < 80
+
+
+def _open_transform(f, p, s):
+    """Through the real curve menu's "Transform..." action."""
+    menu = f._curve_context_menu(p, s.item)
+    (action,) = [a for a in menu.actions() if a.text() == "Transform..."]
+    assert action.isEnabled()
+    action.trigger()
+    app.processEvents()
+    dlg = s._transform_dialog
+    assert isinstance(dlg, TransformDialog) and dlg.isVisible() and not dlg.isModal()
+    return dlg
+
+
+def _type_into(spin, text):
+    """Select-all then type, like a user replacing the field's contents --
+    with the spin box's own decimal separator (',' in a French locale)."""
+    spin.setFocus()
+    spin.selectAll()
+    QtTest.QTest.keyClicks(spin.lineEdit(), text.replace('.', spin.locale().decimalPoint()))
+    app.processEvents()
+
+
+def test_curve_menu_has_a_transform_entry_after_the_style_controls():
+    f, p, s, src = _red_ramp_figure()
+    menu = f._curve_context_menu(p, s.item)
+    texts = _texts(menu)
+    assert "Transform..." in texts
+    assert texts.index("Transform...") > texts.index("Marker Color...")
+    assert texts.index("Transform...") < texts.index("Rename Curve...")
+    f.close()
+
+
+def test_transform_popup_live_edit_moves_the_curve_on_screen_and_leaves_the_source_alone():
+    f, p, s, src = _red_ramp_figure()
+    src_bytes = (src['t'].tobytes(), src['v'].tobytes())
+    assert _is_red_at(f, p, 50, 50) and not _is_red_at(f, p, 50, 80), "control: y = x drawn"
+    dlg = _open_transform(f, p, s)
+    n_undo = len(f.undo_stack)
+    _type_into(dlg.dy_spin, "30")
+    assert s.transform.dy == 30.0, "applied live, while typing"
+    assert _is_red_at(f, p, 50, 80) and not _is_red_at(f, p, 50, 50), "the curve moved up on screen"
+    _type_into(dlg.sx_spin, "2")
+    assert _is_red_at(f, p, 40, 50) and not _is_red_at(f, p, 50, 80), "and stretched in x"
+    assert len(f.undo_stack) == n_undo, "live edits are not undo entries by themselves"
+    assert (src['t'].tobytes(), src['v'].tobytes()) == src_bytes, "the source is never written"
+    dlg.reject()
+    f.close()
+
+
+def test_transform_popup_ok_keeps_the_whole_burst_as_one_undo_entry():
+    f, p, s, src = _red_ramp_figure()
+    dlg = _open_transform(f, p, s)
+    n_undo = len(f.undo_stack)
+    _type_into(dlg.dx_spin, "12.5")      # several keystrokes, several live applies
+    _type_into(dlg.dy_spin, "-4")
+    _type_into(dlg.sy_spin, "3")
+    QtTest.QTest.mouseClick(dlg.ok_button, QtCore.Qt.LeftButton)
+    app.processEvents()
+    assert not dlg.isVisible()
+    assert s.transform == Transform(12.5, -4.0, 1.0, 3.0)
+    assert len(f.undo_stack) == n_undo + 1, "one apply = one undo entry"
+    f.undo()
+    assert s.transform == IDENTITY
+    np.testing.assert_array_equal(s.y, src['v'])
+    f.redo()
+    assert s.transform == Transform(12.5, -4.0, 1.0, 3.0)
+    f.close()
+
+
+def test_transform_popup_cancel_restores_the_values_it_opened_with():
+    f, p, s, src = _red_ramp_figure()
+    f.set_series_transform(s, Transform(dy=5.0))
+    dlg = _open_transform(f, p, s)
+    assert dlg.dy_spin.value() == 5.0
+    n_undo = len(f.undo_stack)
+    _type_into(dlg.dy_spin, "70")
+    _type_into(dlg.sx_spin, "4")
+    assert s.transform == Transform(0.0, 70.0, 4.0, 1.0)
+    QtTest.QTest.mouseClick(dlg.cancel_button, QtCore.Qt.LeftButton)
+    app.processEvents()
+    assert s.transform == Transform(dy=5.0), "Cancel: exactly what the popup opened with"
+    np.testing.assert_allclose(s.y, src['v'] + 5.0)
+    assert len(f.undo_stack) == n_undo, "Cancel pushes nothing"
+    f.close()
+
+
+def test_transform_popup_escape_cancels():
+    f, p, s, src = _red_ramp_figure()
+    dlg = _open_transform(f, p, s)
+    _type_into(dlg.dy_spin, "9")
+    QtTest.QTest.keyClick(dlg, QtCore.Qt.Key_Escape)
+    app.processEvents()
+    assert s.transform == IDENTITY and not dlg.isVisible()
+    f.close()
+
+
+def test_transform_popup_reset_then_ok_zeroes_offsets_and_unit_scales():
+    f, p, s, src = _red_ramp_figure()
+    f.set_series_transform(s, Transform(1.0, 2.0, 3.0, 4.0))
+    dlg = _open_transform(f, p, s)
+    QtTest.QTest.mouseClick(dlg.reset_button, QtCore.Qt.LeftButton)
+    app.processEvents()
+    assert [sp.value() for sp in (dlg.dx_spin, dlg.dy_spin, dlg.sx_spin, dlg.sy_spin)] == [0, 0, 1, 1]
+    assert s.transform == IDENTITY, "Reset applies live too"
+    QtTest.QTest.mouseClick(dlg.ok_button, QtCore.Qt.LeftButton)
+    np.testing.assert_array_equal(s.y, src['v'])   # exact: raw data drawn as-is
+    f.undo()
+    assert s.transform == Transform(1.0, 2.0, 3.0, 4.0)
+    f.close()
+
+
+def test_transform_is_kept_after_ok_and_reopening_shows_it_and_can_reset():
+    f, p, s, src = _red_ramp_figure()
+    dlg = _open_transform(f, p, s)
+    _type_into(dlg.dx_spin, "3")
+    _type_into(dlg.sy_spin, "0.5")
+    QtTest.QTest.mouseClick(dlg.ok_button, QtCore.Qt.LeftButton)
+    app.processEvents()
+    dlg2 = _open_transform(f, p, s)
+    assert dlg2 is not dlg
+    assert [sp.value() for sp in (dlg2.dx_spin, dlg2.dy_spin, dlg2.sx_spin, dlg2.sy_spin)] == [3, 0, 1, 0.5]
+    QtTest.QTest.mouseClick(dlg2.reset_button, QtCore.Qt.LeftButton)
+    QtTest.QTest.mouseClick(dlg2.ok_button, QtCore.Qt.LeftButton)
+    assert s.transform == IDENTITY
+    np.testing.assert_array_equal(s.x, src['t'])
+    f.close()
+
+
+def test_closing_the_transform_window_keeps_the_edits():
+    f, p, s, src = _red_ramp_figure()
+    dlg = _open_transform(f, p, s)
+    n_undo = len(f.undo_stack)
+    _type_into(dlg.dy_spin, "8")
+    dlg.close()
+    app.processEvents()
+    assert s.transform == Transform(dy=8.0) and len(f.undo_stack) == n_undo + 1
+    f.close()
+
+
+def test_reopening_transform_while_open_raises_the_same_popup():
+    f, p, s, src = _red_ramp_figure()
+    dlg = _open_transform(f, p, s)
+    assert _open_transform(f, p, s) is dlg
+    dlg.reject()
+    f.close()
+
+
+def test_transform_is_disabled_for_a_kind_it_does_not_apply_to():
+    f, p, s, src = _red_ramp_figure()
+    b = f._add_series(p, 'errorbar', np.arange(3.0), np.arange(3.0), yerr=np.ones(3))
+    menu = f._curve_context_menu(p, b.item)
+    (action,) = [a for a in menu.actions() if a.text() == "Transform..."]
+    assert not action.isEnabled()
+    f.close()
