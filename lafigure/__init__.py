@@ -48,6 +48,7 @@ from .datasource import DataSource
 from .series import Series, SeriesKind, register_series_kind, SERIES_KINDS
 from .groups import Group, GroupsMixin, raw_filtered_preset, sensor_family_preset, GROUP_COLOR_PRESETS
 from .axes import Axes, gca, gcf
+from .plotmatrix import plotmatrix
 from . import kinds  # noqa: F401  (import registers every built-in SeriesKind beyond 'line')
 from . import console  # noqa: F401  (registers Axes.datatip -- see console.py)
 from .controls import ControlPanel, ControlPanelWindow, open_control_panel
@@ -76,6 +77,7 @@ __all__ = [
     "Axes",
     "gca",
     "gcf",
+    "plotmatrix",
     "ControlPanel",
     "ControlPanelWindow",
     "open_control_panel",
