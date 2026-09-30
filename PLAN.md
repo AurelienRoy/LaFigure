@@ -814,14 +814,14 @@ branch of that wave, not once per merge. Baseline before round 4:
 | R4-CBAR  | Interactive colorbar: fixed data-min/max lines, independent limits, live refresh | 1 | — | sonnet | merged |
 | R4-3D    | Rotate+Zoom mode, 3D rect zoom, 3D menu (views, projection, no FFT), axis Scale submenu | 1 | — | sonnet | merged |
 | R4-TREE  | Figure-browser row click sets the focused subplot | 1 | — | sonnet | merged |
-| R4-LOG   | Kinds: loglog, semilogx, semilogy | 2 | R4-BASE | sonnet | todo |
-| R4-SCAT  | Kinds: bubblechart, swarmchart, binscatter, spy | 2 | R4-BASE, R4-CBAR | sonnet | todo |
-| R4-DIST  | Kinds: boxchart, violinplot | 2 | R4-BASE | sonnet | todo |
-| R4-POLAR | Kinds: polar, polarhistogram, piechart (+ shared polar grid) | 2 | R4-BASE | sonnet | todo |
-| R4-FIELD | Kinds: quiver, feather, contour | 2 | R4-BASE | sonnet | todo |
-| R4-MISC  | Kinds: barh, stem, heatmap, errorband | 2 | R4-BASE, R4-CBAR | sonnet | todo |
-| R4-K3D   | Kinds: plot3, bubblechart3d | 2 | R4-BASE | sonnet | todo |
-| R4-PMAT  | `lafigure.plotmatrix(...)`: a grid of subplots from a DataSource | 2 | R4-BASE | sonnet | todo |
+| R4-LOG   | Kinds: loglog, semilogx, semilogy | 2 | R4-BASE | sonnet | running |
+| R4-SCAT  | Kinds: bubblechart, swarmchart, binscatter, spy | 2 | R4-BASE, R4-CBAR | sonnet | running |
+| R4-DIST  | Kinds: boxchart, violinplot | 2 | R4-BASE | sonnet | running |
+| R4-POLAR | Kinds: polar, polarhistogram, piechart (+ shared polar grid) | 2 | R4-BASE | sonnet | running |
+| R4-FIELD | Kinds: quiver, feather, contour | 2 | R4-BASE | sonnet | running |
+| R4-MISC  | Kinds: barh, stem, heatmap, errorband | 2 | R4-BASE, R4-CBAR | sonnet | running |
+| R4-K3D   | Kinds: plot3, bubblechart3d | 2 | R4-BASE | sonnet | running |
+| R4-PMAT  | `lafigure.plotmatrix(...)`: a grid of subplots from a DataSource | 2 | R4-BASE | sonnet | running |
 | R4-STYLE | Annotation line style/width/color + Arrow Style popup; area surface color/opacity | 3 | R4-3D | sonnet | todo |
 | R4-EX    | Examples: custom datatip, image processing with controls, expanded gallery | 3 | every kind package | sonnet | todo |
 
