@@ -26,6 +26,9 @@
 undo_group() to fold one gesture's steps into a single entry.
 """
 import contextlib
+import logging
+
+logger = logging.getLogger('lafigure.history')
 
 
 class HistoryMixin:
@@ -54,6 +57,12 @@ class HistoryMixin:
 
     def _push_history(self, undo_fn, redo_fn):
         if self._undo_group is not None:
+            # Swallowed by an open undo_group(): not a real push yet -- the
+            # group's own close (see undo_group's finally block above) calls
+            # _push_history again, once, with self._undo_group already back
+            # to None, so THAT call is the one that logs (below). Logging
+            # here too would log once per inner call folded into the group,
+            # not once per entry that actually lands on the stack.
             self._undo_group.append((undo_fn, redo_fn))
             return
         self.undo_stack.append((undo_fn, redo_fn))
@@ -62,6 +71,8 @@ class HistoryMixin:
         self.redo_stack.clear()
         self._update_undo_redo_actions()
         self._resync_cursor_points()
+        logger.debug("push: entry landed on undo_stack, depth=%d (redo_stack cleared)",
+                     len(self.undo_stack))
 
     def _update_undo_redo_actions(self):
         self.undo_action.setEnabled(bool(self.undo_stack))
@@ -83,19 +94,25 @@ class HistoryMixin:
     def undo(self):
         self._close_wheel_gesture()
         if not self.undo_stack:
+            logger.debug("undo: stack empty, nothing to do")
             return
         undo_fn, redo_fn = self.undo_stack.pop()
         undo_fn()
         self.redo_stack.append((undo_fn, redo_fn))
         self._update_undo_redo_actions()
         self._resync_cursor_points()
+        logger.debug("undo: ran entry, undo_stack=%d redo_stack=%d",
+                     len(self.undo_stack), len(self.redo_stack))
 
     def redo(self):
         self._close_wheel_gesture()
         if not self.redo_stack:
+            logger.debug("redo: stack empty, nothing to do")
             return
         undo_fn, redo_fn = self.redo_stack.pop()
         redo_fn()
         self.undo_stack.append((undo_fn, redo_fn))
         self._update_undo_redo_actions()
         self._resync_cursor_points()
+        logger.debug("redo: ran entry, undo_stack=%d redo_stack=%d",
+                     len(self.undo_stack), len(self.redo_stack))

@@ -27,6 +27,7 @@ modes, Home/Fit, Zoom Rect box color, Link X, Remove Average, FFT.
 Figure-wide toggles are driven with action.trigger() -- what a real click
 does; setChecked() alone never emits `triggered`.
 """
+import logging
 import time
 
 import numpy as np
@@ -37,6 +38,31 @@ from tests.helpers import (
     app, m, has_border, shown_figure, first_curve, _mouse, _ramp_figure, _is_x_linked,
     _band_drag, _press_escape, FakeClickEvent,
 )
+
+
+class _ListLogHandler(logging.Handler):
+    """Appends record.getMessage() to a plain list -- this project has no
+    pytest/caplog, so debug-mode logging tests build this small handler
+    themselves (per PLAN.md's Round 3 brief) instead."""
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+def _attach_log_handler(logger_name='lafigure'):
+    """Attach a fresh _ListLogHandler to logging.getLogger(logger_name),
+    forcing its level to DEBUG for the duration of the test. Returns
+    (logger, handler, old_level) -- caller must remove/restore in a
+    finally block so no state leaks into other tests."""
+    logger = logging.getLogger(logger_name)
+    old_level = logger.level
+    logger.setLevel(logging.DEBUG)
+    handler = _ListLogHandler()
+    logger.addHandler(handler)
+    return logger, handler, old_level
 
 
 def test_fft_adds_a_subplot():
@@ -98,6 +124,29 @@ def test_zoom_mode_uses_a_drawn_magnifying_glass_cursor():
 
     win.set_interaction_mode('hand')
     assert win.plots[0].getViewBox().cursor().shape() == QtCore.Qt.OpenHandCursor
+    win.close()
+
+
+def test_set_interaction_mode_logs_only_on_actual_change():
+    """set_interaction_mode logs 'mode: <old> -> <new>' on the
+    'lafigure.view_ops' logger, once per actual change -- calling it again
+    with the SAME mode must not log a duplicate."""
+    win = shown_figure()
+    logger, handler, old_level = _attach_log_handler()
+    try:
+        assert win.interaction_mode == 'select'
+        win.set_interaction_mode('zoom')
+        assert any('select' in msg and 'zoom' in msg for msg in handler.messages), handler.messages
+        n_after_change = len(handler.messages)
+
+        win.set_interaction_mode('zoom')  # same mode again: no new record
+        assert len(handler.messages) == n_after_change
+
+        win.set_interaction_mode('select')
+        assert len(handler.messages) == n_after_change + 1
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
     win.close()
 
 
