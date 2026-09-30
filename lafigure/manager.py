@@ -49,6 +49,11 @@ tabs:
         controls) that add/remove read-only sub-levels under each
         subplot row. "Show GUI controls" has nothing to add yet (no
         controls exist before Phase 5) but must not crash.
+      * a plain left-click on any row sets its figure's FOCUS: a subplot
+        row focuses itself, a curve/annotation row focuses its parent
+        subplot, a figure row raises and tracks that figure (Round 4,
+        R4-TREE -- see _on_tree_item_clicked). Focus only -- it never
+        touches selected_plots/selected_curves/selected_annotations.
   - "Curve Browser" (self.curve_tree / self.curve_browser_label, plus
     self.curve_editor below the tree): filled in by WP-K2 (Phase 2b),
     restructured by WP-P5 (Round 2). Shows the focused subplot's
@@ -152,6 +157,7 @@ class FigureManager(QtWidgets.QMainWindow):
 
         self.tree = QtWidgets.QTreeWidget()
         self.tree.setHeaderLabels(["Figure / Subplot"])
+        self.tree.itemClicked.connect(self._on_tree_item_clicked)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -408,6 +414,54 @@ class FigureManager(QtWidgets.QMainWindow):
         fig.show()
         fig.raise_()
         fig.activateWindow()
+
+    def _on_tree_item_clicked(self, item, column):
+        """A plain left-click on any Figure Browser row makes the clicked
+        row's own subplot the FOCUS of its figure -- CLAUDE.md roadmap
+        item "Figure-browser tree: clicking a row changes that figure's
+        focused subplot." A subplot row focuses itself; a curve/annotation
+        row focuses its parent subplot (via _curve_owner, the same helper
+        _node_paste already uses to find a curve's own subplot -- no
+        second lookup path); a figure row has no single subplot to focus,
+        so it instead becomes the "tracked" figure -- raised the same way
+        a double-click already raises any row's figure, plus fed through
+        _curve_touch, the same call the app-wide mouse-press eventFilter
+        makes for a real click inside a figure window (see that method's
+        own docstring), so the Curve Browser tab's "most recently active
+        figure" doesn't go stale just because this click didn't happen to
+        land inside a LaFigure window itself.
+
+        Deliberately does NOT touch selected_plots/selected_curves/
+        selected_annotations -- CLAUDE.md is explicit that widening what
+        the multi-select reaches is its own product decision, not an
+        incidental one, and the roadmap item asked for focus only. Goes
+        through the one frozen `focused_plot` property (its setter,
+        selection_ui.py, is the sole place registry.focusChanged fires) --
+        never a second, parallel focus-setting path."""
+        fig = item.data(0, QtCore.Qt.UserRole)
+        if fig is None:
+            return
+        kind = item.data(0, self.ROLE_KIND)
+        obj = item.data(0, self.ROLE_OBJ)
+
+        if kind == 'figure':
+            fig.show()
+            fig.raise_()
+            fig.activateWindow()
+            self._curve_touch(fig, fig.focused_plot)
+            return
+
+        if kind == 'plot':
+            plot_item = obj
+        elif kind == 'curve':
+            plot_item = self._curve_owner(fig, obj)
+        elif kind == 'annotation':
+            plot_item = obj.parent_plot
+        else:
+            plot_item = None
+
+        if plot_item is not None:
+            fig.focused_plot = plot_item
 
     def _on_item_changed(self, item, column):
         """A node's in-place edit committed (double-click / F2, then
