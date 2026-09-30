@@ -35,56 +35,18 @@ all of them; a future kind package adds its module to the import list
 below, not to lafigure/__init__.py."""
 from . import scatter, stairs, area, hist, bar, errorbar, imshow
 from . import scatter3d, line3d, surface  # 3D kinds, for axes_type='3d' subplots (view3d.py)
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
-<<<<<<< HEAD
 from . import log_kinds  # loglog/semilogx/semilogy (R4-LOG)
 from . import boxchart, violinplot  # R4-DIST
 from . import plot3, bubblechart3d  # R4-K3D
 from . import polar, polarhistogram, piechart  # R4-POLAR
 from . import bubblechart, swarmchart, binscatter, spy  # R4-SCAT
 from . import quiver, feather, contour  # R4-FIELD
-=======
->>>>>>> wp/r4-misc
 from . import barh, stem, heatmap, errorband  # R4-MISC
 
 __all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
            "scatter3d", "line3d", "surface",
-<<<<<<< HEAD
            "log_kinds", "boxchart", "violinplot", "plot3", "bubblechart3d",
            "polar", "polarhistogram", "piechart",
            "bubblechart", "swarmchart", "binscatter", "spy",
            "quiver", "feather", "contour",
            "barh", "stem", "heatmap", "errorband"]
-=======
-from . import plot3, bubblechart3d  # R4-K3D: more 3D kinds, delegating to line3d/scatter3d
-
-__all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
-           "scatter3d", "line3d", "surface", "plot3", "bubblechart3d"]
->>>>>>> wp/r4-k3d
-=======
-from . import polar, polarhistogram, piechart  # polar family (kinds/_polar_base.py)
-
-__all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
-           "scatter3d", "line3d", "surface",
-           "polar", "polarhistogram", "piechart"]
->>>>>>> wp/r4-polar
-=======
-from . import bubblechart, swarmchart, binscatter, spy  # R4-SCAT
-
-__all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
-           "scatter3d", "line3d", "surface",
-           "bubblechart", "swarmchart", "binscatter", "spy"]
->>>>>>> wp/r4-scat
-=======
-from . import quiver, feather, contour  # R4-FIELD
-
-__all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
-           "scatter3d", "line3d", "surface",
-           "quiver", "feather", "contour"]
->>>>>>> wp/r4-field
-=======
-           "barh", "stem", "heatmap", "errorband"]
->>>>>>> wp/r4-misc
