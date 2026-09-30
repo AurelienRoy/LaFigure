@@ -50,6 +50,8 @@ import pyqtgraph as pg
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import lafigure
+_debug_log = lafigure.enable_debug_mode()
+print(f"Debug log: {_debug_log}")
 
 
 def main():
