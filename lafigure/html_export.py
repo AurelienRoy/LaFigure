@@ -295,8 +295,12 @@ def _visible_xy_rows(series):
     xcol = series.columns[0]
     ycol = series.columns[1] if len(series.columns) > 1 else None
     new_x = np.asarray(source[xcol][kept_rows])
-    new_y = np.asarray(source[ycol][kept_rows]) if ycol else y
-    return new_x, new_y, kept_rows
+    new_y = np.asarray(source[ycol][kept_rows]) if ycol else None
+    # Raw source columns -> what the series actually draws, through its
+    # display transform (WP-P7's dx/dy/sx/sy; display-only, never written
+    # back to the source).
+    new_x, new_y = series.transform_xy(new_x, new_y)
+    return new_x, (new_y if ycol else y), kept_rows
 
 
 def _series_point_counts(figure):

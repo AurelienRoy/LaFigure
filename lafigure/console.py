@@ -171,7 +171,8 @@ def _refresh_series(series, source):
     # these filtered raw samples, per SeriesKind.create's own "a histogram
     # kind treats x as the raw samples to bin" convention) gets that for
     # free here too -- unverified against a real histogram kind, see report.
-    series.kind_obj.set_xy(series.item, new_x, new_y)
+    # Raw source values: drawn through the series' display transform (WP-P7).
+    series._write_raw(new_x, new_y)
 
 
 def refresh_series_for_source(source):
