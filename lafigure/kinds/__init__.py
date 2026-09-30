@@ -38,6 +38,7 @@ from . import scatter3d, line3d, surface  # 3D kinds, for axes_type='3d' subplot
 <<<<<<< HEAD
 <<<<<<< HEAD
 <<<<<<< HEAD
+<<<<<<< HEAD
 from . import log_kinds  # loglog/semilogx/semilogy (R4-LOG)
 from . import boxchart, violinplot  # R4-DIST
 from . import plot3, bubblechart3d  # R4-K3D
@@ -73,3 +74,10 @@ __all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
            "scatter3d", "line3d", "surface",
            "bubblechart", "swarmchart", "binscatter", "spy"]
 >>>>>>> wp/r4-scat
+=======
+from . import quiver, feather, contour  # R4-FIELD
+
+__all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
+           "scatter3d", "line3d", "surface",
+           "quiver", "feather", "contour"]
+>>>>>>> wp/r4-field
