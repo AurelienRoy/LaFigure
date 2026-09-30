@@ -35,6 +35,8 @@ all of them; a future kind package adds its module to the import list
 below, not to lafigure/__init__.py."""
 from . import scatter, stairs, area, hist, bar, errorbar, imshow
 from . import scatter3d, line3d, surface  # 3D kinds, for axes_type='3d' subplots (view3d.py)
+from . import polar, polarhistogram, piechart  # polar family (kinds/_polar_base.py)
 
 __all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
-           "scatter3d", "line3d", "surface"]
+           "scatter3d", "line3d", "surface",
+           "polar", "polarhistogram", "piechart"]
