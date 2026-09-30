@@ -45,9 +45,14 @@ per-axis coordinate array in this pass -- an image has no natural per-row
 index for brushing/set_data yet (that's a later design question, out of
 this package's scope per its brief).
 
-**Colorbar**: a `pg.ColorBarItem`, attached to the SAME subplot via
-`ColorBarItem.setImageItem(item, insert_in=plot_item)`. That call inserts
-the colorbar into `plot_item.layout` -- pyqtgraph's own *internal*
+**Colorbar**: a `colorbar.LaColorBar` (R4-CBAR, 2026-09-30) -- a
+`pg.ColorBarItem` subclass with two fixed dashed lines at the plotted
+matrix's own min/max (live, via `LaColorBar.attach`) and two independently
+draggable level-limit lines (dragging one never perturbs the other's
+value -- see colorbar.py's own module docstring for the full model),
+attached to the SAME subplot via `ColorBarItem.setImageItem(item,
+insert_in=plot_item)` (inherited, unchanged). That call inserts the
+colorbar into `plot_item.layout` -- pyqtgraph's own *internal*
 QGraphicsGridLayout that every PlotItem already keeps for its axes/title
 (rows/columns around its ViewBox cell), not lafigure's own fractional grid
 (lafigure/grid.py, lafigure/layout.py) -- so this needed no change to
@@ -72,6 +77,7 @@ PlotDataItem protocol.
 import numpy as np
 import pyqtgraph as pg
 
+from ..colorbar import LaColorBar
 from ..series import SeriesKind, register_series_kind
 
 DEFAULT_CMAP = 'viridis'
@@ -100,8 +106,12 @@ class ImshowKind(SeriesKind):
         plot_item.addItem(item)
         plot_item.getViewBox().invertY(True)  # row 0 at the top, matplotlib-style
 
-        colorbar = pg.ColorBarItem(colorMap=color_map, label=name)
+        colorbar = LaColorBar(colorMap=color_map, label=name)
         colorbar.setImageItem(item, insert_in=plot_item)
+        # values_fn reads item.image fresh every call (never cached), so the
+        # two fixed dashed lines track set_xy/setImage -- see attach()'s own
+        # docstring for the other two live-refresh paths.
+        colorbar.attach(item, lambda: item.image, plot_item)
         # Kept for to_dict()/tests/introspection; nothing else in this
         # module reads it back off the item.
         item._lafigure_colorbar = colorbar

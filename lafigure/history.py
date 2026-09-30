@@ -71,6 +71,7 @@ class HistoryMixin:
         self.redo_stack.clear()
         self._update_undo_redo_actions()
         self._resync_cursor_points()
+        self._resync_colorbars()
         logger.debug("push: entry landed on undo_stack, depth=%d (redo_stack cleared)",
                      len(self.undo_stack))
 
@@ -91,6 +92,30 @@ class HistoryMixin:
             if ann.kind == 'cursor' and ann.point_ref is not None:
                 ann.refresh_point()
 
+    def _resync_colorbars(self):
+        """Best-effort: refresh every LaColorBar's fixed data-min/max lines
+        (and, since its display range/gradient depend on them too, those as
+        well) against whatever the data is now. Mirrors
+        _resync_cursor_points above exactly -- same rationale ("safe after
+        any undoable action, and after undo/redo"), same "never raise"
+        stance (LaColorBar.refresh_limits already never raises on its own).
+        Walks each ViewBox's own childGroup rather than plot_item.
+        listDataItems() (CLAUDE.md bug #17: an ImageItem, or any composite
+        item, doesn't necessarily implement the 'plotData' protocol
+        listDataItems() filters on) -- looking for the '_lafigure_colorbar'
+        marker any kind that calls LaColorBar.attach() sets on its own
+        item (kinds/imshow.py does this today; a future colored-scatter
+        kind would do the same)."""
+        for plot_item in self.plots:
+            vb = plot_item.getViewBox()
+            child_group = getattr(vb, 'childGroup', None)
+            if child_group is None:
+                continue
+            for item in child_group.childItems():
+                bar = getattr(item, '_lafigure_colorbar', None)
+                if bar is not None:
+                    bar.refresh_limits()
+
     def undo(self):
         self._close_wheel_gesture()
         if not self.undo_stack:
@@ -101,6 +126,7 @@ class HistoryMixin:
         self.redo_stack.append((undo_fn, redo_fn))
         self._update_undo_redo_actions()
         self._resync_cursor_points()
+        self._resync_colorbars()
         logger.debug("undo: ran entry, undo_stack=%d redo_stack=%d",
                      len(self.undo_stack), len(self.redo_stack))
 
@@ -114,5 +140,6 @@ class HistoryMixin:
         self.undo_stack.append((undo_fn, redo_fn))
         self._update_undo_redo_actions()
         self._resync_cursor_points()
+        self._resync_colorbars()
         logger.debug("redo: ran entry, undo_stack=%d redo_stack=%d",
                      len(self.undo_stack), len(self.redo_stack))
