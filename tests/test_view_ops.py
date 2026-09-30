@@ -494,3 +494,106 @@ def test_zoom_mode_click_on_an_annotation_zooms_instead_of_selecting_it():
     assert ann not in f.selected_annotations, "must not select the annotation in Zoom mode"
     assert not np.allclose(vb.viewRange(), before), "the click must zoom instead"
     f.close()
+
+
+# -- legend correctness (WP-P3) ----------------------------------------------
+def test_toggle_legend_via_the_real_subplot_menu_shows_and_hides_it():
+    """Reproduce-first (CLAUDE.md bug #5): build the actual context menu the
+    way a real right-click would -- real QMouseEvents through the ViewBox's
+    own raiseContextMenu dispatch, not a direct call to self.toggle_legend --
+    find the QAction, and .trigger() it. Tried on a fresh single-subplot
+    figure, on the demo's multi-subplot figure, with/without a prior left
+    click, toggling on/off/on again, and via a real QTest.mouseClick on the
+    popped-up menu widget itself: every one of those showed the exact same
+    behavior as the toolbar button in this environment (see the final
+    report -- no divergence from the toolbar path was found)."""
+    f = shown_figure()
+    p2 = f.plots[1]
+    vb = p2.getViewBox()
+    (x0, x1), (y0, y1) = vb.viewRange()
+    # A corner of the data area clear of the curve, so the right-click
+    # lands on the subplot's own chrome, not a curve (which would open the
+    # curve menu instead -- no Toggle Legend there, by design).
+    scene_pt = vb.mapViewToScene(QtCore.QPointF(x0 + (x1 - x0) * 0.05, y0 + (y1 - y0) * 0.95))
+    R = QtCore.Qt.RightButton
+
+    def right_click_and_toggle():
+        _mouse(f, QtCore.QEvent.MouseButtonPress, scene_pt, R, button=R)
+        _mouse(f, QtCore.QEvent.MouseButtonRelease, scene_pt, QtCore.Qt.NoButton, button=R)
+        menu = vb.menu
+        action = next(a for a in menu.actions() if a.text() == "Toggle Legend")
+        action.trigger()
+        app.processEvents()
+        menu.close()
+        for w in QtWidgets.QApplication.topLevelWidgets():
+            if isinstance(w, QtWidgets.QMenu):
+                w.close()
+
+    assert p2.legend is None
+    right_click_and_toggle()
+    assert p2.legend is not None, "the real menu path must show the legend, same as the toolbar"
+    right_click_and_toggle()
+    assert p2.legend is None, "and hide it again"
+    right_click_and_toggle()
+    assert p2.legend is not None, "a third toggle (on) still works"
+    f.close()
+
+
+def test_legend_hides_underscore_prefixed_curve_names():
+    """matplotlib's "_nolegend_" convention: a name starting with "_" is
+    skipped, both when the legend is first built over existing curves and
+    when _refresh_legend_order is re-run later."""
+    f, p = _legend_figure()
+    ax_curves = [c for c in p.listDataItems() if isinstance(c, pg.PlotDataItem)]
+    ax_curves[1].opts['name'] = "_nolegend_"
+    f.toggle_legend()
+    app.processEvents()
+    assert p.legend is not None
+    assert [label.text for _, label in p.legend.items] == ["one"], \
+        "a leading underscore must never render literally in the legend"
+    f.close()
+
+
+def test_refresh_legend_order_reacts_to_a_name_changing_prefix():
+    """Renaming a curve into or out of a leading underscore must update the
+    legend immediately. naming.py's _apply_curve_rename (which isn't a file
+    WP-P3 owns) does curve.opts['name'] = new_name and must call
+    self._refresh_legend_order(plot_item) afterward -- see the diff in the
+    final report. This test exercises that exact mechanism directly."""
+    f, p = _legend_figure()
+    f.toggle_legend()
+    c1, c2 = [c for c in p.listDataItems() if isinstance(c, pg.PlotDataItem)]
+    assert [label.text for _, label in p.legend.items] == ["one", "two"]
+
+    c1.opts['name'] = "_one"
+    f._refresh_legend_order(p)
+    assert [label.text for _, label in p.legend.items] == ["two"], \
+        "renamed into a leading underscore: must disappear immediately"
+
+    c1.opts['name'] = "one again"
+    f._refresh_legend_order(p)
+    assert [label.text for _, label in p.legend.items] == ["one again", "two"], \
+        "renamed back out: must reappear immediately, ordered by z (tie -> creation order)"
+    f.close()
+
+
+def test_legend_order_follows_z_order_front_most_first():
+    """Z-order drives the legend only (decision 3): front-most (highest
+    zValue) first, ties by creation order. curve_style.curves_to_front
+    (WP-P2) calls self._refresh_legend_order() once it exists; this test
+    exercises the ordering mechanism itself by moving z-order the same way
+    Bring to Front / Send to Back would."""
+    f, p = _legend_figure()
+    f.toggle_legend()
+    c1, c2 = [c for c in p.listDataItems() if isinstance(c, pg.PlotDataItem)]
+    assert [label.text for _, label in p.legend.items] == ["one", "two"]
+
+    c2.setZValue(max(c1.zValue(), c2.zValue()) + 1)  # "Bring to Front" on c2
+    f._refresh_legend_order(p)
+    assert [label.text for _, label in p.legend.items] == ["two", "one"], \
+        "front-most (highest zValue) first"
+
+    c1.setZValue(c2.zValue() + 1)  # "Bring to Front" on c1 in turn
+    f._refresh_legend_order(p)
+    assert [label.text for _, label in p.legend.items] == ["one", "two"]
+    f.close()

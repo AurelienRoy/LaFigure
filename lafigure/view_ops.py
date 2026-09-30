@@ -297,14 +297,48 @@ class ViewOpsMixin:
         # pyqtgraph enters an item in the legend only as PlotItem.addItem
         # adds it, and only if a legend already exists -- so a legend
         # toggled on over existing curves was empty: zero size, invisible.
-        # Enter them now by addItem's own rule: named plot-data items.
-        for item in p.listDataItems():
-            implements = getattr(item, 'implements', None)
-            if implements is not None and implements('plotData') and item.name():
-                legend.addItem(item, item.name())
+        # _refresh_legend_order (below) both populates it (by the same rule
+        # PlotItem.addItem uses: named plot-data items) and applies this
+        # app's own two rules on top: skip a "_"-prefixed name (matplotlib's
+        # "_nolegend_" convention) and order front-most (highest zValue)
+        # first, ties by creation order.
+        self._refresh_legend_order(p)
         wire_legend_editable(self, p, legend)
         self._wire_legend_interaction(p, legend)
         return legend
+
+    def _refresh_legend_order(self, plot_item=None):
+        """Rebuild the legend's entries (if it has one) so they are
+        z-order descending -- front-most curve first, ties broken by
+        creation order -- and never include a curve whose name starts
+        with "_" (matplotlib's "_nolegend_" convention for "don't show
+        this in the legend"). plot_item=None refreshes every subplot that
+        currently has a legend.
+
+        Call this whenever a legend is (re)built, or after anything that
+        can change what it should show or in what order: a curve's
+        z-order (curve_style.curves_to_front), a curve's name (a rename,
+        in or out of a "_" prefix), or a curve being added/removed while
+        a legend is already showing. LegendItem has no "reorder in place"
+        API, so this clears and re-adds every entry rather than trying to
+        patch it incrementally."""
+        plots = [plot_item] if plot_item is not None else list(self.plots)
+        for p in plots:
+            legend = p.legend
+            if legend is None:
+                continue
+            creation_order = {c: i for i, c in enumerate(p.listDataItems())}
+            entries = []
+            for item in p.listDataItems():
+                implements = getattr(item, 'implements', None)
+                name = item.name() if implements is not None and implements('plotData') else None
+                if name and not name.startswith('_'):
+                    entries.append(item)
+            entries.sort(key=lambda c: (-c.zValue(), creation_order[c]))
+            for sample, _label in list(legend.items):
+                legend.removeItem(sample.item)
+            for item in entries:
+                legend.addItem(item, item.name())
 
     def _hide_legend(self, p):
         if self.selected_legend is p:
