@@ -67,8 +67,8 @@ def main():
     fig = lafigure.LaFigure(empty=True)
     fig.setWindowTitle("LaFigure example -- filtered by a control panel")
     ax = fig.subplot(0, 0, title="Cross-filtered scatter")
-    ax.scatter(source, x='x', y='y', size=4,
-               symbolBrush=pg.mkBrush(70, 120, 200, 140), symbolPen=None)
+    series = ax.scatter(source, x='x', y='y', size=4,
+                        symbolBrush=pg.mkBrush(70, 120, 200, 140), symbolPen=None)
     watch_source(source)
 
     # Two independent controls narrowing the SAME filter -- filter() is a
@@ -96,15 +96,37 @@ def main():
         source.filter(None)
 
     def visible_stats():
-        rows = source.visible_rows
-        mean_y = float(np.mean(source['y'][rows])) if rows.size else float('nan')
+        # source.visible_rows alone only accounts for filter()/hide_rows()
+        # -- it says nothing about points a user has permanently deleted
+        # from THIS series (Brush mode, Del): a delete narrows only the
+        # series' own drawn `rows` (brushing.py's delete_brushed_points),
+        # the DataSource itself is never shrunk (see datasource.py's own
+        # "Two independent, composable visibility mechanisms" docstring
+        # note -- there's deliberately no third, "deleted", mask there).
+        # So the true "what's actually on screen right now" set is series
+        # .rows (this series' current row assignment, already excluding
+        # anything deleted from it) intersected with source.visible_rows
+        # (filtered/hidden) -- combining both is what a reactive control
+        # needs to do itself; DataSource has no single call that means
+        # "deleted from this particular series".
+        rows = series.rows
+        if rows is None:
+            rows = np.arange(len(source))
+        shown = rows[np.isin(rows, source.visible_rows)]
+        mean_y = float(np.mean(source['y'][shown])) if shown.size else float('nan')
         return {'metric': ['visible points', 'mean y'],
-                'value': [str(rows.size), f"{mean_y:.3f}"]}
+                'value': [str(shown.size), f"{mean_y:.3f}"]}
 
     win = lafigure.open_control_panel(figure=fig, title="Filter controls")
     win.slider('min x', 0, 10, value=0, on_change=on_min_x)
     win.checkbox('category A only', checked=False, on_change=on_only_a)
     win.button('Reset', on_click=on_reset)
+    # depends_on=[source]: a plain filter()/hide_rows() already notifies
+    # this source directly; a brush-Delete on `series` notifies it too
+    # (delete_brushed_points's notify_change(), brushing.py) even though
+    # it never touches source's own masks -- see visible_stats' own
+    # comment above for why the delete case still needs source.visible_rows
+    # combined with series.rows rather than either alone.
     win.table(visible_stats, depends_on=[source])
 
     fig.show()

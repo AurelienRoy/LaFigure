@@ -266,3 +266,19 @@ class DataSource:
     def _notify(self):
         for callback in list(self._listeners):
             callback()
+
+    def notify_change(self):
+        """Fire `on_change` for every subscriber without touching any mask
+        or column -- for a caller that changed something *about* this
+        source's rows without the source itself being able to tell (e.g.
+        brushing.py's delete_brushed_points, which permanently narrows a
+        *series'* own drawn rows, never this source: see this module's
+        own "Two independent, composable visibility mechanisms" docstring
+        note -- there is deliberately no third, "deleted", mask here, so a
+        caller in that position has no `hide_rows`/`filter` call of its
+        own to make and would otherwise have no way to wake up a
+        `depends_on=[source]` table/control). n_rows and every mask stay
+        exactly as they were; this is purely a "something changed, go
+        re-read whatever you care about" signal.
+        """
+        self._notify()

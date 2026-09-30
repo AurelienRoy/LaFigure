@@ -498,9 +498,16 @@ class BrushingMixin:
     def delete_brushed_points(self):
         """Remove the brushed points from their series. A series of a
         DataSource stays linked to it, drawing fewer of its rows; the
-        source itself is untouched. Any data-cursor annotation pinned to
-        one of the removed points is deleted too, in the same undo
-        entry."""
+        source itself is untouched -- but every source a change actually
+        narrowed gets a `notify_change()` (datasource.py), so a reactive
+        control/table (`ControlPanel.table(..., depends_on=[source])`)
+        re-runs even though nothing about the source's own masks changed;
+        see notify_change's own docstring for why deleting can't just
+        call hide_rows instead (it isn't figure-wide/source-wide -- a
+        delete narrows only THIS series' own drawn rows, not every series
+        sharing the source). Undo/redo of the delete notify too. Any
+        data-cursor annotation pinned to one of the removed points is
+        deleted too, in the same undo entry."""
         items = self._require_brush_selection()
         if items is None:
             return
@@ -526,7 +533,23 @@ class BrushingMixin:
                          None if rows is None else rows[keep], columns, view)
                 self._restore(series, after)
                 changes.append((series, before, after))
-            self._push_snapshots(changes)
+            sources = {before[2] for _, before, _ in changes if before[2] is not None}
+
+            def undo_fn():
+                for s, before, _ in reversed(changes):
+                    self._restore(s, before)
+                for src in sources:
+                    src.notify_change()
+
+            def redo_fn():
+                for s, _, after in changes:
+                    self._restore(s, after)
+                for src in sources:
+                    src.notify_change()
+
+            self._push_history(undo_fn, redo_fn)
+            for src in sources:
+                src.notify_change()
             for ann in removed_cursors:
                 self.delete_annotation(ann)
 

@@ -182,6 +182,29 @@ def test_on_change_fires_once_and_off_change_stops_it():
     assert len(calls) == 6  # unchanged -- callback was removed
 
 
+def test_notify_change_fires_listeners_without_touching_any_mask():
+    """notify_change() is for a caller that changed something ABOUT this
+    source's rows without the source itself being able to tell (e.g.
+    brushing.py's delete_brushed_points, which narrows a *series'* own
+    drawn rows, never this source) -- it must wake up on_change
+    subscribers exactly like a real mutation does, but leave n_rows,
+    filter_mask and hidden_mask completely untouched."""
+    src = DataSource(_sample_dict(5))
+    calls = []
+    src.on_change(lambda: calls.append(1))
+
+    n_before = len(src)
+    filter_before = src.filter_mask
+    hidden_before = np.array(src.hidden_mask)
+
+    src.notify_change()
+
+    assert len(calls) == 1
+    assert len(src) == n_before
+    assert src.filter_mask is filter_before or (filter_before is None and src.filter_mask is None)
+    assert np.array_equal(src.hidden_mask, hidden_before)
+
+
 def test_multiple_listeners_independent():
     src = DataSource(_sample_dict(5))
     a_calls, b_calls = [], []
