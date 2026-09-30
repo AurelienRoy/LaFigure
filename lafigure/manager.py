@@ -50,13 +50,23 @@ tabs:
         subplot row. "Show GUI controls" has nothing to add yet (no
         controls exist before Phase 5) but must not crash.
   - "Curve Browser" (self.curve_tree / self.curve_browser_label, plus
-    self.curve_editor below the tree): filled in by WP-K2 (Phase 2b).
-    Shows the focused subplot's Series/Group/AnnotationItem hierarchy of
-    the most recently active LaFigure window (its own small "most
-    recently used figure" tracker -- self._curve_recent/_curve_focus --
-    reimplementing the same idea as axes.py's gcf()/_touch locally,
-    since manager.py doesn't own axes.py), a tristate visibility
-    checkbox per row (view state, not undoable), a right-click Delete /
+    self.curve_editor below the tree): filled in by WP-K2 (Phase 2b),
+    restructured by WP-P5 (Round 2). Shows the focused subplot's
+    Series/Group/AnnotationItem hierarchy of the most recently active
+    LaFigure window (its own small "most recently used figure" tracker --
+    self._curve_recent/_curve_focus -- reimplementing the same idea as
+    axes.py's gcf()/_touch locally, since manager.py doesn't own axes.py;
+    kept in sync not just by registry.focusChanged but also by an
+    app-wide mouse-press watcher -- see eventFilter's own docstring for
+    the real, reproducible staleness that alone fixes), under two fixed
+    top-level rows, **"Curves"** and **"Annotations"** (a group nests
+    under whichever one its members belong to -- see _curve_rebuild_tree).
+    Every row, category rows included, has a tristate visibility checkbox
+    (view state, not undoable): checking/unchecking a category sets every
+    descendant; checking one child while its category is still unchecked
+    re-checks the category, both directions falling out of the same
+    "recompute from real state on every rebuild" rule Group.visible
+    already used (see _curve_category_item). A right-click Delete /
     "Edit common label..." menu, two-way selection sync with the actual
     figure, and a bottom property editor (name, Z order, color, line
     width/style, marker, alpha, and -- for a Group row -- the common
@@ -195,6 +205,49 @@ class FigureManager(QtWidgets.QMainWindow):
         for fig in list(self.registry.figures):
             self._add_figure_item(fig)
         self._curve_show_editor(None, None)
+
+        # App-wide mouse watcher for the Curve Browser's recency tracker --
+        # see eventFilter's own docstring for why registry.focusChanged
+        # alone isn't enough. Installed last, once every attribute
+        # eventFilter reads (self._figure_items) already exists.
+        self._app = QtWidgets.QApplication.instance()
+        if self._app is not None:
+            self._app.installEventFilter(self)
+
+    def closeEvent(self, event):
+        if self._app is not None:
+            self._app.removeEventFilter(self)
+        super().closeEvent(event)
+
+    def eventFilter(self, obj, event):
+        """App-wide filter (installed on the QApplication itself, not on
+        any one figure): catches a real mouse press landing anywhere
+        inside a tracked LaFigure window, independent of whatever
+        downstream state change -- or lack of one -- it causes.
+
+        Bug this fixes: the Curve Browser tab's "most recently active
+        figure" tracker (_curve_touch, called from _on_focus_changed) only
+        ever ran off registry.focusChanged, which fires only when a
+        figure's OWN focused_plot actually changes value (see
+        selection_ui.py's property setter -- a frozen WP-01 interface,
+        not this package's to alter). So: focus figure A's subplot, focus
+        figure B's subplot (tracker now points at B), then click BACK on
+        figure A's subplot again -- since that subplot was already A's own
+        focused_plot, the setter's guard suppresses focusChanged entirely,
+        and the tracker is never told A is relevant again, leaving the
+        tree stuck showing B's curves while the user is back in A. A
+        plain mouse press, by contrast, is unconditional: it happens
+        whether or not anything the press causes downstream actually
+        changes. Confirmed live (not assumed) that a real QMouseEvent sent
+        the way tests/helpers._mouse sends one reaches here with the
+        correct obj.window() -- see this package's test file.
+
+        Never consumes the event (always returns False)."""
+        if event.type() == QtCore.QEvent.MouseButtonPress and isinstance(obj, QtWidgets.QWidget):
+            window = obj.window()
+            if window in self._figure_items:
+                self._curve_touch(window, window.focused_plot)
+        return False
 
     def new_figure(self):
         fig = LaFigure(empty=True)
@@ -511,6 +564,10 @@ class FigureManager(QtWidgets.QMainWindow):
 
     # -- tree construction --------------------------------------------------
     def _curve_rebuild_tree(self):
+        """Two fixed top-level rows, 'Curves' and 'Annotations' (each its
+        own checkbox), always present once a subplot is focused -- even if
+        one side is empty -- so the split is visible structure, not
+        something that only shows up once there's content for it."""
         fig, plot_item = self._curve_current_fig, self._curve_current_plot
         with _no_item_signals(self.curve_tree):
             self.curve_tree.clear()
@@ -519,17 +576,88 @@ class FigureManager(QtWidgets.QMainWindow):
                 grouped = set()
                 for g in top_groups:
                     grouped.update(g.leaf_members)
+
+                curve_rows = []        # [(kind, obj, QTreeWidgetItem)]
+                annotation_rows = []
                 for s in fig._series_on(plot_item):
                     if s not in grouped:
-                        self.curve_tree.addTopLevelItem(self._curve_series_row(s))
+                        curve_rows.append(('series', s, self._curve_series_row(s)))
                 for g in top_groups:
-                    self.curve_tree.addTopLevelItem(self._curve_group_row(g))
+                    row = self._curve_group_row(g)
+                    # A group with at least one Series leaf goes under
+                    # Curves, else under Annotations -- groups.py's
+                    # group_selection allows mixing both kinds in one
+                    # group (Ctrl+G on a curve+annotation selection), and
+                    # there is no third category to split a mixed group
+                    # across, so "has any curve" wins the tie.
+                    bucket = (curve_rows if any(isinstance(m, Series) for m in g.leaf_members)
+                              else annotation_rows)
+                    bucket.append(('group', g, row))
                 for a in fig._annotations_on(plot_item):
                     if a not in grouped:
-                        self.curve_tree.addTopLevelItem(self._curve_annotation_row(a))
+                        annotation_rows.append(('annotation', a, self._curve_annotation_row(a)))
+
+                self.curve_tree.addTopLevelItem(self._curve_category_item('Curves', curve_rows))
+                self.curve_tree.addTopLevelItem(self._curve_category_item('Annotations', annotation_rows))
             self.curve_tree.expandAll()
         self._curve_apply_selection_colors()
         self._curve_validate_editor_target()
+
+    def _curve_category_item(self, label, rows):
+        """One of the two fixed top-level rows, holding `rows` (already-
+        built (kind, obj, child_item) triples) as its children. Its own
+        checkbox is a tristate aggregate of those children's REAL, current
+        visibility -- recomputed fresh on every rebuild, never bookkept as
+        a separate flag, the same "recompute from reality" approach
+        Group.visible already uses (groups.py). That is what makes the
+        two-way propagation this package adds fall out for free: every
+        checkbox edit defers a full rebuild (see _on_curve_item_changed),
+        and this method re-derives the category's own state from whatever
+        the edit actually changed, whether that was one of its direct
+        children or a leaf nested inside one of its groups."""
+        item = QtWidgets.QTreeWidgetItem([label])
+        item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+        item.setData(0, self.ROLE_KIND, 'category')
+        item.setData(0, self.ROLE_OBJ, label)
+        for kind, obj, child in rows:
+            item.addChild(child)
+        values = [self._curve_row_value(kind, obj) for kind, obj, _ in rows]
+        item.setCheckState(0, self._tri_checkstate(self._curve_aggregate(values)))
+        return item
+
+    @staticmethod
+    def _curve_row_value(kind, obj):
+        """True/False/None (tristate) -- Group.visible's own convention --
+        for whichever kind of row this is, used to fold a row into its
+        category's aggregate checkbox state."""
+        if kind == 'group':
+            return obj.visible
+        if kind == 'annotation':
+            return obj.isVisible()
+        if kind == 'series':
+            return obj.item.isVisible()
+        return True
+
+    @staticmethod
+    def _curve_aggregate(values):
+        """True if every value is True, False if every value is False
+        (including "no values"), else None (a mix -- which also covers any
+        value that is itself None, i.e. an already-mixed nested group)."""
+        if not values:
+            return False
+        if all(v is True for v in values):
+            return True
+        if all(v is False for v in values):
+            return False
+        return None
+
+    @staticmethod
+    def _tri_checkstate(value):
+        if value is True:
+            return QtCore.Qt.Checked
+        if value is False:
+            return QtCore.Qt.Unchecked
+        return QtCore.Qt.PartiallyChecked
 
     def _curve_series_row(self, series, group=None):
         text = group.display_name(series) if group is not None else (series.name or "(curve)")
@@ -568,12 +696,7 @@ class FigureManager(QtWidgets.QMainWindow):
 
     @staticmethod
     def _curve_group_check_state(group):
-        v = group.visible
-        if v is True:
-            return QtCore.Qt.Checked
-        if v is False:
-            return QtCore.Qt.Unchecked
-        return QtCore.Qt.PartiallyChecked
+        return FigureManager._tri_checkstate(group.visible)
 
     # -- visibility checkboxes: view state, never undoable -------------------
     def _on_curve_item_changed(self, item, column):
@@ -581,7 +704,16 @@ class FigureManager(QtWidgets.QMainWindow):
         obj = item.data(0, self.ROLE_OBJ)
         if kind is None or obj is None:
             return
-        if kind == 'group':
+        if kind == 'category':
+            # Downward only -- the upward direction (a child re-checking
+            # its still-unchecked category) needs no code of its own: the
+            # deferred rebuild below recomputes the category's checkbox
+            # from its children's real state regardless of which row was
+            # actually edited (see _curve_category_item).
+            value = item.checkState(0) == QtCore.Qt.Checked
+            for i in range(item.childCount()):
+                self._curve_set_child_visible(item.child(i), value)
+        elif kind == 'group':
             obj.set_visible(item.checkState(0) == QtCore.Qt.Checked)
         elif kind == 'series':
             obj.item.setVisible(item.checkState(0) == QtCore.Qt.Checked)
@@ -597,6 +729,21 @@ class FigureManager(QtWidgets.QMainWindow):
         # first.
         QtCore.QTimer.singleShot(0, self._curve_rebuild_tree)
 
+    def _curve_set_child_visible(self, item, value):
+        """Apply `value` to one direct child of a category row -- used by
+        the category checkbox's downward propagation. A 'group' child
+        applies through Group.set_visible (which already reaches every one
+        of its own leaves, nested or not) rather than recursing into its
+        Qt children here too."""
+        kind = item.data(0, self.ROLE_KIND)
+        obj = item.data(0, self.ROLE_OBJ)
+        if kind == 'group':
+            obj.set_visible(value)
+        elif kind == 'series':
+            obj.item.setVisible(value)
+        elif kind == 'annotation':
+            obj.setVisible(value)
+
     # -- selection sync: tree click -> figure --------------------------------
     def _on_curve_tree_item_clicked(self, item, column):
         fig, plot_item = self._curve_current_fig, self._curve_current_plot
@@ -604,6 +751,11 @@ class FigureManager(QtWidgets.QMainWindow):
             return
         kind = item.data(0, self.ROLE_KIND)
         obj = item.data(0, self.ROLE_OBJ)
+        if kind == 'category':
+            # Nothing to select for the two fixed category rows themselves
+            # -- just drop whatever the editor was showing.
+            self._curve_show_editor(None, None)
+            return
         curves, anns = [], []
         if kind == 'series':
             curves = [obj.item]
@@ -669,6 +821,8 @@ class FigureManager(QtWidgets.QMainWindow):
             return
         kind = item.data(0, self.ROLE_KIND)
         obj = item.data(0, self.ROLE_OBJ)
+        if kind == 'category':
+            return  # the two fixed rows have nothing to delete/label
 
         menu = QtWidgets.QMenu(self.curve_tree)
         delete_action = menu.addAction("Delete")
