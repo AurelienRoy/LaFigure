@@ -24,9 +24,36 @@
 
 """Undo/redo (history.py): round trips, the bounded stack, undo_group."""
 
+import logging
+
 from tests.helpers import (
     m, shown_figure,
 )
+
+
+class _ListLogHandler(logging.Handler):
+    """Appends record.getMessage() to a plain list -- this project has no
+    pytest/caplog, so debug-mode logging tests build this small handler
+    themselves (per PLAN.md's Round 3 brief) instead."""
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+def _attach_log_handler(logger_name='lafigure'):
+    """Attach a fresh _ListLogHandler to logging.getLogger(logger_name),
+    forcing its level to DEBUG for the duration of the test. Returns
+    (logger, handler, old_level) -- caller must remove/restore in a
+    finally block so no state leaks into other tests."""
+    logger = logging.getLogger(logger_name)
+    old_level = logger.level
+    logger.setLevel(logging.DEBUG)
+    handler = _ListLogHandler()
+    logger.addHandler(handler)
+    return logger, handler, old_level
 
 
 def test_axis_label_history_round_trip():
@@ -81,4 +108,82 @@ def test_undo_group_nests_and_replays_in_order():
     with f.undo_group():
         f._push_history(*single)
     assert f.undo_stack[-1] == single, "a one-step group is pushed as-is, not wrapped"
+    f.close()
+
+
+def test_push_history_logs_once_when_an_entry_lands_on_the_stack():
+    """A plain (non-grouped) _push_history call logs exactly one record on
+    'lafigure.history' -- the point the entry actually lands on
+    undo_stack."""
+    f = m.LaFigure()
+    logger, handler, old_level = _attach_log_handler()
+    try:
+        f._push_history(lambda: None, lambda: None)
+        push_records = [msg for msg in handler.messages if 'push' in msg]
+        assert len(push_records) == 1, handler.messages
+        assert str(len(f.undo_stack)) in push_records[0]
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+    f.close()
+
+
+def test_push_history_inside_a_group_logs_once_per_entry_not_per_inner_call():
+    """Steps folded into an open undo_group() must NOT each log a 'landed
+    on the stack' record -- only the group's own close (which pushes
+    exactly one combined entry) does."""
+    f = m.LaFigure()
+    logger, handler, old_level = _attach_log_handler()
+    try:
+        with f.undo_group():
+            f._push_history(lambda: None, lambda: None)
+            f._push_history(lambda: None, lambda: None)
+            f._push_history(lambda: None, lambda: None)
+            assert not any('push' in msg for msg in handler.messages), (
+                "no entry may log as landed while the group is still open")
+        push_records = [msg for msg in handler.messages if 'push' in msg]
+        assert len(push_records) == 1, handler.messages
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+    f.close()
+
+
+def test_undo_and_redo_log_when_they_run_an_entry():
+    """undo()/redo() each log a record identifying which one ran, with the
+    resulting stack depths."""
+    f = m.LaFigure()
+    f._push_history(lambda: None, lambda: None)
+    logger, handler, old_level = _attach_log_handler()
+    try:
+        f.undo()
+        undo_records = [msg for msg in handler.messages if msg.startswith('undo:')]
+        assert len(undo_records) == 1, handler.messages
+        assert 'ran entry' in undo_records[0]
+
+        f.redo()
+        redo_records = [msg for msg in handler.messages if msg.startswith('redo:')]
+        assert len(redo_records) == 1, handler.messages
+        assert 'ran entry' in redo_records[0]
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+    f.close()
+
+
+def test_undo_and_redo_log_when_the_stack_is_empty():
+    """undo()/redo() must also be distinguishable in the log when there was
+    nothing to do, so a bug report can tell 'ran' from 'no-op' apart."""
+    f = m.LaFigure()
+    f.undo_stack.clear()
+    f.redo_stack.clear()
+    logger, handler, old_level = _attach_log_handler()
+    try:
+        f.undo()
+        assert any(msg.startswith('undo:') and 'empty' in msg for msg in handler.messages), handler.messages
+        f.redo()
+        assert any(msg.startswith('redo:') and 'empty' in msg for msg in handler.messages), handler.messages
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
     f.close()

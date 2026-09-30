@@ -27,6 +27,8 @@
 legend (show/hide, select, move), view history (every zoom/pan gesture is
 one undo entry), Link X, Remove Average, FFT -> subplot below.
 """
+import logging
+
 import numpy as np
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
@@ -35,6 +37,8 @@ from .datasource import DataSource
 from .editable_text import wire_legend_editable
 from .selection_ui import selection_op
 from .transform import Transform, transform_applies
+
+logger = logging.getLogger('lafigure.view_ops')
 
 # Qt has no built-in "magnifying glass" cursor shape, so Zoom Rect gets a
 # drawn one (same technique as toolbar.py's _fit_icon): a lens with a "+"
@@ -170,7 +174,10 @@ class ViewOpsMixin:
         modes; it's exclusive since 2026-09-29 (user request) -- it already
         took over the left drag and disabled pan/wheel, so no combination
         was lost. self.brushing stays, derived from the mode."""
+        old_mode = self.interaction_mode
         self.interaction_mode = mode
+        if mode != old_mode:
+            logger.debug("mode: %s -> %s", old_mode, mode)
         brushing = mode == 'brush'
         if brushing != self.brushing:
             self.brushing = brushing
