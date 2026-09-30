@@ -22,20 +22,28 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Built-in SeriesKinds beyond 'line' (which lives in series.py itself).
+"""ax.plot3(x, y, z=z, pen=color, width=1.5) -- MATLAB's name for a 3D
+line plot (a polyline through 3D points / a trajectory), or
+ax.plot3(source, x='a', y='b', z='c') for three columns of a DataSource.
 
-Each submodule here owns one SeriesKind and calls register_series_kind()
-at import time -- importing this subpackage is enough to make
-ax.scatter(...)/ax.stairs(...)/ax.area(...)/ax.hist(...)/ax.bar(...)/
-ax.errorbar(...)/ax.imshow(...) all reachable (see axes.py's
-__getattr__/_plot_kind, which routes any name found in SERIES_KINDS with
-no per-kind code there). lafigure's top-level __init__.py imports this
-package (`from . import kinds`) so a plain `import lafigure` registers
-all of them; a future kind package adds its module to the import list
-below, not to lafigure/__init__.py."""
-from . import scatter, stairs, area, hist, bar, errorbar, imshow
-from . import scatter3d, line3d, surface  # 3D kinds, for axes_type='3d' subplots (view3d.py)
-from . import plot3, bubblechart3d  # R4-K3D: more 3D kinds, delegating to line3d/scatter3d
+A `_base.DerivedKind` on the already-registered `'line3d'` kind (round 4's
+"re-use the same base function, base plots" rule) -- this module adds
+nothing new: same item (kinds/line3d.py's Line3DItem), same create/to_dict/
+get_xy/set_xy/capabilities, same brushing-by-vertex-row behavior, same
+"only on an axes_type='3d' subplot" restriction (enforced by line3d's own
+create() via Kind3D._check_plot). It exists purely so a MATLAB user finds
+the familiar name `plot3` next to `scatter3d`/`line3d`/`surface`.
 
-__all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
-           "scatter3d", "line3d", "surface", "plot3", "bubblechart3d"]
+z is a keyword because Axes._plot_kind routes exactly two positional
+coordinates (x, y) to every kind, same as scatter3d/line3d/bubblechart3d.
+"""
+from ..series import register_series_kind
+from ._base import DerivedKind
+
+
+class Plot3Kind(DerivedKind):
+    name = 'plot3'
+    base = 'line3d'
+
+
+register_series_kind(Plot3Kind())
