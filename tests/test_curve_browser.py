@@ -33,7 +33,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtTest
 
 from lafigure.groups import Group
-from tests.helpers import app, m, _place
+from tests.helpers import app, m, _place, _mouse, _vb_center
 
 
 def _two_curve_figure():
@@ -73,18 +73,26 @@ def test_tree_nests_group_members_and_shows_free_series_and_annotations():
     app.processEvents()
 
     top = _top_items(mgr.curve_tree)
-    # Exactly the top-level group and the one ungrouped annotation -- s1/s2
-    # and ann_grouped must NOT also appear as separate top-level rows.
+    # Exactly the two fixed categories at the true top level.
     assert len(top) == 2
-    kinds = {item.data(0, mgr.ROLE_KIND) for item in top}
-    assert kinds == {'group', 'annotation'}
+    assert [item.text(0) for item in top] == ['Curves', 'Annotations']
+    curves_cat, anns_cat = top
 
-    group_item = next(item for item in top if item.data(0, mgr.ROLE_KIND) == 'group')
+    # 'outer' has a Series leaf (via 'inner') so it nests under Curves, not
+    # Annotations, even though one of its own members is an annotation --
+    # and neither s1/s2 nor ann_grouped appear a second time as their own
+    # sibling rows.
+    assert curves_cat.childCount() == 1
+    group_item = curves_cat.child(0)
+    assert group_item.data(0, mgr.ROLE_KIND) == 'group'
     assert group_item.text(0) == 'Outer'
     assert group_item.data(0, mgr.ROLE_OBJ) is outer
     assert group_item.childCount() == 2
 
-    free_ann_item = next(item for item in top if item.data(0, mgr.ROLE_KIND) == 'annotation')
+    # The one ungrouped annotation nests under Annotations.
+    assert anns_cat.childCount() == 1
+    free_ann_item = anns_cat.child(0)
+    assert free_ann_item.data(0, mgr.ROLE_KIND) == 'annotation'
     assert free_ann_item.data(0, mgr.ROLE_OBJ) is ann_free
 
     inner_item = _find_row(top, 'group', inner)
@@ -142,11 +150,13 @@ def test_tree_updates_live_when_a_curve_is_added_deleted_or_renamed():
     app.processEvents()
     f._on_plot_clicked(p)
     app.processEvents()
-    n_before = len(_top_items(mgr.curve_tree))
+    curves_cat = _top_items(mgr.curve_tree)[0]
+    n_before = curves_cat.childCount()
 
     s3 = f._add_series(p, 'line', [0, 1], [1, 0], name='extra')
     app.processEvents()
-    assert len(_top_items(mgr.curve_tree)) == n_before + 1
+    curves_cat = _top_items(mgr.curve_tree)[0]  # tree rebuilt: re-find
+    assert curves_cat.childCount() == n_before + 1
     assert _find_row(_top_items(mgr.curve_tree), 'series', s3) is not None
 
     f._apply_curve_rename(p, s3.item, 'renamed')
@@ -156,7 +166,8 @@ def test_tree_updates_live_when_a_curve_is_added_deleted_or_renamed():
 
     f.delete_curve(s3.item)
     app.processEvents()
-    assert len(_top_items(mgr.curve_tree)) == n_before
+    curves_cat = _top_items(mgr.curve_tree)[0]  # tree rebuilt: re-find
+    assert curves_cat.childCount() == n_before
     f.close()
     mgr.close()
 
@@ -183,6 +194,61 @@ def test_switching_focus_across_two_figures_updates_the_tree():
     assert mgr._curve_current_fig is f2
     assert _find_row(_top_items(mgr.curve_tree), 'series', s2) is not None
     assert _find_row(_top_items(mgr.curve_tree), 'series', s1) is None
+
+    f1.close()
+    f2.close()
+    mgr.close()
+
+
+def test_reclicking_an_already_focused_subplot_still_updates_the_tree():
+    """The real staleness bug (PLAN.md P5): the tab already keys off
+    focused_plot via registry.focusChanged, but that signal fires ONLY
+    when a figure's own focused_plot actually changes value
+    (selection_ui.py's property setter, a frozen interface this package
+    doesn't own/alter). Click f1's subplot, then f2's, then f1's AGAIN --
+    for f1 that subplot was already its own focused_plot, so focusChanged
+    never fires a second time for it, yet the user plainly just switched
+    back to f1. Driven with real QMouseEvents (tests/helpers._mouse): a
+    direct _on_plot_clicked() call wouldn't exercise the app-wide mouse
+    watcher this fix adds (FigureManager.eventFilter) -- CLAUDE.md bugs
+    #11/#19's standing rule that Qt-event-routing-dependent behavior needs
+    a real event, not a direct method call."""
+    f1 = m.LaFigure(empty=True)
+    p1 = f1.add_subplot(row=0, col=0)
+    s1 = f1._add_series(p1, 'line', [0, 1], [0, 1], name='fig1-curve')
+    f1.show()
+
+    f2 = m.LaFigure(empty=True)
+    p2 = f2.add_subplot(row=0, col=0)
+    s2 = f2._add_series(p2, 'line', [0, 1], [0, 1], name='fig2-curve')
+    f2.show()
+    app.processEvents()
+
+    mgr = m.FigureManager()
+    app.processEvents()
+
+    c1, c2 = _vb_center(p1), _vb_center(p2)
+
+    def click(fig, pt):
+        _mouse(fig, QtCore.QEvent.MouseButtonPress, pt, QtCore.Qt.LeftButton)
+        _mouse(fig, QtCore.QEvent.MouseButtonRelease, pt, QtCore.Qt.NoButton)
+        app.processEvents()
+
+    click(f1, c1)
+    assert mgr._curve_current_fig is f1
+    assert _find_row(_top_items(mgr.curve_tree), 'series', s1) is not None
+
+    click(f2, c2)
+    assert mgr._curve_current_fig is f2
+    assert _find_row(_top_items(mgr.curve_tree), 'series', s2) is not None
+
+    # f1's own focused_plot doesn't change here (it was already p1) -- the
+    # exact click that used to leave the tree stuck on f2.
+    click(f1, c1)
+    assert f1.focused_plot is p1
+    assert mgr._curve_current_fig is f1
+    assert _find_row(_top_items(mgr.curve_tree), 'series', s1) is not None
+    assert _find_row(_top_items(mgr.curve_tree), 'series', s2) is None
 
     f1.close()
     f2.close()
@@ -266,6 +332,156 @@ def test_group_visibility_checkbox_is_tristate_for_mixed_members():
     app.processEvents()
     assert s1.item.isVisible() is True
     assert s2.item.isVisible() is True
+    f.close()
+    mgr.close()
+
+
+# -- Curves / Annotations top-level categories -------------------------------
+def test_tree_has_curves_and_annotations_categories_with_correct_nesting():
+    f, p, s1, s2 = _two_curve_figure()
+    ann = _place(f, 'rect', p)
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+
+    top = _top_items(mgr.curve_tree)
+    assert [item.text(0) for item in top] == ['Curves', 'Annotations']
+    curves_cat, anns_cat = top
+    assert curves_cat.data(0, mgr.ROLE_KIND) == 'category'
+    assert anns_cat.data(0, mgr.ROLE_KIND) == 'category'
+    assert bool(curves_cat.flags() & QtCore.Qt.ItemIsUserCheckable)
+    assert bool(anns_cat.flags() & QtCore.Qt.ItemIsUserCheckable)
+
+    assert {curves_cat.child(i).data(0, mgr.ROLE_OBJ) for i in range(curves_cat.childCount())} == {s1, s2}
+    assert anns_cat.childCount() == 1
+    assert anns_cat.child(0).data(0, mgr.ROLE_OBJ) is ann
+    f.close()
+    mgr.close()
+
+
+def test_unchecking_category_unchecks_every_child_recursively_through_groups():
+    f, p, s1, s2 = _two_curve_figure()
+    group = Group([s1, s2], common_label='Grp')
+    f.groups.append(group)
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+
+    curves_cat = _top_items(mgr.curve_tree)[0]
+    assert curves_cat.text(0) == 'Curves'
+    assert curves_cat.checkState(0) == QtCore.Qt.Checked
+
+    curves_cat.setCheckState(0, QtCore.Qt.Unchecked)
+    app.processEvents()
+
+    assert s1.item.isVisible() is False
+    assert s2.item.isVisible() is False
+    curves_cat = _top_items(mgr.curve_tree)[0]  # tree rebuilt: re-find
+    assert curves_cat.checkState(0) == QtCore.Qt.Unchecked
+    f.close()
+    mgr.close()
+
+
+def test_checking_a_child_re_checks_its_unchecked_category():
+    f, p, s1, s2 = _two_curve_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+
+    # Hide both directly (not via the tree) so the category starts fully
+    # unchecked, then re-derive the tree from that real state.
+    s1.item.setVisible(False)
+    s2.item.setVisible(False)
+    mgr._curve_rebuild_tree()
+    curves_cat = _top_items(mgr.curve_tree)[0]
+    assert curves_cat.checkState(0) == QtCore.Qt.Unchecked
+
+    s1_item = _find_row(_top_items(mgr.curve_tree), 'series', s1)
+    s1_item.setCheckState(0, QtCore.Qt.Checked)
+    app.processEvents()
+
+    assert s1.item.isVisible() is True
+    assert s2.item.isVisible() is False  # untouched
+    curves_cat = _top_items(mgr.curve_tree)[0]  # tree rebuilt: re-find
+    # Tristate, exactly like Group.visible: not every child is visible any
+    # more (s2 still is not), so the category is "re-checked" to the mixed
+    # state, not silently left Unchecked.
+    assert curves_cat.checkState(0) == QtCore.Qt.PartiallyChecked
+    f.close()
+    mgr.close()
+
+
+def test_real_click_on_a_category_checkbox_does_not_crash():
+    """Same CLAUDE.md bug #19 regression guard as the annotation-row test
+    above, for the newly-added category row: a real click fires
+    itemChanged before itemClicked, so a synchronous rebuild inside the
+    former would tear the tree down under the latter's still-pending
+    delivery."""
+    f, p, s1, s2 = _two_curve_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+    curves_cat = _top_items(mgr.curve_tree)[0]
+    assert curves_cat.checkState(0) == QtCore.Qt.Checked
+
+    errors = []
+    old_hook = sys.excepthook
+    sys.excepthook = lambda t, v, tb: errors.append(v)
+    try:
+        rect = mgr.curve_tree.visualItemRect(curves_cat)
+        pt = QtCore.QPoint(rect.left() + 8, rect.top() + rect.height() // 2)
+        QtTest.QTest.mouseClick(mgr.curve_tree.viewport(), QtCore.Qt.LeftButton, pos=pt)
+        app.processEvents()
+        app.processEvents()  # the deferred rebuild's singleShot(0, ...)
+    finally:
+        sys.excepthook = old_hook
+    assert errors == [], errors
+    assert s1.item.isVisible() is False
+    assert s2.item.isVisible() is False
+    f.close()
+    mgr.close()
+
+
+def test_category_visibility_checkbox_is_not_undoable():
+    f, p, s1, s2 = _two_curve_figure()
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+    n_undo = len(f.undo_stack)
+
+    curves_cat = _top_items(mgr.curve_tree)[0]
+    curves_cat.setCheckState(0, QtCore.Qt.Unchecked)
+    app.processEvents()
+
+    assert len(f.undo_stack) == n_undo
+    f.close()
+    mgr.close()
+
+
+def test_mixed_group_nests_under_curves_when_it_has_any_series_leaf():
+    """groups.py's group_selection allows mixing Series + AnnotationItem
+    members in one group (Ctrl+G on a mixed selection); there is no third
+    tree category for that, so the documented rule is: any Series leaf at
+    all puts the whole group under Curves."""
+    f, p, s1, s2 = _two_curve_figure()
+    ann = _place(f, 'rect', p)
+    group = Group([s1, ann], common_label='Mixed')
+    f.groups.append(group)
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+
+    top = _top_items(mgr.curve_tree)
+    curves_cat, anns_cat = top
+    group_item = _find_row([curves_cat], 'group', group)
+    assert group_item is not None
+    assert _find_row([anns_cat], 'group', group) is None
     f.close()
     mgr.close()
 
