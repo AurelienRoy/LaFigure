@@ -255,3 +255,281 @@ Package note: see PLAN.md "Per-package notes" → <id> (plus anything new).
 - **M**: the decimation popup offers keep all / 1:N (N editable, default
   10) / peak-preserving; plotly stays an optional import with a clear error
   if missing.
+
+---
+
+# Round 2 — post-roadmap batch (planned 2026-09-29)
+
+The roadmap (WP-01..O) is complete and merged. This is a **second round**,
+from one user request listing ~20 items: annotation geometry, curve
+styling/menu correctness, legend correctness, a new per-curve Transform,
+in-place rich-text editing, curve-browser structure, brushing fixes.
+
+**Requirements live here, not in CLAUDE.md's roadmap** (which describes the
+shipped state). Four design calls were confirmed with the user before
+planning; they are requirements, not suggestions:
+
+1. **Rich text = Qt rich text + Unicode math, no new dependency.** The
+   in-place editor's source string supports a small LaTeX-ish subset
+   translated to HTML + Unicode (`\alpha`, `^{}`, `_{}`, `\times`,
+   `\leq`, `\infty`, `\mathbf{}`, `\mathit{}`, ...). **No** matplotlib
+   mathtext, **no** fractions/integrals/matrices. Unknown tokens render
+   literally rather than raising.
+2. **Transform is display-only.** A series keeps `(dx, dy, sx, sy)`; the
+   underlying `DataSource`/array is never modified, so Reset is exact and
+   free forever. Everything user-facing (brush hit-test, Selection Stats,
+   Fit, CSV export, HTML export) sees the **transformed** values, because
+   they all re-derive from the item's drawn data.
+3. **Z-order drives the legend only.** Front-most (highest `zValue`) first
+   in the legend. The Curve Browser and Figure Browser trees keep
+   **creation order** — user's explicit reason: so groups stay grouped.
+4. **The Curve Browser's "shows the selected, not the focused, subplot"
+   report is a bug to reproduce**, not a request to change which attribute
+   it reads — it already reads `focused_plot` (`manager.py:339`).
+
+## Status (round 2)
+
+| WP | Title | Wave | Depends on | Model | Status |
+|----|-------|------|-----------|-------|--------|
+| P1 | Annotation geometry: tight hit-test, scene-space rotation, textarrow label | 1 | — | opus | merged (db64a90); found a real bug along the way — a pyqtgraph ViewBox clips its children, so Qt ignores a custom `shape()` for hit-testing unless `contains()`/`collidesWithPath()` are also overridden; textarrow label placed beside p1 on the up-facing side (MATLAB itself anchors at the tail — confirm with user if this matters) |
+| P2 | Curve menu: style gating + order, click tolerance, right-click stickiness | 1 | — | sonnet | todo |
+| P3 | Legend: menu-toggle bug, `_`-prefix hiding, z-order ordering | 1 | — | sonnet | merged (3573b94); the menu-toggle bug was investigated with extensive real-Qt-event repro attempts and NOT reproduced — a regression test covers the real-menu path instead (see CLAUDE.md bug #5's standing rule); rename-updates-legend and z-order-after-front/back need one-line hooks from `naming.py`/`curve_style.py` (P8/P2's job — see the diff in the branch's own report) |
+| P4 | Brushing: post-hide brush bug, Show-All enabled state, delete signal, example | 1 | — | sonnet | todo |
+| P5 | Curve Browser: focus divergence, Curves/Annotations categories + parent checkboxes | 1 | — | sonnet | merged (3573b94); found a real bug — `focused_plot`'s setter only fires `focusChanged` on an actual change, so re-clicking an already-focused subplot never re-notified the tree; fixed via an app-wide mouse-press event filter, not a registry-signal change |
+| P7 | Transform popup (display-only) + Remove Average rebuilt on it | 2 | P2, P3, P4 | opus | todo |
+| P8 | In-place rich-text editing for every plot text + Font dialog | 2 | P1 | opus | todo |
+
+Waves: **{P1, P2, P3, P4, P5} in parallel** then **{P7, P8} in parallel**.
+(No P6: the example-script fix folded into P4, which owns the signal it
+consumes.)
+
+## File ownership (round 2)
+
+| File | Owner |
+|------|-------|
+| `annotations.py`, `handles.py`, `tests/test_annotation_ops.py` | P1, then P8 (wave 2, text-editing parts only) |
+| `menus.py`, `curve_style.py`, `selection_ui.py`, `tests/test_menus.py`, `tests/test_curve_style.py`, `tests/test_selection_ui.py` | P2, then P7 (wave 2, adds the Transform entry) |
+| `view_ops.py`, `tests/test_view_ops.py` | P3, then P7 (wave 2, rebuilds `remove_average`) |
+| `brushing.py`, `selection.py`, `datasource.py`, `examples/interactive_controls.py`, `tests/test_brushing.py`, `tests/test_datasource.py` | P4 |
+| `manager.py`, `tests/test_curve_browser.py`, `tests/test_manager.py` | P5 |
+| `transform.py` (new), `series.py` | P7 |
+| `editable_text.py`, `naming.py` | P8 |
+| `toolbar.py`, `help.py`, `icons/`, `__init__.py`, `CLAUDE.md`, `PLAN.md` | coordinator (send a diff in the report) |
+
+Within wave 1 every package's file set is disjoint. `menus.py`,
+`view_ops.py` and `annotations.py` are each wanted by a wave-2 package
+too — that is exactly why those packages are in wave 2.
+
+## Package briefs (round 2)
+
+### P1 — Annotation geometry (opus)
+**Load the `lafigure-axes-geometry` skill first.** Every item here is one
+of its cases.
+- `AnnotationItem` has **no `shape()` override**, so Qt hit-tests the
+  20px-padded axis-aligned `boundingRect()` (`annotations.py:365-384`) for
+  every kind. Add a real `shape()` that returns the **displayed dashed
+  outline**: the oriented polygon for `ORIENTED_OUTLINE_KINDS`, a tight
+  rect for `rect`/`text`, an **ellipse** for `ellipse`, and for
+  `textarrow`/`cursor` the union of the segment outline **and** the text
+  bubble. `boundingRect()` keeps its pad (it must still cover handles and
+  the dashed stroke) — only `shape()` tightens.
+- **Ellipse outline** becomes a bounding *ellipse* a few screen px larger
+  than the drawn one; **rect** hugs the shape with a few screen px of
+  spacing. Both paddings are **screen pixels**, built in scene space and
+  mapped back — never `_px_to_local` applied per-axis on a non-1:1 subplot.
+- **Rotation in screen space.** `_apply_rotation` (`annotations.py:791-814`)
+  calls `setRotation()`, which rotates in local/data space — the gap the
+  axes-geometry skill documents as known-unfixed. Fix it so a rotation
+  reads as the same on-screen angle whatever the subplot's X/Y scale.
+  Shift's 45 degree snap (`SHIFT_SNAP_DEG`) must snap to **screen** angles.
+- **textarrow label placement**: `annotations.py:266` positions the text at
+  a fixed `(8, -10)px` offset from **p0** (the item origin), not from the
+  arrow endpoint — which is why it reads as "too low" relative to the
+  endpoint. Place it relative to **p1**, offset perpendicular/along the
+  segment in screen px, so it sits beside the tip at any angle.
+- Out of scope: annotation text *editing* (P8), the Properties... dialog
+  contents, filiation/anchoring.
+
+### P2 — Curve menu correctness (sonnet)
+- **Scatter line-props discrepancy**: gating is purely by kind string —
+  `_LINE_KINDS` excludes `'scatter'` (`curve_style.py:76-87`), so Line
+  Width/Style/Color are always disabled for a scatter even when it is
+  visibly drawing a connecting line. Replace kind-only gating with the
+  user's rule: **Line Style is never grayed** (for any kind that can draw
+  a line at all — the user may want to *add* lines to a marker-only
+  series); **Line Width and Line Color stay grayed while no line is
+  drawn** (a pen that is `None`, `NoPen`-styled, or alpha-0 — see
+  CLAUDE.md bug #15: "no line" is three different states in pyqtgraph).
+  Setting Line Style away from "none" must make the line appear, and must
+  then enable Width/Color.
+- **Menu order** becomes: Line Style / Line Width / Line Color / Marker /
+  Marker Size / Marker Color (currently Width, Style, Marker, Marker Size,
+  Line Color, Marker Color — `menus.py:296-322`).
+- **Click tolerance**: `_curves_at` (`menus.py:220-237`) hit-tests
+  `curve.mouseShape()` and `scatter.pointsAt()` exactly. Widen both by a
+  few **screen** pixels so a curve/point is easier to grab. Keep
+  `selection_ui.py:475`'s `_can_start_band_at` consistent, or a rubber
+  band will start on a curve the click would now select.
+- **Right-click stickiness**: a right-click on an already-selected curve
+  sometimes flips the selection to the subplot while opening the curve
+  menu. `_curve_menu_targets` (`menus.py:244-254`) sets
+  `self.focused_plot = plot_item` *first*, then only re-selects when the
+  curve isn't already in `selected_curves` — so the reported symptom comes
+  from somewhere else in the dispatch (`raise_context_menu`
+  `menus.py:199-217`, `_on_plot_context` `menus.py:187-188`, or the
+  exact hit-test missing the curve on the *second* press).
+  **Reproduce with real `QMouseEvent`s before fixing** — a direct method
+  call cannot show it (CLAUDE.md bugs #11/#19).
+- Provides, for P3: `curves_to_front` (and any other z-mutating path in
+  `curve_style.py`) calls `self._refresh_legend_order()` when it exists.
+
+### P3 — Legend correctness (sonnet)
+- **Menu "Toggle Legend" doesn't work; the toolbar button does** — yet
+  both call the same `self.toggle_legend` (`menus.py:119`,
+  `toolbar.py:130`, `view_ops.py:278-293`). So the difference is in *when*
+  it runs, not *what* it calls (a `QAction` bound in a menu built per
+  right-click, an `aboutToShow` rebuild, a stale `plot_item` captured in
+  the closure, or focus moving on the right-click). **Reproduce through a
+  real menu action trigger**, not by calling `toggle_legend` directly.
+- **Hide `_`-prefixed names**, matplotlib's convention: `_show_legend`
+  (`view_ops.py:295-307`) filters only on `item.name()` being truthy, so
+  `examples/line_signal_annotations.py:72`'s `name="_nolegend_"` renders
+  literally. Skip any name starting with `_`. Renaming a curve to/from a
+  `_` prefix updates the legend.
+- **Legend order follows z-order, front-most first.** `_show_legend`
+  iterates `listDataItems()` (creation order). Sort by `zValue()`
+  descending, ties by creation order. Provide
+  `LaFigure._refresh_legend_order()` — rebuild/reorder the live legend —
+  and call it wherever the legend is (re)built. P2 calls it from
+  `curves_to_front`; P5's Curve Browser z buttons already go through that.
+- Out of scope: legend position/styling, and the Curve Browser / Figure
+  Browser tree orders (they stay creation-ordered, per decision 3).
+
+### P4 — Brushing fixes (sonnet)
+- **"After Hide Brushed Points I can't brush any other displayed point."**
+  Static reading of `brushing.py`/`selection.py` found no cause — the path
+  re-derives from `get_xy` each drag and `_synced_row_view`
+  (`brushing.py:211-231`) self-heals. So **reproduce it first** with real
+  drags (`_brush_drag`, pacing moves 12ms apart or more — CLAUDE.md bug
+  #17's rate-limit lesson), including the exact user sequence: brush,
+  Hide, then brush elsewhere. Suspect the *pooled figure-wide* selection
+  state (`_brushers`/`_figure_brush_items`) still holding the hidden rows,
+  not the hit-test itself.
+- **"Show All Points" enabled only when something is hidden.** The subplot
+  menu already does this (`menus.py:171-176` via `has_hidden_points()`);
+  the toolbar action is always enabled (`toolbar.py:145-147`). Report a
+  `toolbar.py` diff for the coordinator to apply: keep a handle on both
+  actions and refresh their enabled state wherever brush/hide state
+  changes.
+- **A distinct Hide icon.** `SP_DialogDiscardButton` (hide) reads as a
+  delete/discard, too close to Delete. Propose a replacement — either an
+  existing asset in `icons/` or a small drawn `QPixmap` (an eye with a
+  slash), the way `view_ops._zoom_cursor` draws its own. The coordinator
+  adds any new file to `icons/`.
+- **Deleting brushed points must notify.** `delete_brushed_points`
+  (`brushing.py:498-529`) narrows only the series' own rows and **never
+  touches the DataSource**, so `on_change` never fires and no reactive
+  control/table re-runs. Give a delete a change notification that
+  `depends_on=[source]` picks up, without pretending the source shrank
+  (it doesn't — the data-cursor resync depends on that being false).
+  Undo/redo of a delete must notify too.
+- **`examples/interactive_controls.py`** then becomes reactive to deleted
+  points: its `visible_stats` (lines 98-108) reads `source.visible_rows`,
+  which is correct for *hidden* rows but blind to *deleted* ones. Its
+  metric must match what is actually on screen after a brush + Del.
+
+### P5 — Curve Browser structure (sonnet)
+- **Reproduce the focus divergence.** The tab already keys off
+  `focused_plot` via `registry.focusChanged` (`manager.py:190,339-344`),
+  which fires **only on an actual change** — so re-clicking an
+  already-focused subplot, or a click that lands on a curve (which
+  deselects the subplot but keeps it focused), can leave the tree stale
+  while the user reads it as "it follows the selection". Fix the real
+  mechanism; do not re-point it at `selected_plots`.
+- **Two categories.** Today `_curve_rebuild_tree` (`manager.py:513-530`)
+  adds ungrouped series, then groups, then ungrouped annotations as
+  siblings. Split into two top-level category rows, **Curves** and
+  **Annotations**, each with its own checkbox. Groups keep working inside
+  the category their members belong to.
+- **Parent checkbox both ways.** Checking/unchecking a category sets every
+  child. Checking a child while the parent is unchecked **re-checks the
+  parent** — the reverse propagation that doesn't exist today
+  (`_on_curve_item_changed`, `manager.py:579-598`, only pushes down; the
+  `Group` tristate at `manager.py:569-576` is recomputed on rebuild).
+  Reuse `Group.visible`'s tristate convention (True/False/None).
+  Visibility stays **view state, never undo** — the project-wide rule.
+- **Rebuild only via `QTimer.singleShot(0, ...)`** from inside an
+  `itemChanged` handler — CLAUDE.md bug #19 is exactly this tree, and a
+  real `QTest.mouseClick` on the checkbox indicator is the only way to
+  catch a regression of it.
+- Out of scope: tree row **order** (stays creation order, decision 3) and
+  anything in the Figure Browser tab.
+
+### P7 — Transform (opus, wave 2)
+- New modeless popup per curve, opened from the curve right-click menu's
+  **Transform...**: offset X, offset Y, scale X, scale Y, applied live as
+  the user edits, with **OK / Reset / Cancel**. Closing saves the state so
+  it can be inspected and reset later; Cancel restores the values the
+  popup opened with.
+- **Display-only (decision 2).** Store `(dx, dy, sx, sy)` per series
+  (`transform.py`, with `series.py` holding the state and re-deriving the
+  drawn arrays from the raw ones). The `DataSource`/raw array is never
+  written. Everything downstream already re-derives from the item's drawn
+  data, so brushing, Stats, Fit, CSV and HTML export see the transformed
+  values for free — **verify each of those**, don't assume.
+- **Remove Average is rebuilt on this.** Today it writes a derived column
+  or edits in place and discards the mean (`view_ops.py:488-507`). It
+  becomes: compute the mean, write it into the series' transform as
+  `dy = -mean`, done — so the value is visible in, and resettable from,
+  the popup. Its derived-column machinery
+  (`_derive_y_column`/`_column_backed`) is no longer needed for this path;
+  remove it only if nothing else uses it.
+- Undo: one entry per applied change (a live-edit burst while dragging a
+  field is one entry, the `undo_group()` pattern). Interacts with the
+  cursor resync (`_resync_cursor_points`) — a pinned data cursor must
+  follow a transformed point.
+- Copy/paste of a curve or subplot carries the transform; so does
+  `to_dict`/`from_dict` if a kind serializes it.
+
+### P8 — In-place rich-text editing (opus, wave 2)
+- **Replace every `QInputDialog` text popup with in-place editing**: the
+  subplot title and axis labels (`editable_text.py:34-68`), legend entries
+  (`editable_text.py:71-103`, which must keep routing through
+  `figure._apply_curve_rename` so the rename stays undoable and reaches
+  `curve.opts['name']`), and annotation text
+  (`annotations.py:644-661`). Double-click starts an editor **where the
+  text is**, with a caret; Shift+Enter (or the platform norm you document)
+  inserts a **line break**, Esc cancels, click-away commits.
+- **Rich text, decision 1**: Qt rich text + Unicode math, no new
+  dependency. One translator module turns the stored source string into
+  HTML for `QGraphicsTextItem`/`pg.LabelItem` (both already HTML-capable);
+  the editor edits the **source**, the item displays the rendered form.
+  Bold/italic, super/subscript, colors, multi-line, and common Greek/math
+  tokens. Unknown tokens render literally.
+- **Right-click on any of these texts offers a Font dialog** (`QFontDialog`
+  — nothing in the project uses one yet) for family/size/bold/italic, plus
+  color. Applied to the selection where that makes sense; undoable.
+- The stored source string is what serializes (copy/paste, subplot
+  copy/paste, save/export). PNG/SVG/PDF export renders the rich text;
+  HTML export should carry at least bold/italic/Unicode — report, don't
+  silently drop, anything it can't.
+- Out of scope: annotation *geometry* (P1 owns it), real LaTeX math
+  (fractions, integrals, matrices), and the `Properties...` dialog's
+  existing line/fill controls.
+
+## Round-2 notes for every package
+
+- CLAUDE.md's bug list is the prior art for most of these: **#11** (use
+  the full `QMouseEvent` constructor or Qt hit-testing sees the wrong
+  point), **#15** ("no line" is three different states), **#16** (`opts`
+  dict keys exist even when unset — gate on `Series.kind`), **#17** (pace
+  synthetic drag moves 12ms apart or more), **#19** (never rebuild a tree
+  synchronously inside its own `itemChanged`), **#20** (a segfault under
+  `offscreen` usually means a modal dialog — never `exec_()` one in a test
+  path).
+- Four of these items are **"reproduce first"** bugs (P2's right-click
+  stickiness, P3's menu toggle, P4's post-hide brushing, P5's focus
+  divergence). Static reading already failed to explain three of them. If
+  a package cannot reproduce its bug with real Qt events, it reports that
+  — with what it tried — rather than shipping a speculative fix, per
+  CLAUDE.md bug #5's standing rule.
