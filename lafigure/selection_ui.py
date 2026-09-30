@@ -31,6 +31,7 @@ focused_plot property setter -- the only writer) and selectionChanged
 (_notify_selection_changed) signals.
 """
 import functools
+import logging
 import time
 
 from pyqtgraph.Qt import QtCore, QtWidgets
@@ -38,6 +39,12 @@ import pyqtgraph as pg
 
 from .handles import ResizeHandle, MoveHandle
 from .annotations import AnnotationItem, TWO_CLICK_KINDS
+
+# Debug mode (lafigure.debug.enable_debug_mode, WP-DBG1): plain
+# hierarchical stdlib logging -- this child logger needs no wiring of its
+# own, whatever handlers/level enable_debug_mode() attaches to the root
+# 'lafigure' logger apply here for free.
+logger = logging.getLogger('lafigure.selection_ui')
 
 CLICK_CYCLE_TOLERANCE_PX = 4
 CLICK_CYCLE_TIMEOUT_S = 1.0
@@ -105,6 +112,54 @@ class SelectionUIMixin:
         self.registry.notify_selection_changed(self)
 
     # -- click dispatch and subplot selection --------------------------------
+    def _click_gesture_desc(self, ev, additive):
+        """Short gesture label for the debug log: some combination of
+        plain/shift/right-click/double-click (a single click is 'plain')."""
+        parts = []
+        if ev.button() == QtCore.Qt.RightButton:
+            parts.append('right-click')
+        if additive:
+            parts.append('shift')
+        if ev.double():
+            parts.append('double-click')
+        return '+'.join(parts) if parts else 'plain'
+
+    def _click_hit_desc(self, hit_plot, pos):
+        """Short description of what a click at scene position `pos`
+        actually hit -- an annotation, a curve, a subplot, or empty space --
+        for the debug log. Reuses the same per-kind hit-tests ordinary
+        dispatch itself uses (_annotation_at, _curves_at), so the
+        description matches what was actually eligible to be selected."""
+        ann = self._annotation_at(pos)
+        if ann is not None:
+            return ("annotation '%s' (%s)" % (ann.text, ann.kind) if ann.text
+                     else "annotation (%s)" % ann.kind)
+        if hit_plot is not None:
+            curves = self._curves_at(hit_plot, pos)
+            if curves:
+                return "curve '%s'" % (curves[0].opts.get('name') or '<unnamed>')
+            return "subplot '%s'" % self.subplot_name(hit_plot)
+        return "empty space"
+
+    def _click_selection_desc(self):
+        """Short summary of the resulting selection, for the debug log."""
+        focused = self.subplot_name(self.focused_plot) if self.focused_plot is not None else None
+        active = self.active_curve.opts.get('name') if self.active_curve is not None else None
+        return ("plots=%d curves=%d annotations=%d focused_plot=%r active_curve=%r"
+                 % (len(self.selected_plots), len(self.selected_curves),
+                    len(self.selected_annotations), focused, active))
+
+    def _log_click_dispatch(self, ev, additive, hit_plot, pos, outcome):
+        """One DEBUG line per dispatched click: the gesture, what was
+        actually hit, and the resulting selection outcome -- for the
+        copy-pasteable debug log (CLAUDE.md's debug-mode roadmap item,
+        Round 3/DBG3). _on_scene_clicked is the one central dispatcher
+        (CLAUDE.md's "What worked well: one central click dispatcher"), so
+        this is the one place a click's final outcome is logged."""
+        logger.debug("click: gesture=%s hit=%s -> %s (%s)",
+                     self._click_gesture_desc(ev, additive), self._click_hit_desc(hit_plot, pos),
+                     outcome, self._click_selection_desc())
+
     @selection_op
     def _on_scene_clicked(self, ev):
         """Single handler for the whole shared scene: figure out which
@@ -132,13 +187,16 @@ class SelectionUIMixin:
             # event filter instead (see eventFilter) -- a real drag never
             # reaches sigMouseClicked at all, so this is normally a no-op
             # for them; the not-in check is just defensive belt-and-braces.
+            kind = self._placing_kind
             if not ev.double() and self._placing_kind not in TWO_CLICK_KINDS:
                 self._handle_placement_click(pos)
+            self._log_click_dispatch(ev, additive, None, pos, "placing annotation '%s'" % kind)
             return
 
         if self._relink_source is not None:
             if not ev.double():
                 self._handle_relink_click(pos)
+            self._log_click_dispatch(ev, additive, None, pos, "relink")
             return
 
         hit_plot = None
@@ -156,6 +214,8 @@ class SelectionUIMixin:
             # double click zooms out (see _click_zoom).
             self._on_plot_clicked(hit_plot, additive=False)
             self._click_zoom(hit_plot, pos, out=ev.double())
+            self._log_click_dispatch(ev, additive, hit_plot, pos,
+                                      "zoom %s" % ('out' if ev.double() else 'in'))
             return
 
         if (hit_plot is None and ev.button() == QtCore.Qt.RightButton
@@ -169,10 +229,12 @@ class SelectionUIMixin:
             # subplot) is excluded too: its own contextMenuEvent (a
             # separate native Qt event) already handles that click.
             self._show_empty_space_menu()
+            self._log_click_dispatch(ev, additive, hit_plot, pos, "opened empty-space menu")
             return
 
         if ev.double():
             self._deselect_all()
+            self._log_click_dispatch(ev, additive, hit_plot, pos, "deselected all (double-click)")
             return
 
         if hit_plot is not None:
@@ -180,12 +242,18 @@ class SelectionUIMixin:
             # click; selecting the subplot too would undo its exclusivity.
             if not ev.isAccepted():
                 self._on_plot_clicked(hit_plot, additive=additive)
+                outcome = "toggled subplot in selection" if additive else "selected subplot"
+            else:
+                outcome = "curve/legend already handled the click"
         elif not ev.isAccepted() and not additive:
             # Shift+click on empty space does nothing (LibreOffice/MATLAB).
             # Single click landed outside every subplot, and nothing
             # clickable (e.g. a figure/border-anchored annotation) consumed
             # it -- that's genuinely empty space.
             self._deselect_all()
+            outcome = "deselected all (empty space)"
+        else:
+            outcome = "no-op"
 
         if not additive and ev.button() == QtCore.Qt.LeftButton:
             # Left-click-only: a right-click on an already-selected curve
@@ -200,6 +268,8 @@ class SelectionUIMixin:
             # (_curve_menu_targets/_on_plot_context) and must never read or
             # write the click-cycle state.
             self._apply_click_cycle(pos)
+
+        self._log_click_dispatch(ev, additive, hit_plot, pos, outcome)
 
     # -- click-cycling: repeated clicks at (about) the same spot step
     # through whatever's stacked there (curves, annotations, subplots) --
