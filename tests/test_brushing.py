@@ -23,13 +23,42 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 """Figure-wide brushing (brushing.py)."""
+import logging
+
 import numpy as np
 from pyqtgraph.Qt import QtCore
 
 from lafigure.datasource import DataSource
 from tests.helpers import (
-    app, m, _mouse, _brush_drag, _key,
+    app, m, SHIFT, _mouse, _brush_drag, _key,
 )
+
+
+class _ListHandler(logging.Handler):
+    """Appends each record's rendered message to a list. This project has
+    no pytest (no caplog fixture), so this small handler stands in for it
+    -- see PLAN.md's Round 3 preamble, which explicitly allows every
+    debug-logging package to build its own tiny copy of this rather than
+    share a file neither owns."""
+
+    def __init__(self):
+        super().__init__()
+        self.messages = []
+
+    def emit(self, record):
+        self.messages.append(record.getMessage())
+
+
+def _attached_handler():
+    """A _ListHandler attached to the 'lafigure' logger at DEBUG, and the
+    logger itself -- caller detaches it (logger.removeHandler(handler)) once
+    done, per the acceptance-test recipe in PLAN.md."""
+    logger = logging.getLogger('lafigure')
+    handler = _ListHandler()
+    old_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    return handler, logger, old_level
 
 
 # -- shared fixtures for the tests below -------------------------------------
@@ -280,4 +309,68 @@ def test_delete_brushed_points_on_plain_array_series_does_not_notify_any_source(
     assert f._figure_brush_items()
     f.delete_brushed_points()  # must not raise
     assert list(s.x) == list(range(2, 10))
+    f.close()
+
+
+# -- WP-DBG4: debug logging of a brush drag's start/end ----------------------
+def test_real_brush_drag_logs_start_and_end_with_row_count():
+    """A real, correctly-paced drag (CLAUDE.md bug #17's 12ms pacing,
+    already built into _brush_drag) must log one "start" record (which
+    subplot, replace vs. additive) and one "end" record (the rows actually
+    caught), with the row count in the end record matching what
+    _figure_brush_items() itself reports was caught."""
+    f, (ax,) = _figure()
+    src = _linear_source()
+    ax.scatter(src, x='t', y='z', size=6)
+    vb = ax.plot_item.getViewBox()
+    vb.setRange(xRange=(0, 100), yRange=(-1, 1), padding=0)
+    app.processEvents()
+    f.brush_action.trigger()
+
+    handler, logger, old_level = _attached_handler()
+    try:
+        xr, yr = vb.viewRange()
+        _brush_drag(f, ax.plot_item, (xr[0], yr[0]), (xr[0] + (xr[1] - xr[0]) * 0.2, yr[1]))
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+    items = f._figure_brush_items()
+    assert items, "control: the drag actually brushed something"
+    n_caught = int(items[0][1].sum())
+    assert n_caught > 0
+
+    starts = [msg for msg in handler.messages if msg.startswith("brush drag on subplot")]
+    ends = [msg for msg in handler.messages if msg.startswith("brush drag finished")]
+    assert len(starts) == 1, handler.messages
+    assert len(ends) == 1, handler.messages
+    assert "replace" in starts[0], starts[0]
+    assert f"rows_caught={n_caught}" in ends[0], ends[0]
+    f.close()
+
+
+def test_shift_held_brush_drag_logs_additive():
+    f, (ax,) = _figure()
+    src = _linear_source()
+    ax.scatter(src, x='t', y='z', size=6)
+    vb = ax.plot_item.getViewBox()
+    vb.setRange(xRange=(0, 100), yRange=(-1, 1), padding=0)
+    app.processEvents()
+    f.brush_action.trigger()
+
+    xr, yr = vb.viewRange()
+    third = (xr[1] - xr[0]) / 3
+    _brush_drag(f, ax.plot_item, (xr[0], yr[0]), (xr[0] + third, yr[1]))
+    assert f._figure_brush_items(), "control: the first drag brushed something"
+
+    handler, logger, old_level = _attached_handler()
+    try:
+        _brush_drag(f, ax.plot_item, (xr[0] + third, yr[0]), (xr[0] + 2 * third, yr[1]), mods=SHIFT)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+
+    starts = [msg for msg in handler.messages if msg.startswith("brush drag on subplot")]
+    assert len(starts) == 1, handler.messages
+    assert "additive" in starts[0], starts[0]
     f.close()

@@ -27,12 +27,16 @@ eventFilter), creation/deletion, scene bookkeeping per anchor kind,
 Properties..., and reparenting ("Link to..."). The shapes themselves are
 in annotations.py.
 """
+import logging
+
 import numpy as np
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
 from .annotations import AnnotationItem, TWO_CLICK_KINDS, constrain_extent_vector
 from .console import datatip_text
+
+logger = logging.getLogger('lafigure.annotation_ops')
 
 
 class AnnotationOpsMixin:
@@ -96,8 +100,20 @@ class AnnotationOpsMixin:
         self._placing_kind = kind
         self._placing_state = None
         self._set_placing_cursor(True)
+        logger.debug("annotation placement armed: kind=%s", kind)
 
     def _cancel_placing(self):
+        """Clears any in-progress placement. This is the one method every
+        cancellation path (the Esc shortcut in toolbar.py, a failed 3D
+        cursor hit-test, starting a relink while a placement is pending)
+        calls directly -- but it's ALSO called, as plain cleanup, right
+        after every successful placement (see _handle_placement_click/
+        eventFilter below). Those success sites null self._placing_kind
+        themselves just before calling this, specifically so the log line
+        below only fires for a real cancellation, never for the cleanup
+        after a completed gesture."""
+        if self._placing_kind is not None:
+            logger.debug("annotation placement cancelled: kind=%s", self._placing_kind)
         self._placing_kind = None
         self._placing_state = None
         self._set_placing_cursor(False)
@@ -278,13 +294,14 @@ class AnnotationOpsMixin:
         _on_scene_clicked, which only calls this for non-extent kinds."""
         kind = self._placing_kind
         anchor, parent_plot = self._annotation_zone(scene_pos)
+        logger.debug("annotation placement start: kind=%s anchor=%s", kind, anchor)
         if kind == 'cursor':
             if anchor != 'axes':
                 return  # a data cursor needs a subplot's data axes -- ignore clicks elsewhere
             if getattr(parent_plot, 'axes_type', 'cartesian') == '3d':
                 hit = self._nearest_3d_point(parent_plot, scene_pos)
                 if hit is None:
-                    self._cancel_placing()
+                    self._cancel_placing()  # logs its own "cancelled" record
                     return
                 item, array_idx, (x, y, z), local_pos = hit
                 series = self._series_of(item)
@@ -294,6 +311,8 @@ class AnnotationOpsMixin:
                 text = datatip_text(self, parent_plot, item, array_idx, x, y, z=z)
                 self._create_annotation('cursor', 'axes', parent_plot, local_pos,
                                          None, text=text, point_ref=point_ref)
+                logger.debug("annotation placement completed: kind=cursor anchor=axes pos=%s (3d)", local_pos)
+                self._placing_kind = None  # see _cancel_placing's own docstring
                 self._cancel_placing()
                 return
             data_pos = parent_plot.getViewBox().mapSceneToView(scene_pos)
@@ -312,6 +331,8 @@ class AnnotationOpsMixin:
             text = datatip_text(self, parent_plot, curve, idx, x, y)
             self._create_annotation('cursor', 'axes', parent_plot, QtCore.QPointF(x, y),
                                      None, text=text, point_ref=point_ref)
+            logger.debug("annotation placement completed: kind=cursor anchor=axes pos=(%.6g, %.6g)", x, y)
+            self._placing_kind = None  # see _cancel_placing's own docstring
             self._cancel_placing()
             return
 
@@ -319,6 +340,8 @@ class AnnotationOpsMixin:
               else QtCore.QPointF(scene_pos))
         ann = self._create_annotation(kind, anchor, parent_plot, p0, None,
                                        "Text" if kind == 'text' else '')
+        logger.debug("annotation placement completed: kind=%s anchor=%s p0=%s", kind, anchor, p0)
+        self._placing_kind = None  # see _cancel_placing's own docstring
         self._cancel_placing()
         if kind == 'text':
             ann.start_text_edit(select_all=True)
@@ -347,6 +370,7 @@ class AnnotationOpsMixin:
                 if event.button() != QtCore.Qt.LeftButton:
                     return True
                 anchor, parent_plot = self._annotation_zone(event.scenePos())
+                logger.debug("annotation placement start: kind=%s anchor=%s", self._placing_kind, anchor)
                 p0 = (parent_plot.getViewBox().mapSceneToView(event.scenePos()) if anchor == 'axes'
                       else QtCore.QPointF(event.scenePos()))
                 self._placing_state = {
@@ -377,6 +401,15 @@ class AnnotationOpsMixin:
                 kind = self._placing_kind
                 ann = self._create_annotation(kind, anchor, parent_plot, p0, p1_local,
                                                "Text" if kind == 'textarrow' else '')
+                if p1_local is None:
+                    logger.debug(
+                        "annotation placement completed: kind=%s anchor=%s "
+                        "(negligible drag, default extent)", kind, anchor)
+                else:
+                    logger.debug(
+                        "annotation placement completed: kind=%s anchor=%s p0=%s p1_local=%s",
+                        kind, anchor, p0, p1_local)
+                self._placing_kind = None  # see _cancel_placing's own docstring
                 self._cancel_placing()
                 if kind == 'textarrow':
                     ann.start_text_edit(select_all=True)
