@@ -154,13 +154,27 @@ class Camera:
     Camera, with a `version` counter (bumped by every move, so projections
     can be cached per camera state) and state()/set_state()/fit()."""
 
+    # The 4 named camera-view presets (R4-3D): (elevation, azimuth) that
+    # look straight down the one axis not named -- 'xy' looks down Z (so
+    # the X-Y plane fills the view), 'xz' down Y, 'yz' down X, 'sideway'
+    # is today's isometric default. Checked against camera_position():
+    # elevation=90 puts the camera on +Z; elevation=0/azimuth=0 on +X;
+    # elevation=0/azimuth=90 on +Y (see the worker's own report).
+    VIEW_PRESETS = {
+        'xy': (90.0, 0.0),
+        'xz': (0.0, 90.0),
+        'yz': (0.0, 0.0),
+        'sideway': (30.0, 45.0),
+    }
+
     def __init__(self, center=(0.0, 0.0, 0.0), distance=10.0,
-                 elevation=30.0, azimuth=45.0, fov=60.0):
+                 elevation=30.0, azimuth=45.0, fov=60.0, projection='perspective'):
         self.center = np.array(center, float)
         self.distance = float(distance)
         self.elevation = float(elevation)
         self.azimuth = float(azimuth)
         self.fov = float(fov)
+        self.projection = projection    # 'perspective' (default) or 'orthographic'
         self.version = 0
 
     # --- the camera-update API the cell's mouse handlers call
@@ -188,6 +202,26 @@ class Camera:
         self.distance *= 0.999 ** delta
         self.version += 1
 
+    def dolly_scale(self, factor):
+        """Scale distance by `factor` directly (Zoom Rect mode's drag-a-
+        rectangle zoom on a 3D cell, View3DBox._apply_rect_zoom): factor
+        < 1 zooms in, > 1 zooms out. Unlike wheel(), a plain linear scale
+        -- the caller already derived `factor` from screen-pixel ratios."""
+        self.distance *= float(factor)
+        self.version += 1
+
+    def look_along(self, preset):
+        """Set elevation/azimuth to one of VIEW_PRESETS ('xy'/'xz'/'yz'/
+        'sideway' -- the subplot menu's 4 camera-view entries, R4-3D).
+        center/distance/fov/projection are untouched."""
+        try:
+            elevation, azimuth = self.VIEW_PRESETS[preset]
+        except KeyError:
+            raise ValueError(f"unknown view preset {preset!r}; expected one "
+                             f"of {sorted(self.VIEW_PRESETS)}")
+        self.elevation, self.azimuth = elevation, azimuth
+        self.version += 1
+
     def drag(self, dx, dy, button, width):
         """GLViewWidget.mouseMoveEvent's mapping of a mouse delta (px)."""
         if button == "left":
@@ -197,9 +231,10 @@ class Camera:
 
     # --- state
     def state(self):
-        """Plain floats, comparable with ==: for undo and copy/paste."""
+        """Plain floats/str, comparable with ==: for undo and copy/paste."""
         return {'center': tuple(float(v) for v in self.center), 'distance': self.distance,
-                'elevation': self.elevation, 'azimuth': self.azimuth, 'fov': self.fov}
+                'elevation': self.elevation, 'azimuth': self.azimuth, 'fov': self.fov,
+                'projection': self.projection}
 
     def set_state(self, state):
         self.center = np.array(state['center'], float)
@@ -207,6 +242,8 @@ class Camera:
         self.elevation = float(state['elevation'])
         self.azimuth = float(state['azimuth'])
         self.fov = float(state.get('fov', self.fov))
+        # .get: a state captured before R4-3D added projection still restores.
+        self.projection = state.get('projection', self.projection)
         self.version += 1
 
     def fit(self, lo, hi, elevation=30.0, azimuth=45.0):
@@ -233,6 +270,24 @@ class Camera:
 
     def projection_matrix(self, w, h):
         near, far = self.distance * 0.001, self.distance * 1000.0
+        if self.projection == 'orthographic':
+            # Sized from distance and fov, not near/fov like the perspective
+            # frustum below, so switching projection doesn't jump the
+            # apparent scale of whatever sits at the camera's own focal
+            # distance: half_w is exactly the world half-width the
+            # perspective frustum shows at depth=distance (by similar
+            # triangles from its near-plane r), so a point there projects
+            # to the same screen position either way -- checked directly
+            # against the perspective matrix in the worker's own tests.
+            half_w = max(self.distance * tan(0.5 * radians(self.fov)), 1e-9)
+            half_h = half_w * h / w
+            m = np.zeros((4, 4))
+            m[0, 0] = 1.0 / half_w
+            m[1, 1] = 1.0 / half_h
+            m[2, 2] = -2.0 / (far - near)
+            m[2, 3] = -(far + near) / (far - near)
+            m[3, 3] = 1.0
+            return m
         r = near * tan(0.5 * radians(self.fov))
         t = r * h / w
         left, right, bottom, top = -r, r, -t, t
@@ -764,11 +819,24 @@ class View3DBox(pg.ViewBox):
     turns mouse drags into camera moves. See the module docstring."""
     BOX_COLOR = (0.62, 0.62, 0.62, 1.0)
 
+    # A drag-a-rectangle zoom (Zoom Rect mode) this small never zooms --
+    # treated as a near-click, same spirit as a 2D rect zoom's own
+    # negligible-drag handling elsewhere in the app.
+    MIN_ZOOM_RECT_PX = 4
+
     def __init__(self):
         self._pinned = False
         super().__init__(invertY=True, defaultPadding=0.0, enableMenu=True)
         self.camera = Camera()
         self._auto_fit = True       # refit to the data until the user moves the camera
+        # The figure's current interaction mode ('select'/'hand'/'zoom'/
+        # 'rotate'/'brush'), kept in sync by ViewOpsMixin._apply_view_mouse_mode
+        # (called on every mode change AND on this cell's own construction,
+        # via add_subplot) -- mouseDragEvent reads it to pick orbit vs. a
+        # real rectangle zoom (R4-3D). Harmless default: _mouse_on() already
+        # gates every drag on the mouse-enabled state, which Select/Brush
+        # modes turn off regardless of this attribute.
+        self.interaction_mode = 'select'
         self.render_count = 0
         self.last_backend = None
         self._proj_cache = weakref.WeakKeyDictionary()   # item -> (key, (sx, sy, front))
@@ -834,6 +902,19 @@ class View3DBox(pg.ViewBox):
         self._auto_fit = False
         self.request_render()
 
+    def set_view_preset(self, preset):
+        """The subplot menu's 4 camera-view entries (R4-3D)."""
+        self.camera.look_along(preset)
+        self.camera_changed()
+
+    def set_projection(self, projection):
+        """The subplot menu's Projection submenu (R4-3D)."""
+        if projection not in ('perspective', 'orthographic'):
+            raise ValueError(f"unknown projection {projection!r}")
+        self.camera.projection = projection
+        self.camera.version += 1
+        self.camera_changed()
+
     def _items3d(self, visible_only=True):
         return [it for it in self._series_items if it.isVisible() or not visible_only]
 
@@ -878,6 +959,13 @@ class View3DBox(pg.ViewBox):
         ev.accept()
         if not self._mouse_on():
             return
+        # Zoom Rect mode (R4-3D): a left-drag draws a rectangle and zooms
+        # into it on release, instead of orbiting -- every other mode
+        # (Hand, Rotate + Zoom) keeps exactly the orbit/pan/dolly behavior
+        # below, unchanged.
+        if self.interaction_mode == 'zoom' and ev.button() == QtCore.Qt.LeftButton:
+            self._zoom_rect_drag(ev)
+            return
         d = ev.pos() - ev.lastPos()
         dx, dy = d.x(), d.y()
         button = ev.button()
@@ -890,6 +978,34 @@ class View3DBox(pg.ViewBox):
             self.camera.wheel(-4.0 * dy)
         else:
             return
+        self.camera_changed()
+
+    def _zoom_rect_drag(self, ev):
+        """Draw pyqtgraph's own rbScaleBox (styled light gray by
+        ViewOpsMixin._apply_view_mouse_mode, same as the 2D Zoom Rect box --
+        CLAUDE.md bug #8) while dragging; on release, zoom the camera into
+        the rectangle. ev.pos()/ev.buttonDownPos() are already in this
+        cell's own pinned pixel space (0, 0)-(w, h) -- the same frame
+        mouseDragEvent's orbit/pan math above already uses directly."""
+        p1, p2 = ev.buttonDownPos(QtCore.Qt.LeftButton), ev.pos()
+        if ev.isFinish():
+            self.rbScaleBox.hide()
+            self._apply_rect_zoom(QtCore.QRectF(p1, p2).normalized())
+        else:
+            self.updateScaleBox(p1, p2)
+
+    def _apply_rect_zoom(self, rect):
+        """Pan the camera so the rect's center becomes the view center,
+        then scale distance by the smaller of the two axis ratios (rect
+        size / view size) so nothing inside the rect is cut off. A
+        negligible drag (effectively a click) changes nothing."""
+        w, h = self._view_size()
+        if rect.width() < self.MIN_ZOOM_RECT_PX or rect.height() < self.MIN_ZOOM_RECT_PX:
+            return
+        center = rect.center()
+        self.camera.pan(w / 2.0 - center.x(), h / 2.0 - center.y(), 0.0, w)
+        ratio = min(rect.width() / w, rect.height() / h)
+        self.camera.dolly_scale(ratio)
         self.camera_changed()
 
     def wheelEvent(self, ev, axis=None):

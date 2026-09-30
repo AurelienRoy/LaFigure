@@ -23,11 +23,14 @@
 # POSSIBILITY OF SUCH DAMAGE.
 
 """View state and per-subplot data actions: interaction mode
-(Select/Hand/Zoom Rect/Brush), Home / Fit Vertical / Fit Horizontal,
-legend (show/hide, select, move), view history (every zoom/pan gesture is
-one undo entry), Link X, Remove Average, FFT -> subplot below.
+(Select/Hand/Zoom Rect/Rotate + Zoom/Brush), Home / Fit Vertical / Fit
+Horizontal, legend (show/hide, select, move), view history (every zoom/pan
+gesture is one undo entry), Link X, Remove Average, FFT -> subplot below,
+axis Scale (X/Y linear/log), and the 3D-only camera actions (view presets,
+projection) a 3D subplot's right-click menu (menus.py) calls into.
 """
 import logging
+import math
 
 import numpy as np
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
@@ -37,6 +40,7 @@ from .datasource import DataSource
 from .editable_text import wire_legend_editable
 from .selection_ui import selection_op
 from .transform import Transform, transform_applies
+from .view3d import View3DBox
 
 logger = logging.getLogger('lafigure.view_ops')
 
@@ -71,6 +75,40 @@ def _zoom_cursor():
         # zoomed into, same convention as a real magnifier cursor.
         _ZOOM_CURSOR = QtGui.QCursor(pix, cx, cy)
     return _ZOOM_CURSOR
+
+
+_ROTATE_CURSOR = None
+
+
+def _rotate_cursor():
+    """Rotate + Zoom mode's cursor: a circular orbit arrow, same drawn-
+    cursor technique as _zoom_cursor (Qt has no built-in shape for this
+    either), cached once."""
+    global _ROTATE_CURSOR
+    if _ROTATE_CURSOR is None:
+        size = 24
+        pix = QtGui.QPixmap(size, size)
+        pix.fill(QtCore.Qt.transparent)
+        painter = QtGui.QPainter(pix)
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        painter.setPen(QtGui.QPen(QtGui.QColor(40, 40, 40), 1.8))
+        cx, cy, r = 12, 12, 8
+        rect = QtCore.QRectF(cx - r, cy - r, 2 * r, 2 * r)
+        # A near-full circle (Qt angles: 1/16th of a degree, counterclockwise
+        # from 3 o'clock), leaving a gap where the arrowhead sits.
+        start_deg = 20.0
+        painter.drawArc(rect, int(start_deg * 16), int(290 * 16))
+        # Arrowhead at the arc's start point, pointing along the tangent
+        # there (the direction the arc continues in, i.e. of travel).
+        a = math.radians(start_deg)
+        tip = QtCore.QPointF(cx + r * math.cos(a), cy - r * math.sin(a))
+        tangent = a + math.pi / 2
+        for da in (0.5, -0.5):
+            wing = tip - QtCore.QPointF(6 * math.cos(tangent + da), -6 * math.sin(tangent + da))
+            painter.drawLine(tip, wing)
+        painter.end()
+        _ROTATE_CURSOR = QtGui.QCursor(pix, cx, cy)
+    return _ROTATE_CURSOR
 
 
 _ZOOM_DRAG_CURSOR = None
@@ -141,6 +179,8 @@ class ViewOpsMixin:
             return QtCore.Qt.OpenHandCursor
         if mode == 'zoom':
             return _zoom_cursor()
+        if mode == 'rotate':
+            return _rotate_cursor()
         if mode == 'brush':
             return QtCore.Qt.CrossCursor
         return QtCore.Qt.ArrowCursor
@@ -148,14 +188,24 @@ class ViewOpsMixin:
     def _apply_view_mouse_mode(self, vb):
         """Set a ViewBox's pan/rect mouse mode from self.interaction_mode,
         and style Zoom Rect's drag rectangle light gray instead of
-        pyqtgraph's yellow.
+        pyqtgraph's yellow. Also the one place that tells a 3D cell
+        (View3DBox) the figure's current mode (R4-3D) -- called on every
+        mode change AND on that cell's own construction (add_subplot),
+        exactly like _apply_mouse_enabled below, so a 3D cell created
+        while already in Zoom Rect mode gets rect-zoom immediately too.
 
-        The styling must follow every setMouseMode: pyqtgraph's
+        The rbScaleBox styling must follow every setMouseMode: pyqtgraph's
         setMouseMode(PanMode) drops its rbScaleBox, and the next access
         lazily builds a fresh, yellow one -- so a box styled once at
         subplot creation (the first version of this) never survived to the
         first zoom drag. Styled only in RectMode: touching rbScaleBox in
-        PanMode would just build a box that the next setMouseMode drops."""
+        PanMode would just build a box that the next setMouseMode drops.
+        A 3D cell's own View3DBox.mouseDragEvent draws through this same
+        rbScaleBox in Zoom Rect mode (view3d.py), so it gets this styling
+        for free -- setMouseMode itself is otherwise a no-op there (the
+        cell never consults state['mouseMode'])."""
+        if isinstance(vb, View3DBox):
+            vb.interaction_mode = self.interaction_mode
         if self.interaction_mode == 'zoom':
             vb.setMouseMode(pg.ViewBox.RectMode)
             vb.rbScaleBox.setPen(pg.mkPen((140, 140, 140), width=1))
@@ -165,10 +215,17 @@ class ViewOpsMixin:
 
     @selection_op
     def set_interaction_mode(self, mode):
-        """The four exclusive toolbar modes.
+        """The five exclusive toolbar modes.
         'select': click-to-select + move/resize handles, dragging inside
         a subplot does nothing (freed up for the handles).
-        'hand': plain pan, no selection. 'zoom': drag-to-zoom, no selection.
+        'hand': plain pan, no selection. 'zoom': drag-to-zoom (a real
+        rectangle zoom on a 3D cell too, R4-3D), no selection.
+        'rotate': "Rotate + Zoom" (R4-3D) -- a 3D cell's own orbit/pan/
+        dolly camera controls (today's default 3D behavior, moved under
+        its own mode); a no-op on a 2D subplot, same as 'hand' there.
+        Enabled only while a 3D subplot is focused (_update_rotate_action_
+        enabled, below) and switches back to 'zoom' the moment focus
+        leaves every 3D subplot.
         'brush': rectangular data brushing (brushing.py), no selection, no
         pan. Brush used to be a separate on/off toggle stacked on the other
         modes; it's exclusive since 2026-09-29 (user request) -- it already
@@ -200,11 +257,40 @@ class ViewOpsMixin:
 
     def _sync_mode_actions(self):
         """Keep the toolbar's exclusive mode buttons in step with a mode set
-        from code (toggle_brush, tests, the API), not just from a click."""
+        from code (toggle_brush, tests, the API), not just from a click.
+        self.rotate_action doesn't exist unless toolbar.py's reported diff
+        has been applied (or a test attaches one directly) -- getattr's
+        default keeps this a no-op either way, same as every other action
+        here would be if toolbar.py somehow hadn't built it."""
         action = getattr(self, {'select': 'select_action', 'hand': 'hand_action',
-                                'zoom': 'zoom_action', 'brush': 'brush_action'}[self.interaction_mode], None)
+                                'zoom': 'zoom_action', 'brush': 'brush_action',
+                                'rotate': 'rotate_action'}[self.interaction_mode], None)
         if action is not None and not action.isChecked():
             action.setChecked(True)
+
+    def _update_rotate_action_enabled(self):
+        """Rotate + Zoom is enabled only while a 3D subplot is focused
+        (R4-3D). Connected to registry.focusChanged in _install_view_history
+        below, since focused_plot's setter (selection_ui.py) is the one
+        emission site -- and called once there too, so a figure whose
+        first focus never actually changes (e.g. nothing focused yet)
+        still starts with the correct (disabled) state.
+
+        If leaving 'rotate' mode's only valid target (focus moves to a 2D
+        subplot, or to nothing) the mode itself falls back to 'zoom' --
+        the user's own explicit rule, not just disabling the button."""
+        action = getattr(self, 'rotate_action', None)
+        if action is None:
+            return
+        p = self.focused_plot
+        is_3d = p is not None and getattr(p, 'axes_type', 'cartesian') == '3d'
+        action.setEnabled(is_3d)
+        if not is_3d and self.interaction_mode == 'rotate':
+            self.set_interaction_mode('zoom')
+
+    def _on_focus_changed_for_rotate_mode(self, fig, plot_item):
+        if fig is self:
+            self._update_rotate_action_enabled()
 
     # -- Home / Fit Vertical / Fit Horizontal ------------------------------
     def reset_view(self):
@@ -433,6 +519,14 @@ class ViewOpsMixin:
         self._right_drag = None     # Zoom Rect right-drag: {'pos', 'active'}
         self._view_history_filter = _ViewHistoryFilter(self)
         self.layout_widget.scene().installEventFilter(self._view_history_filter)
+        # R4-3D: Rotate + Zoom's enabled state tracks focus. Connected here
+        # (a per-instance setup method this mixin already owns, run once
+        # from __init__) rather than in figure.py, which view_ops.py
+        # doesn't own -- self.registry is a process-wide singleton, so the
+        # handler filters to this figure itself, same pattern axes.py's
+        # module-level gcf() tracker uses for a wider (all-figures) signal.
+        self.registry.focusChanged.connect(self._on_focus_changed_for_rotate_mode)
+        self._update_rotate_action_enabled()
 
     def _view_snapshot(self):
         snap = {}
@@ -602,7 +696,9 @@ class ViewOpsMixin:
 
     def _apply_mouse_enabled(self, vb):
         """The only writer of a ViewBox's mouse-enabled state: Select and
-        Brush modes both disable pan (and the wheel)."""
+        Brush modes both disable pan (and the wheel). 'rotate' (R4-3D)
+        needs no extra case here -- it behaves like 'hand'/'zoom' (mouse
+        stays on) already, simply by not being 'select' or 'brush'."""
         enabled = self.interaction_mode not in ('select', 'brush')
         vb.setMouseEnabled(x=enabled, y=enabled)
 
@@ -622,3 +718,42 @@ class ViewOpsMixin:
     def toggle_link_x(self, checked):
         self.linked_x = checked
         self._apply_link_x()
+
+    # -- axis Scale (X/Y linear/log), and the 3D-only camera menu actions --
+    # (R4-3D; the subplot menu itself, incl. hiding these for a 2D/3D
+    # subplot respectively, is menus.py's _wire_context_menu)
+    def set_axis_scale(self, plot_item, axis, log):
+        """Undoable X/Y linear<->log toggle (the subplot menu's "Scale"
+        submenu; hidden for a 3D subplot there). A menu action, not a
+        mouse gesture, so it goes through the plain undo stack
+        (_push_history) like Remove Average/FFT -- not the view-history
+        gesture mechanism above, which is press/move/release-driven."""
+        ctrl = plot_item.ctrl
+        check = ctrl.logXCheck if axis == 'x' else ctrl.logYCheck
+        old = check.isChecked()
+        if old == log:
+            return
+
+        def apply(value):
+            if axis == 'x':
+                plot_item.setLogMode(x=value)
+            else:
+                plot_item.setLogMode(y=value)
+
+        apply(log)
+        self._push_history(lambda: apply(old), lambda: apply(log))
+
+    def _set_3d_view_preset(self, plot_item, preset):
+        """One of the subplot menu's 4 camera-view entries (only shown
+        while 'rotate' mode is active, menus.py). Undoable through the
+        same view-history mechanism Home/Fit/View All use -- the camera
+        state is already part of _view_snapshot for a 3D cell."""
+        vb = plot_item.getViewBox()
+        self._undoable_view_change(lambda: vb.set_view_preset(preset))
+
+    def _set_3d_projection(self, plot_item, projection):
+        """The subplot menu's Projection submenu (Perspective/
+        Orthographic), always shown for a 3D subplot. Same undo mechanism
+        as _set_3d_view_preset above."""
+        vb = plot_item.getViewBox()
+        self._undoable_view_change(lambda: vb.set_projection(projection))

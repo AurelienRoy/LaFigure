@@ -118,10 +118,60 @@ class MenusMixin:
         menu.addAction("Send Subplot to Back").triggered.connect(
             bound(lambda: self.send_to_back(plot_item)))
         menu.addAction("Toggle Legend").triggered.connect(bound(self.toggle_legend))
+
+        # R4-3D: a 3D subplot gets 4 camera-view presets (shown only while
+        # Rotate + Zoom mode is active) and a Projection submenu (always);
+        # a 2D subplot gets an axis "Scale" submenu instead -- mutually
+        # exclusive, since one is about the camera and the other about
+        # axes a 3D cell doesn't have (view3d.py: its view is its own
+        # rendered pixels, not data-scaled axes).
+        is_3d = getattr(plot_item, 'axes_type', 'cartesian') == '3d'
+        scale_menu = x_linear = x_log = y_linear = y_log = None
+        view_preset_menu = None
+        projection_actions = {}
+        if not is_3d:
+            scale_menu = menu.addMenu("Scale")
+            x_group = QtWidgets.QActionGroup(scale_menu)
+            x_linear = scale_menu.addAction("X: Linear")
+            x_linear.setCheckable(True)
+            x_group.addAction(x_linear)
+            x_log = scale_menu.addAction("X: Log")
+            x_log.setCheckable(True)
+            x_group.addAction(x_log)
+            scale_menu.addSeparator()
+            y_group = QtWidgets.QActionGroup(scale_menu)
+            y_linear = scale_menu.addAction("Y: Linear")
+            y_linear.setCheckable(True)
+            y_group.addAction(y_linear)
+            y_log = scale_menu.addAction("Y: Log")
+            y_log.setCheckable(True)
+            y_group.addAction(y_log)
+            x_linear.triggered.connect(bound(lambda: self.set_axis_scale(plot_item, 'x', False)))
+            x_log.triggered.connect(bound(lambda: self.set_axis_scale(plot_item, 'x', True)))
+            y_linear.triggered.connect(bound(lambda: self.set_axis_scale(plot_item, 'y', False)))
+            y_log.triggered.connect(bound(lambda: self.set_axis_scale(plot_item, 'y', True)))
+        else:
+            view_preset_menu = menu.addMenu("Camera View")
+            for label, preset in (("X-Y", 'xy'), ("X-Z", 'xz'), ("Y-Z", 'yz'), ("Sideway", 'sideway')):
+                view_preset_menu.addAction(label).triggered.connect(
+                    bound(lambda preset=preset: self._set_3d_view_preset(plot_item, preset)))
+            projection_menu = menu.addMenu("Projection")
+            proj_group = QtWidgets.QActionGroup(projection_menu)
+            for label, proj in (("Perspective", 'perspective'), ("Orthographic", 'orthographic')):
+                act = projection_menu.addAction(label)
+                act.setCheckable(True)
+                proj_group.addAction(act)
+                act.triggered.connect(bound(lambda proj=proj: self._set_3d_projection(plot_item, proj)))
+                projection_actions[proj] = act
+
         menu.addAction("Reorder Curves...").triggered.connect(
             bound(lambda: self.open_curve_browser(plot_item)))
         menu.addAction("Remove Average").triggered.connect(bound(self.remove_average))
-        menu.addAction("FFT -> Subplot Below").triggered.connect(bound(self.fft_below))
+        # No FFT on a 3D subplot (R4-3D) -- hidden, not removed, in
+        # on_about_to_show below, same pattern as every other live-state
+        # action on this menu.
+        fft_action = menu.addAction("FFT -> Subplot Below")
+        fft_action.triggered.connect(bound(self.fft_below))
         menu.addAction("Export to CSV...").triggered.connect(
             bound(lambda: self._prompt_export_csv(plot_item))
         )
@@ -192,6 +242,19 @@ class MenusMixin:
             rebuild_curve_menus()
             update_brush_actions()
             prune_pyqtgraph_export()
+            fft_action.setVisible(not is_3d)
+            if scale_menu is not None:
+                x_is_log = plot_item.ctrl.logXCheck.isChecked()
+                y_is_log = plot_item.ctrl.logYCheck.isChecked()
+                x_linear.setChecked(not x_is_log)
+                x_log.setChecked(x_is_log)
+                y_linear.setChecked(not y_is_log)
+                y_log.setChecked(y_is_log)
+            if view_preset_menu is not None:
+                # The 4 presets only while Rotate + Zoom mode is active
+                # (the user's own wording); Projection stays always visible.
+                view_preset_menu.menuAction().setVisible(self.interaction_mode == 'rotate')
+                projection_actions[plot_item.getViewBox().camera.projection].setChecked(True)
 
         menu.aboutToShow.connect(on_about_to_show)
 
