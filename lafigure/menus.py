@@ -41,7 +41,7 @@ from pyqtgraph.Qt import QtGui, QtWidgets
 import pyqtgraph as pg
 
 from .curve_style import (LINE_STYLES, LINE_WIDTHS, MARKERS, MARKER_SIZES,
-                          has_current_line, line_capable, marker_options_apply, pen_style_of)
+                          has_current_line, has_fill, line_capable, marker_options_apply, pen_style_of)
 from .transform import transform_applies
 
 
@@ -55,6 +55,17 @@ def _marker_color(state):
     if pen is not None:
         return pg.mkPen(pen).color()
     return QtGui.QColor('black')
+
+
+def _fill_opacity_pct(state):
+    """The fill brush's current opacity as a 0-100 percent, rounded to the
+    nearest Surface Opacity submenu entry -- None if there's no fill at
+    all (the submenu is disabled in that case, so nothing needs to read
+    this value)."""
+    brush = state.get('fillBrush')
+    if brush is None:
+        return None
+    return round(pg.mkBrush(brush).color().alpha() / 255 * 100)
 
 
 def _menu_header(menu, text, before=None):
@@ -399,6 +410,27 @@ class MenusMixin:
         marker_color_action.setEnabled(has_marker and state['symbol'] is not None)
         marker_color_action.triggered.connect(pick_marker_color)
         menu.addSeparator()
+
+        # Area-kind surface styling (R4-STYLE, 2026-09-30): gated on the
+        # item's OWN current fillBrush (has_fill), not a hardcoded kind
+        # list -- see curve_style.has_fill's own docstring (CLAUDE.md
+        # bug #16). Today only 'area' sets one. Unlike the Line/Marker
+        # groups above (always present, conditionally enabled), these are
+        # genuinely ABSENT for a non-filling kind -- a plain line series
+        # has no "surface" concept at all, so there's nothing to greet
+        # with a grayed-out entry.
+        if has_fill(curve):
+            def pick_fill_color():
+                brush = state.get('fillBrush')
+                default = pg.mkBrush(brush).color() if brush is not None else QtGui.QColor('blue')
+                color = QtWidgets.QColorDialog.getColor(default, self, "Surface Color")
+                if color.isValid():
+                    self.set_curve_fill_color(targets, (color.red(), color.green(), color.blue()))
+
+            menu.addAction("Surface Color...").triggered.connect(pick_fill_color)
+            choices("Surface Opacity", [(f"{p}%", p) for p in (0, 10, 25, 50, 75, 100)],
+                    _fill_opacity_pct(state), self.set_curve_fill_opacity)
+            menu.addSeparator()
 
         # Per curve, like the popup it opens (transform.py): the clicked
         # curve only, never the wider curve selection.

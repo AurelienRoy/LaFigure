@@ -64,6 +64,7 @@ import pyqtgraph as pg
 from .handles import AnnotationHandle
 from . import editable_text
 from .richtext import to_html
+from .curve_style import LINE_STYLES, LINE_WIDTHS, pen_style_of
 
 SHAPE_KINDS = ('rect', 'ellipse', 'line', 'arrow', 'doublearrow', 'text', 'textarrow', 'cursor')
 
@@ -99,6 +100,35 @@ NO_ROTATE_KINDS = ('cursor', 'line', 'arrow', 'doublearrow', 'textarrow')
 # joins these (2026-09-29): its p0->p1_local segment (marker -> label) is
 # exactly the same shape, so the same scene-space math applies unchanged.
 ORIENTED_OUTLINE_KINDS = ('line', 'arrow', 'doublearrow', 'textarrow', 'cursor')
+
+# Kinds whose paint() actually draws a filled arrowhead via _draw_arrowhead
+# -- gates the right-click menu's "Arrow Style..." entry (PLAN.md round 4,
+# R4-STYLE). 'cursor' has a p0->p1_local line+label too (see
+# ORIENTED_OUTLINE_KINDS above), but its own paint() branch never calls
+# _draw_arrowhead (just a dot marker + a text bubble), so it's deliberately
+# excluded here even though the roadmap wording ("cursor if it draws one")
+# allows for it -- it doesn't, today.
+ARROW_HEAD_KINDS = ('arrow', 'doublearrow', 'textarrow')
+
+# Kinds whose paint() strokes a real line/outline with self.pen -- 'text'
+# is the one shape with nothing of its own to stroke (only its child
+# QGraphicsTextItem renders), so the annotation menu's Line Style/Line
+# Width entries are grayed there; Color... still applies everywhere (it
+# also recolors the text itself, same as the old Properties... dialog did).
+STROKE_KINDS = tuple(k for k in SHAPE_KINDS if k != 'text')
+
+# Arrowhead shapes an annotation's head_type can be -- 'arrow' (today's
+# pointy triangle) is the default/legacy look; 'none' draws nothing.
+ARROW_HEAD_TYPES = ('arrow', 'round', 'diamond', 'none')
+
+# Module-level (not just AnnotationItem class attributes, see below) so
+# arrow_style.py can import them without an instance -- the "no explicit
+# head style given" defaults for a new annotation. Chosen to match the
+# old fixed-geometry triangle this feature replaced (10px sides at a
+# pi/7 half-angle: length = 10*cos(pi/7), width = 2*10*sin(pi/7)).
+ARROWHEAD_PX_DEFAULT = 10
+DEFAULT_HEAD_WIDTH_PX = 8.7
+DEFAULT_HEAD_TYPE = 'arrow'
 
 SUBPLOT_FILIATION_COLOR = QtGui.QColor(220, 40, 40)
 FIGURE_FILIATION_COLOR = QtGui.QColor(120, 120, 120)
@@ -172,6 +202,47 @@ def constrain_extent_vector(kind, vec, step_deg=45):
     return _snap_vector_angle(vec, step_deg)
 
 
+def arrowhead_polygon_points(tip, tail, head_length, head_width, head_type):
+    """Pure geometry: the filled arrowhead polygon (a list of QPointF, in
+    whatever flat 2-D coordinate space `tip`/`tail` are given) pointing
+    from `tail` toward `tip` -- `[]` for head_type == 'none' or a
+    degenerate (zero-length) tip==tail segment.
+
+    Shared by AnnotationItem._draw_arrowhead (called in SCENE space, then
+    mapped back to local coordinates -- see that method's own docstring
+    and the lafigure-axes-geometry skill) and arrow_style.
+    ArrowPreviewWidget (called directly in widget/device pixels, which
+    already IS a flat, undistorted 2-D space -- no mapping needed there).
+
+    'arrow' (the default/legacy look): a triangle, head_length back along
+    the shaft, head_width wide at the back.
+    'round': a filled circle of radius head_width/2, its edge touching the
+    tip (so head_length doesn't apply -- a circle has no "back corners").
+    'diamond': a 4-point kite (tip, two side points at half head_length,
+    and a back point at head_length)."""
+    if head_type == 'none':
+        return []
+    vec = tip - tail
+    length = math.hypot(vec.x(), vec.y())
+    if length == 0:
+        return []
+    u = QtCore.QPointF(vec.x() / length, vec.y() / length)
+    perp = QtCore.QPointF(-u.y(), u.x())
+    half_w = head_width / 2.0
+    if head_type == 'round':
+        center = tip - u * half_w
+        n = 16
+        return [center + u * (half_w * math.cos(t)) + perp * (half_w * math.sin(t))
+                for t in (2 * math.pi * i / n for i in range(n))]
+    if head_type == 'diamond':
+        back = tip - u * head_length
+        mid = tip - u * (head_length / 2.0)
+        return [tip, mid + perp * half_w, back, mid - perp * half_w]
+    # 'arrow': today's pointy triangle, the only shape before this feature.
+    back = tip - u * head_length
+    return [tip, back + perp * half_w, back - perp * half_w]
+
+
 class AnnotationItem(QtWidgets.QGraphicsObject):
     """One annotation. `kind` selects both its geometry (self.p1_local,
     relative to self.pos() == p0) and how paint() renders it.
@@ -215,7 +286,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     # so the opaque handle box doesn't mask the text.
     END_HANDLE_PULLBACK = 0.7
 
-    def __init__(self, figure, kind, anchor, parent_plot, pen, brush=None, text='', point_ref=None):
+    def __init__(self, figure, kind, anchor, parent_plot, pen, brush=None, text='', point_ref=None,
+                 head_length=None, head_width=None, head_type=None):
         super().__init__()
         self._text_item = None
         self._font_set = False  # a Font... choice was made: serialize it
@@ -241,6 +313,13 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         self.point_ref = point_ref
         # Offset from parent subplot's top-left, in scene px; only used for anchor=='border'.
         self.anchor_offset = QtCore.QPointF(0, 0)
+        # Per-instance arrowhead style (ARROW_HEAD_KINDS only; harmless on
+        # every other kind) -- user preference, set via arrow_style.
+        # ArrowStyleDialog, serialized by to_dict/from_dict so copy/paste
+        # and undo keep it. None here means "use today's default look".
+        self.head_length = self.ARROWHEAD_PX if head_length is None else float(head_length)
+        self.head_width = self.DEFAULT_HEAD_WIDTH_PX if head_width is None else float(head_width)
+        self.head_type = self.DEFAULT_HEAD_TYPE if head_type is None else head_type
 
         self._group_drag = None            # [(annotation, origin_pos, start_pt)] while dragging
         self._group_drag_origin_scene = None  # press point, for the Shift move constraint
@@ -716,30 +795,35 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             path = sub if path.isEmpty() else path.united(sub)
         return path
 
-    ARROWHEAD_PX = 10  # a literal on-screen pixel size -- see _draw_arrowhead
+    # Class-level defaults for a NEW annotation with no explicit head
+    # style (see __init__) -- the module-level ARROWHEAD_PX_DEFAULT/
+    # DEFAULT_HEAD_WIDTH_PX/DEFAULT_HEAD_TYPE above, exposed here too
+    # under ARROWHEAD_PX's old name (it fed _draw_arrowhead directly
+    # before this class carried per-instance head_length/head_width/
+    # head_type).
+    ARROWHEAD_PX = ARROWHEAD_PX_DEFAULT
+    DEFAULT_HEAD_WIDTH_PX = DEFAULT_HEAD_WIDTH_PX
+    DEFAULT_HEAD_TYPE = DEFAULT_HEAD_TYPE
 
     def _draw_arrowhead(self, painter, tip, tail):
-        """Draw a filled triangular arrowhead at `tip` (local coords),
-        pointing away from `tail` -- shared by 'arrow' (one head) and
-        'doublearrow' (two).
+        """Draw the filled arrowhead at `tip` (local coords), pointing away
+        from `tail` -- shared by 'arrow' (one head), 'doublearrow' (two)
+        and 'textarrow' (one). Shaped by self.head_length/head_width/
+        head_type (see arrow_style.ArrowStyleDialog).
 
-        Built in SCENE (screen-pixel) space, not local space: for an
-        'axes'-anchored annotation, local units are DATA units, and a
-        rotation computed and applied purely in data space is only
-        shape-preserving on screen when the subplot's X/Y data-per-pixel
-        ratio is 1:1 -- otherwise the triangle comes out visibly skewed
-        (see CLAUDE.md). `tip` itself is kept exact (no scene round-trip)
-        so the arrowhead stays attached exactly at the line's endpoint;
-        only the two back corners go through the scene<->local mapping."""
+        Built in SCENE (screen-pixel) space via arrowhead_polygon_points,
+        then mapped back to local coordinates -- for an 'axes'-anchored
+        annotation, local units are DATA units, and geometry computed
+        purely in data space is only shape-preserving on screen when the
+        subplot's X/Y data-per-pixel ratio is 1:1 -- otherwise the head
+        comes out visibly skewed (see the lafigure-axes-geometry skill)."""
         tip_scene = self.mapToScene(tip)
         tail_scene = self.mapToScene(tail)
-        angle = math.atan2(tip_scene.y() - tail_scene.y(), tip_scene.x() - tail_scene.x())
-        spread = math.pi / 7
-        size = self.ARROWHEAD_PX
-        p1_scene = tip_scene - QtCore.QPointF(size * math.cos(angle - spread), size * math.sin(angle - spread))
-        p2_scene = tip_scene - QtCore.QPointF(size * math.cos(angle + spread), size * math.sin(angle + spread))
-        poly = QtGui.QPolygonF([tip, self.mapFromScene(p1_scene), self.mapFromScene(p2_scene)])
-        painter.drawPolygon(poly)
+        pts_scene = arrowhead_polygon_points(tip_scene, tail_scene,
+                                             self.head_length, self.head_width, self.head_type)
+        if not pts_scene:
+            return
+        painter.drawPolygon(QtGui.QPolygonF([self.mapFromScene(p) for p in pts_scene]))
 
     # -- selection / handles ------------------------------------------
     def set_selected(self, selected):
@@ -1172,6 +1256,9 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             'rotation': self._angle,  # on-screen degrees -- see screen_rotation()
             'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
             'font': self.font_spec() if self._font_set else None,
+            'head_length': self.head_length,
+            'head_width': self.head_width,
+            'head_type': self.head_type,
         }
 
     @classmethod
@@ -1191,6 +1278,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             figure, data['kind'], data['anchor'], parent_plot,
             pen=_pen_from_tuple(data['pen']), brush=_brush_from_tuple(data['brush']),
             text=data.get('text', ''), point_ref=data.get('point_ref'),
+            head_length=data.get('head_length'), head_width=data.get('head_width'),
+            head_type=data.get('head_type'),
         )
         if data['p1_local'] is not None:
             ann.p1_local = QtCore.QPointF(*data['p1_local'])
@@ -1265,6 +1354,11 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     def contextMenuEvent(self, ev):
         if self not in self.figure.selected_annotations:  # right-click inside the selection keeps it
             self.figure._select_annotation(self)
+        fig = self.figure
+        # Every style edit acts on the whole annotation selection if this
+        # one is part of it (same rule the rest of this menu already
+        # follows for Copy/Delete/Link to...), as ONE undo entry.
+        targets = list(fig.selected_annotations) if self in fig.selected_annotations else [self]
         menu = QtWidgets.QMenu()
         menu.addAction("Copy Annotation").triggered.connect(lambda: self.figure.copy_annotation())
         paste_action = menu.addAction("Paste Annotation")
@@ -1275,7 +1369,56 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             menu.addAction("Edit Text").triggered.connect(lambda: self.start_text_edit())
             menu.addAction("Font...").triggered.connect(
                 lambda: editable_text.edit_font(*self._font_menu_targets()))
-        menu.addAction("Properties...").triggered.connect(lambda: self.figure._edit_annotation_properties(self))
+            menu.addSeparator()
+
+        # Replaces the old single "Properties..." dialog chain (2026-09-30,
+        # R4-STYLE) with direct entries, mirroring the curve menu's own
+        # Line Style/Line Width/Line Color submenus (menus.py) -- same
+        # LINE_STYLES/LINE_WIDTHS constants, same "choices" pattern.
+        has_stroke = self.kind in STROKE_KINDS
+
+        def choices(title, entries, current, setter, enabled=True):
+            sub_menu = menu.addMenu(title)
+            sub_menu.setEnabled(enabled)
+            group = QtWidgets.QActionGroup(sub_menu)
+            for text, value in entries:
+                act = sub_menu.addAction(text)
+                act.setCheckable(True)
+                act.setChecked(value == current)
+                group.addAction(act)
+                act.triggered.connect(lambda checked=False, v=value: setter(targets, v))
+            return sub_menu
+
+        choices("Line Style", [(f"{text}  ({code})" if code != 'none' else text, code)
+                               for text, code, _ in LINE_STYLES],
+                pen_style_of(self.pen), fig.set_annotation_line_style, has_stroke)
+        choices("Line Width", [(f"{w:g}", w) for w in LINE_WIDTHS], self.pen.widthF(),
+                fig.set_annotation_line_width, has_stroke)
+
+        def pick_color():
+            color = QtWidgets.QColorDialog.getColor(self.pen.color(), None, "Color")
+            if color.isValid():
+                fig.set_annotation_color(targets, (color.red(), color.green(), color.blue()))
+
+        menu.addAction("Color...").triggered.connect(pick_color)
+
+        if self.kind in ('rect', 'ellipse'):
+            def pick_fill():
+                default = (self.brush.color() if self.brush is not None else
+                           QtGui.QColor(self.pen.color().red(), self.pen.color().green(),
+                                        self.pen.color().blue(), 60))
+                color = QtWidgets.QColorDialog.getColor(
+                    default, None, "Fill Color", QtWidgets.QColorDialog.ShowAlphaChannel)
+                if color.isValid():
+                    fig.set_annotation_fill(targets, pg.mkBrush(color))
+
+            menu.addAction("Fill...").triggered.connect(pick_fill)
+
+        if self.kind in ARROW_HEAD_KINDS:
+            menu.addAction("Arrow Style...").triggered.connect(
+                lambda: fig.open_arrow_style_dialog(self))
+
+        menu.addSeparator()
         if self.figure._relink_source is self:
             menu.addAction("Cancel Link").triggered.connect(self.figure._cancel_relink)
         else:

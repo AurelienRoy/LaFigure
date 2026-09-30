@@ -33,8 +33,11 @@ import numpy as np
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 import pyqtgraph as pg
 
-from .annotations import AnnotationItem, TWO_CLICK_KINDS, constrain_extent_vector
+from .annotations import (AnnotationItem, TWO_CLICK_KINDS, ARROW_HEAD_KINDS, STROKE_KINDS,
+                          constrain_extent_vector)
 from .console import datatip_text
+from .curve_style import LINE_STYLES
+from .arrow_style import ArrowStyleDialog, default_head_style
 
 logger = logging.getLogger('lafigure.annotation_ops')
 
@@ -422,8 +425,18 @@ class AnnotationOpsMixin:
     def _create_annotation(self, kind, anchor, parent_plot, p0, p1_local, text='', point_ref=None):
         pen = pg.mkPen('k', width=2)
         pen.setCosmetic(True)
+        # A brand-new arrow-family annotation starts from the user's own
+        # persisted Arrow Style preference (arrow_style.default_head_style),
+        # not always today's fixed look -- "defaults carry across
+        # sessions" (PLAN.md round 4, R4-STYLE). An existing annotation's
+        # own current style is untouched by this (it's per-instance state,
+        # only ever changed by its own Arrow Style... dialog).
+        head_kwargs = {}
+        if kind in ARROW_HEAD_KINDS:
+            length, width, head_type = default_head_style()
+            head_kwargs = {'head_length': length, 'head_width': width, 'head_type': head_type}
         ann = AnnotationItem(self, kind, anchor, parent_plot, pen=pen, brush=None, text=text,
-                              point_ref=point_ref)
+                              point_ref=point_ref, **head_kwargs)
         if p1_local is not None:
             ann.p1_local = QtCore.QPointF(p1_local)
             if ann._end_handle is not None:
@@ -518,53 +531,156 @@ class AnnotationOpsMixin:
 
         self._push_history(undo_fn, redo_fn)
 
-    def _edit_annotation_properties(self, ann):
-        """Right-click 'Properties...': line color/width, and for
-        rect/ellipse an optional fill color -- the CLAUDE.md-specified
-        'right-click properties menu (line/fill/color)'. Applies to every
-        selected annotation if `ann` is one of them; dialogs are seeded
-        from `ann`, and the fill only touches rect/ellipse targets."""
-        targets = list(self.selected_annotations) if ann in self.selected_annotations else [ann]
-        color = QtWidgets.QColorDialog.getColor(ann.pen.color(), None, "Line color")
-        if not color.isValid():
-            return
-        width, ok = QtWidgets.QInputDialog.getDouble(
-            None, "Line width", "Width:", ann.pen.widthF(), 0.5, 20.0, 1
-        )
-        if not ok:
-            return
-        new_pen = pg.mkPen(color=color, width=width)
-        new_pen.setCosmetic(True)
-        new_fill = None
-        if any(t.kind in ('rect', 'ellipse') for t in targets):
-            answer = QtWidgets.QMessageBox.question(
-                None, "Fill", "Set a fill color? (No keeps the current fill, if any)",
-                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
-            )
-            if answer == QtWidgets.QMessageBox.Yes:
-                default = ann.brush.color() if ann.brush else QtGui.QColor(color.red(), color.green(), color.blue(), 60)
-                fill_color = QtWidgets.QColorDialog.getColor(
-                    default, None, "Fill color", QtWidgets.QColorDialog.ShowAlphaChannel
-                )
-                if fill_color.isValid():
-                    new_fill = pg.mkBrush(fill_color)
+    # -- annotation styling menu (replaces the old single Properties...
+    # dialog chain, 2026-09-30, R4-STYLE) -- one setter per menu entry,
+    # each undoable as ONE entry for however many targets are selected.
+    # Mirrors curve_style.py's CurveStyleMixin (same "apply, then push one
+    # closure per changed target" shape), but simpler: an AnnotationItem's
+    # pen/brush are plain attributes, not a pyqtgraph opts dict with a
+    # separate selection-highlight overlay to work around.
+    @staticmethod
+    def _apply_annotation_pen(ann, pen):
+        ann.pen = pen
+        if ann._text_item is not None:
+            ann._text_item.setDefaultTextColor(pen.color())
+        ann.update()
 
-        def apply(target, pen, brush):
-            target.pen = pen
-            target.brush = brush
-            if target._text_item is not None:
-                target._text_item.setDefaultTextColor(pen.color())
-            target.update()
+    def _edit_annotation_pens(self, targets, change):
+        """change(ann) -> a new QPen, or None to skip `ann`. One undo
+        entry for the whole gesture, however many annotations."""
+        steps = []
+        for ann in targets:
+            new_pen = change(ann)
+            if new_pen is None or new_pen == ann.pen:
+                continue
+            steps.append((ann, ann.pen, new_pen))
+        if not steps:
+            return
+
+        def apply(which):
+            for ann, old, new in steps:
+                self._apply_annotation_pen(ann, new if which else old)
+
+        apply(True)
+        self._push_history(lambda: apply(False), lambda: apply(True))
+
+    def set_annotation_line_style(self, targets, code):
+        """code: a MATLAB line style ('-', '--', ':', '-.', 'none') --
+        same LINE_STYLES table the curve menu uses. Applies to every
+        target with a real stroke (annotations.STROKE_KINDS); 'text' has
+        nothing of its own to stroke."""
+        style = next(v for _, c, v in LINE_STYLES if c == code)
+
+        def change(ann):
+            if ann.kind not in STROKE_KINDS:
+                return None
+            pen = pg.mkPen(ann.pen)
+            color = QtGui.QColor(pen.color())
+            if style is None:
+                color.setAlpha(0)              # invisible, still selectable
+            else:
+                if color.alpha() == 0:
+                    color.setAlpha(255)        # coming back from 'none'
+                pen.setStyle(style)
+            pen.setColor(color)
+            pen.setCosmetic(True)
+            return pen
+        self._edit_annotation_pens(targets, change)
+
+    def set_annotation_line_width(self, targets, width):
+        def change(ann):
+            if ann.kind not in STROKE_KINDS:
+                return None
+            pen = pg.mkPen(ann.pen)
+            pen.setWidthF(width)
+            pen.setCosmetic(True)
+            return pen
+        self._edit_annotation_pens(targets, change)
+
+    def set_annotation_color(self, targets, rgb):
+        """Recolor the pen (keeping its width/style/alpha) -- and, for a
+        text/textarrow annotation, its text color too, same as the old
+        Properties... dialog did."""
+        def change(ann):
+            pen = pg.mkPen(ann.pen)
+            color = QtGui.QColor(*rgb)
+            color.setAlpha(pen.color().alpha())
+            pen.setColor(color)
+            pen.setCosmetic(True)
+            return pen
+        self._edit_annotation_pens(targets, change)
+
+    def set_annotation_fill(self, targets, brush):
+        """'Fill...': only rect/ellipse targets in the selection are
+        touched (the rest have no fill concept) -- one undo entry."""
+        rect_ellipse = [a for a in targets if a.kind in ('rect', 'ellipse')]
+        if not rect_ellipse:
+            return
+
+        def apply(ann, b):
+            ann.brush = b
+            ann.update()
 
         with self.undo_group():
-            for t in targets:
-                old_pen, old_brush = t.pen, t.brush
-                new_brush = new_fill if (new_fill is not None and t.kind in ('rect', 'ellipse')) else old_brush
-                apply(t, new_pen, new_brush)
+            for ann in rect_ellipse:
+                old_brush = ann.brush
+                if brush == old_brush:
+                    continue
+                apply(ann, brush)
                 self._push_history(
-                    undo_fn=lambda t=t, p=old_pen, b=old_brush: apply(t, p, b),
-                    redo_fn=lambda t=t, p=new_pen, b=new_brush: apply(t, p, b),
+                    undo_fn=lambda ann=ann, b=old_brush: apply(ann, b),
+                    redo_fn=lambda ann=ann, b=brush: apply(ann, b),
                 )
+
+    # -- "Arrow Style..." (arrow_style.py) --------------------------------
+    def _apply_arrow_style_live(self, targets, length, width, head_type):
+        """View-only, no undo -- called on every slider tick while the
+        dialog is open, mirroring series.py's _apply_series_transform's
+        own live-preview pattern."""
+        for ann in targets:
+            ann.prepareGeometryChange()
+            ann.head_length = length
+            ann.head_width = width
+            ann.head_type = head_type
+            ann.update()
+
+    def set_arrow_style(self, targets, length, width, head_type, before):
+        """Commit: one undo entry for the whole gesture, however many
+        targets. `before` is {ann: (length, width, head_type)} as it was
+        when the dialog opened (ArrowStyleDialog.opened_with)."""
+        new = {ann: (length, width, head_type) for ann in targets}
+        self._apply_arrow_style_live(targets, length, width, head_type)
+        changed = {ann: (before[ann], new[ann]) for ann in targets if before.get(ann) != new[ann]}
+        if not changed:
+            return
+
+        def apply(which):
+            for ann, (old_v, new_v) in changed.items():
+                l, w, t = new_v if which else old_v
+                ann.prepareGeometryChange()
+                ann.head_length, ann.head_width, ann.head_type = l, w, t
+                ann.update()
+
+        self._push_history(lambda: apply(False), lambda: apply(True))
+
+    def open_arrow_style_dialog(self, ann):
+        """Right-click 'Arrow Style...': the modeless popup (raised if
+        already open) for every selected arrow-family annotation if `ann`
+        is one of them, else just `ann` -- same selection rule every other
+        annotation style entry follows."""
+        targets = [a for a in (list(self.selected_annotations) if ann in self.selected_annotations else [ann])
+                   if a.kind in ARROW_HEAD_KINDS]
+        if not targets:
+            return None
+        dlg = getattr(self, '_arrow_style_dialog', None)
+        if dlg is not None:
+            dlg.close()
+        dlg = ArrowStyleDialog(self, targets, parent=self)
+        self._arrow_style_dialog = dlg
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
+        return dlg
 
     # -- reparenting ("filiation"): right-click an annotation -> Link to...
     # -> click its new parent (a subplot, or empty space for free-floating)

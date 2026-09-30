@@ -84,7 +84,7 @@ _LINE_KINDS = ('line', 'stairs', 'area', 'hist', 'errorbar')
 _LINE_CAPABLE_KINDS = _LINE_KINDS + ('scatter',)
 _MARKER_KINDS = ('line', 'scatter')
 
-_STATE_KEYS = ('pen', 'symbol', 'symbolSize', 'symbolBrush', 'symbolPen')
+_STATE_KEYS = ('pen', 'symbol', 'symbolSize', 'symbolBrush', 'symbolPen', 'fillBrush')
 
 
 def line_options_apply(kind):
@@ -122,6 +122,18 @@ def marker_options_apply(kind):
     return kind in _MARKER_KINDS
 
 
+def has_fill(item):
+    """True if `item`'s kind actually draws a filled region right now --
+    gated on the item's OWN current fillBrush (CLAUDE.md bug #16: don't
+    gate on a hardcoded kind list, an opts key's mere presence doesn't
+    mean anything was actually set), not a kind-name membership test.
+    Only 'area' sets this today (kinds/area.py's create() passes
+    brush=...); any future filling kind built the same way gets the curve
+    menu's Surface Color/Surface Opacity entries for free, with no gating
+    change needed here."""
+    return item.opts.get('fillBrush') is not None
+
+
 def pen_style_of(pen):
     """The MATLAB line-style code a pen draws: 'none' for no/transparent line."""
     if pen is None:
@@ -155,12 +167,13 @@ class CurveStyleMixin:
         # NoPen/NoBrush object, so re-applying an unchanged None would
         # quietly change what opts holds (and what to_dict then records).
         setters = {'pen': item.setPen, 'symbol': item.setSymbol, 'symbolSize': item.setSymbolSize,
-                   'symbolBrush': item.setSymbolBrush, 'symbolPen': item.setSymbolPen}
+                   'symbolBrush': item.setSymbolBrush, 'symbolPen': item.setSymbolPen,
+                   'fillBrush': item.setFillBrush}
         for key, setter in setters.items():
             value, current = state[key], item.opts.get(key)
             if value is current or (value is not None and current is not None and value == current):
                 continue
-            if key in ('pen', 'symbolSize') and value is None:
+            if key in ('pen', 'symbolSize', 'fillBrush') and value is None:
                 continue
             setter(value)
         if highlighted:
@@ -296,6 +309,34 @@ class CurveStyleMixin:
             color = pg.mkColor(rgba)
             s['symbolBrush'] = pg.mkBrush(color)
             s['symbolPen'] = pg.mkPen(color)
+            return s
+        self._edit_curve_styles(items, change)
+
+    def set_curve_fill_color(self, items, rgb):
+        """Recolor the fill (area's surface), keeping its current
+        opacity/alpha. Gated (a no-op for a curve with no fill) by
+        has_fill, same as every other setter here gates on its own
+        capability check."""
+        def change(item, s):
+            brush = s.get('fillBrush')
+            if brush is None:
+                return None
+            brush = pg.mkBrush(brush)
+            color = QtGui.QColor(*rgb)
+            color.setAlpha(brush.color().alpha())
+            s['fillBrush'] = pg.mkBrush(color)
+            return s
+        self._edit_curve_styles(items, change)
+
+    def set_curve_fill_opacity(self, items, percent):
+        """percent: 0-100, the curve menu's Surface Opacity submenu."""
+        def change(item, s):
+            brush = s.get('fillBrush')
+            if brush is None:
+                return None
+            color = QtGui.QColor(pg.mkBrush(brush).color())
+            color.setAlpha(round(percent / 100 * 255))
+            s['fillBrush'] = pg.mkBrush(color)
             return s
         self._edit_curve_styles(items, change)
 
