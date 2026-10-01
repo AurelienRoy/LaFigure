@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lafigure"
+version = "0.1.0"
+description = "A MATLAB-Figure-like interactive plotting window built on PyQtGraph"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Aurélien ROY", email = "lafigure@proton.me" }]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "pyqtgraph",
+    "PyQt5",
+]
+
+[project.optional-dependencies]
+pandas = ["pandas"]
+html = ["plotly"]
+dev = ["pandas", "plotly"]
+
+[project.urls]
+Homepage = "https://github.com/AurelienRoy/LaFigure"
+
+[tool.setuptools.packages.find]
+include = ["lafigure", "lafigure.*"]

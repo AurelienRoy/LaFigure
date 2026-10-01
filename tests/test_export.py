@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -68,9 +68,9 @@ def test_show_save_dialog_opens_without_error():
 
 
 def test_header_template_renders_date_and_multiple_keys():
-    info = {'source': 'demo.csv', 'user': 'aurroy', 'date': datetime(2026, 9, 28, 14, 30)}
+    info = {'source': 'demo.csv', 'user': 'user', 'date': datetime(2026, 9, 28, 14, 30)}
     template = "Source: {source} | {date:%Y-%m-%d %H:%M} | {user}"
-    assert export.render_header(template, info) == "Source: demo.csv | 2026-09-28 14:30 | aurroy"
+    assert export.render_header(template, info) == "Source: demo.csv | 2026-09-28 14:30 | user"
 
 
 def test_default_info_lets_figure_info_override_defaults():

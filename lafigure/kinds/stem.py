@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -22,7 +22,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""R4-MISC: the 'stem' SeriesKind -- reachable as
+"""the 'stem' SeriesKind -- reachable as
 ax.stem(x, y, baseline=0.0, marker_px=6.0, ...) once this module is
 imported. Per MATLAB's stem(): a vertical line ("stem") from a baseline to
 each sample, tipped with a marker.

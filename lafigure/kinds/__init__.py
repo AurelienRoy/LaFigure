@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -35,13 +35,13 @@ all of them; a future kind package adds its module to the import list
 below, not to lafigure/__init__.py."""
 from . import scatter, stairs, area, hist, bar, errorbar, imshow
 from . import scatter3d, line3d, surface  # 3D kinds, for axes_type='3d' subplots (view3d.py)
-from . import log_kinds  # loglog/semilogx/semilogy (R4-LOG)
-from . import boxchart, violinplot  # R4-DIST
-from . import plot3, bubblechart3d  # R4-K3D
-from . import polar, polarhistogram, piechart  # R4-POLAR
-from . import bubblechart, swarmchart, binscatter, spy  # R4-SCAT
-from . import quiver, feather, contour  # R4-FIELD
-from . import barh, stem, heatmap, errorband  # R4-MISC
+from . import log_kinds  # loglog/semilogx/semilogy
+from . import boxchart, violinplot
+from . import plot3, bubblechart3d
+from . import polar, polarhistogram, piechart
+from . import bubblechart, swarmchart, binscatter, spy
+from . import quiver, feather, contour
+from . import barh, stem, heatmap, errorband
 
 __all__ = ["scatter", "stairs", "area", "hist", "bar", "errorbar", "imshow",
            "scatter3d", "line3d", "surface",

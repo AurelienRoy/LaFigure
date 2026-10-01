@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -171,7 +171,7 @@ def _refresh_series(series, source):
     # these filtered raw samples, per SeriesKind.create's own "a histogram
     # kind treats x as the raw samples to bin" convention) gets that for
     # free here too -- unverified against a real histogram kind, see report.
-    # Raw source values: drawn through the series' display transform (WP-P7).
+    # Raw source values: drawn through the series' display transform.
     series._write_raw(new_x, new_y)
 
 

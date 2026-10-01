@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -22,7 +22,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""R4-SCAT: the 'spy' SeriesKind -- MATLAB's `spy(matrix)`: a scatter of the
+"""the 'spy' SeriesKind -- MATLAB's `spy(matrix)`: a scatter of the
 nonzero entries of a 2-D matrix, one point per nonzero, at (column, row).
 
     ax.spy(matrix)

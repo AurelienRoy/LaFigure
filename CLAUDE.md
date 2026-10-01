@@ -398,11 +398,25 @@ the actual code — this list is a summary, not a substitute for checking.
       HTML export runs title/axis/legend/annotation text through the
       same translator (`to_plotly`) so the markup isn't shown literally
       in exported figures.
-- [x] Toolbar with custom buttons, using the MATLAB-style icons in `icons/`
-      where one matches (pointer/hand/zoom/legend/linked-plots/data-brush/
-      text-box); a few actions without a matching icon in that set keep a
-      generic fallback (Reset View, Add Subplot, Delete, Undo, Redo,
-      Grid Layout)
+- [x] Toolbar with custom buttons. **Open-source cleanup (2026-10-01):**
+      `icons/` originally held PNG/GIF files copied out of a MATLAB
+      install (`plotpicker-*`, `tool_rotate_3d`, etc.) — not
+      redistributable under this project's BSD-2 license. The 13 that
+      were actually wired into the toolbar (pointer/hand/zoom-in/
+      rotate-3d/data-brush/data-cursor/legend/text-box/link/pencil/fft/
+      remove-average/home) were replaced with `lafigure/toolbar_icons.py`,
+      small QPainter-drawn QIcons in the same style `toolbar.py`'s own
+      pre-existing `_fit_icon`/`_hide_points_icon` already used (fft and
+      remove-average deliberately got new, different-looking glyphs
+      rather than redraws of the originals). All 53 original files
+      (used and unused) now live in `icons/nonpublished-icons/`, which
+      `.gitignore` excludes — nothing under `icons/` ships publicly
+      except what `toolbar_icons.py` draws. `action()`/`menu_button()`
+      in `toolbar.py` still accept a plain filename-in-`icons/` string
+      too (for any future real icon asset someone has the rights to
+      ship), but every built-in toolbar icon today is code-drawn. A few
+      actions without a drawn icon keep a generic Qt fallback (Add
+      Subplot, Delete, Undo, Redo, Grid Layout).
 - [x] "Remove the average" button (subtracts the mean from every curve on
       the active subplot)
 - [x] Compute FFT and plot on a new subplot beneath the current one, acting

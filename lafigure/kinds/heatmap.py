@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -22,7 +22,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""R4-MISC: the 'heatmap' SeriesKind -- reachable as
+"""the 'heatmap' SeriesKind -- reachable as
 ax.heatmap(matrix, x_coords=None, y_coords=None, cmap='viridis', ...) once
 this module is imported. A `_base.DerivedKind` on `'imshow'`: it IS an
 imshow (same `pg.ImageItem`, same `colorbar.LaColorBar` attachment, same
@@ -53,7 +53,7 @@ given, `heatmap` behaves exactly like `imshow` (raw pixel/column indices,
 
 Since `create()` delegates entirely to `'imshow'`'s own (every keyword
 `heatmap` doesn't recognize flows straight through, via `DerivedKind`'s
-merged-kwargs `**style`), the `LaColorBar` attachment (R4-CBAR) happens
+merged-kwargs `**style`), the `LaColorBar` attachmenthappens
 for free -- no code here does anything colorbar-specific.
 """
 import numpy as np

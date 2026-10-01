@@ -1,0 +1,115 @@
+Metadata-Version: 2.4
+Name: lafigure
+Version: 0.1.0
+Summary: A MATLAB-Figure-like interactive plotting window built on PyQtGraph
+Author-email: Aurélien ROY <lafigure@proton.me>
+License: BSD 2-Clause License
+        
+        Copyright (c) 2026, Aurélien ROY (lafigure@proton.me)
+        
+        Redistribution and use in source and binary forms, with or without
+        modification, are permitted provided that the following conditions are met:
+        
+        1. Redistributions of source code must retain the above copyright notice,
+           this list of conditions and the following disclaimer.
+        
+        2. Redistributions in binary form must reproduce the above copyright
+           notice, this list of conditions and the following disclaimer in the
+           documentation and/or other materials provided with the distribution.
+        
+        THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+        AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+        IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+        ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+        LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+        CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+        SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+        INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+        CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+        ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+        POSSIBILITY OF SUCH DAMAGE.
+        
+Project-URL: Homepage, https://github.com/AurelienRoy/LaFigure
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: pyqtgraph
+Requires-Dist: PyQt5
+Provides-Extra: pandas
+Requires-Dist: pandas; extra == "pandas"
+Provides-Extra: html
+Requires-Dist: plotly; extra == "html"
+Provides-Extra: dev
+Requires-Dist: pandas; extra == "dev"
+Requires-Dist: plotly; extra == "dev"
+Dynamic: license-file
+
+# LaFigure
+
+A MATLAB-Figure-like interactive plotting window, built on [PyQtGraph](https://www.pyqtgraph.org/)
+(Qt + OpenGL) so it stays fluent with millions of points.
+
+Multiple subplots in a free-form grid, click to select, drag to resize/move/swap,
+curve and subplot copy-paste (including across separate figure windows), undo/redo,
+annotations, data brushing/linked selection, 3D scenes, interactive controls, and a
+Figure Manager for tracking multiple open figures — see the full feature list and
+design notes in [CLAUDE.md](CLAUDE.md).
+
+## Install
+
+Requires Python >= 3.9.
+
+```bash
+git clone https://github.com/AurelienRoy/LaFigure.git
+cd LaFigure
+pip install -e .
+```
+
+Optional extras: `pip install -e ".[pandas]"` (DataSource from a DataFrame),
+`pip install -e ".[html]"` (HTML export via plotly).
+
+Tested on Windows and Ubuntu 22.04/24.04 — see `.github/workflows/tests.yml`.
+
+## Quickstart
+
+```bash
+python -m lafigure
+```
+
+opens a Figure Manager plus a demo figure. As a library:
+
+```python
+from pyqtgraph.Qt import QtWidgets
+from lafigure import LaFigure
+
+app = QtWidgets.QApplication([])
+fig = LaFigure(empty=True)
+ax = fig.subplot(0, 0, title="My data")
+ax.plot([0, 1, 2, 3], [0, 1, 4, 9])
+fig.show()
+app.exec()
+```
+
+More runnable examples — series kinds, annotations, linked brushing, 3D scenes,
+interactive controls, copy/paste across figures — are in [`examples/`](examples/).
+Run any of them directly: `python examples/line_signal_annotations.py`.
+
+## Running the tests
+
+```bash
+QT_QPA_PLATFORM=offscreen python run_tests.py
+```
+
+No pytest — `run_tests.py` is a small standalone runner; pass name filters to
+narrow it, e.g. `python run_tests.py layout`.
+
+## Contributing
+
+See [CLAUDE.md](CLAUDE.md) for the architecture, the module layout, and the
+hard-won lessons behind this codebase's design. If you're coding here with
+Claude Code, read it first — it's written for that.
+
+## License
+
+BSD 2-Clause — see [LICENSE](LICENSE).

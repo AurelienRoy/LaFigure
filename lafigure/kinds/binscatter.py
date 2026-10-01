@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -22,7 +22,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""R4-SCAT: the 'binscatter' SeriesKind -- a large (x, y) point cloud binned
+"""the 'binscatter' SeriesKind -- a large (x, y) point cloud binned
 into a 2-D histogram (`_base.bin2d`) and shown as one point per non-empty
 bin, colored by that bin's density.
 

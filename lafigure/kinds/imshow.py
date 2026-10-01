@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -22,7 +22,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""WP-I3: the 'imshow' SeriesKind -- a heatmap/image, with a colorbar.
+"""The 'imshow' SeriesKind -- a heatmap/image, with a colorbar.
 
     ax.imshow(matrix, cmap='viridis', levels=None)
 

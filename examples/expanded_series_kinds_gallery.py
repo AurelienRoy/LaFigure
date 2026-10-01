@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -22,15 +22,13 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""One window, one subplot per SeriesKind added in round 4 (wave 2) --
-the "what's new" visual demo at a glance: `loglog`/`semilogx`/`semilogy`
-(R4-LOG), `boxchart`/`violinplot` (R4-DIST), `polar` (R4-POLAR),
-`bubblechart`/`swarmchart`/`binscatter`/`spy` (R4-SCAT), `quiver`/
-`feather`/`contour` (R4-FIELD), `barh`/`stem`/`heatmap`/`errorband`
-(R4-MISC), `plot3`/`bubblechart3d` (R4-K3D) -- 19 kinds. `series_kinds_
-gallery.py` already covers everything from before round 4 (bar, errorbar,
-area, stairs, hist, imshow); this file is its round-4 sequel, kept
-separate so neither grows unreadably long.
+"""Visual gallery of all 19 new series kinds: `loglog`/`semilogx`/`semilogy`,
+`boxchart`/`violinplot`, `polar`, `bubblechart`/`swarmchart`/`binscatter`/`spy`,
+`quiver`/`feather`/`contour`, `barh`/`stem`/`heatmap`/`errorband`, `plot3`/`bubblechart3d`.
+
+`series_kinds_gallery.py` covers the earlier kinds (bar, errorbar, area, stairs,
+hist, imshow, scatter, line, line3d, surface); this is a separate example kept
+short and focused on the newer additions.
 
 Every call below is the ordinary public entry point
 (`ax.<kind>(...)`, routed by `Axes.__getattr__`/`_plot_kind` --
@@ -164,18 +162,24 @@ def main():
     ax_heat = fig.subplot(4, 2, title="heatmap: placed on real x/y coordinates")
     ax_heat.heatmap(Zh, x_coords=xs_h, y_coords=ys_h, cmap='viridis')
 
+
+    fig2 = lafigure.LaFigure(empty=True)
+    fig2.setWindowTitle("LaFigure example - view2")
+
     # -- errorband: a center line with a shaded uncertainty band -----------
     x_eb = np.linspace(0, 10, 60)
     y_eb = np.sin(x_eb) + 0.1 * x_eb
     yerr_eb = 0.15 + 0.05 * x_eb
-    ax_errband = fig.subplot(5, 0, title="errorband: shaded uncertainty")
+    #ax_errband = fig.subplot(5, 0, title="errorband: shaded uncertainty")
+    ax_errband = fig2.subplot(0, 0, title="errorband: shaded uncertainty")
     ax_errband.errorband(x_eb, y_eb, yerr=yerr_eb, pen=(50, 120, 200))
 
     # -- quiver: a vector field, autoscaled arrows --------------------------
     gx, gy = np.meshgrid(np.linspace(-2, 2, 10), np.linspace(-2, 2, 10))
     gx, gy = gx.ravel(), gy.ravel()
     gu, gv = -gy, gx  # a simple rotational field
-    ax_quiver = fig.subplot(5, 1, title="quiver: a rotational vector field")
+    #ax_quiver = fig.subplot(5, 1, title="quiver: a rotational vector field")
+    ax_quiver = fig2.subplot(0, 1, title="quiver: a rotational vector field")
     ax_quiver.quiver(gx, gy, u=gu, v=gv)
 
     # -- feather: successive vectors along one axis (classic wind/current) -
@@ -183,7 +187,8 @@ def main():
     fx = np.arange(n_feather)
     fu = np.cos(fx / 2.0) * 3
     fv = np.sin(fx / 2.0) * 3 + 1
-    ax_feather = fig.subplot(5, 2, title="feather: successive readings")
+    #ax_feather = fig.subplot(5, 2, title="feather: successive readings")
+    ax_feather = fig2.subplot(0, 2, title="feather: successive readings")
     ax_feather.feather(fx, u=fu, v=fv)
 
     # -- contour: marching-squares contour lines of a 2D field -------------
@@ -191,10 +196,12 @@ def main():
     ys_c = np.linspace(-3, 3, 80)
     Xc, Yc = np.meshgrid(xs_c, ys_c)
     Zc = (1 - Xc / 2 + Xc ** 5 + Yc ** 3) * np.exp(-Xc ** 2 - Yc ** 2)
-    ax_contour = fig.subplot(6, 0, title="contour: marching squares")
+    #ax_contour = fig.subplot(6, 0, title="contour: marching squares")
+    ax_contour = fig2.subplot(1, 0, title="contour: marching squares")
     ax_contour.contour(Zc, levels=6, cmap='viridis')
 
     fig.show()
+    fig2.show()
     sys.exit(app.exec())
 
 

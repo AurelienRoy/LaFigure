@@ -1,9 +1,17 @@
 __pycache__/
 *.pyc
+*.log
 count_python_lines.bat
 
 # Per-agent git worktrees created for parallel PLAN.md work packages
 /.claude/worktrees/
+
+# Local-only Claude Code settings (each collaborator's own machine config)
+/.claude/settings.local.json
+/.claude/settings.json
+
+# Icons present on disk but not cleared for redistribution (see icons/README.md)
+/icons/nonpublished-icons/
 
 # Unrelated content living inside this working directory, not part of this project
 /engineering-method-with-claude/

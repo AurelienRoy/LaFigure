@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -32,7 +32,7 @@ disk changes just from constructing/showing the dialog -- only pressing
 "Export" writes files, and only the QSettings-remembered header template is
 written as the user edits it (a UI preference, not a data/document write).
 
-**The exporter registry -- read this before adding a format (WP-M/HTML):**
+**The exporter registry -- read this before adding a format:**
 
     EXPORTERS: dict[str, callable | None]
         format name (lowercase, e.g. 'png') -> a function
@@ -55,8 +55,8 @@ written as the user edits it (a UI preference, not a data/document write).
     `EXPORTERS[fmt](...)` in a loop over the checked formats), but 'html'
     is special-cased right there with its own call signature (one
     `if fmt == 'html': ...` branch) rather than contorting this one --
-    `EXPORTERS['html']` is `lafigure.html_export.export_html` (WP-M,
-    2026-09-28), which takes `(figure, path, parent=...)`, not a pixmap.
+    `EXPORTERS['html']` is `lafigure.html_export.export_html`, which takes
+    `(figure, path, parent=...)`, not a pixmap.
     plotly is an optional dependency -- see html_export.py's own docstring
     for how it stays optional without breaking `import lafigure`.
 """
@@ -75,8 +75,8 @@ UNAVAILABLE_REASONS = {}  # format name -> str, only set when EXPORTERS[name] is
 
 
 def register_exporter(name, fn):
-    """Register (or replace) the exporter for `name` (e.g. 'html', by
-    WP-M). See this module's docstring for the function shape."""
+    """Register (or replace) the exporter for `name` (e.g. 'html').
+    See this module's docstring for the function shape."""
     EXPORTERS[name] = fn
 
 

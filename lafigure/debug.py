@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -22,7 +22,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""Debug mode foundation (Round 3, WP-DBG1): one call, `enable_debug_mode()`,
+"""Debug mode foundation (Round 3): one call, `enable_debug_mode()`,
 that turns on crash-safe, verbose logging for the whole `lafigure` package so
 a user can copy/paste `lafigure_debug.log` back into a bug report.
 

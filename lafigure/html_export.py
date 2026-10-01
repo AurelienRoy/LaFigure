@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -64,7 +64,7 @@ calling it with the figure + path instead of a pixmap (its own documented
     series' displayed points are always recomputed from
     `source.visible_rows` at export time (`_visible_xy_rows`), regardless
     of whether `console.watch_source` happened to be armed for it.
-  - `ax.datatip` (console.py, WP-L): a format-string spec is translated
+  - `ax.datatip` (console.py): a format-string spec is translated
     directly into a plotly `hovertemplate` (`_translate_hovertemplate`);
     a callable spec can't run in the browser, so it falls back to a
     generic x/y + every source column hover via `customdata` (noted, not

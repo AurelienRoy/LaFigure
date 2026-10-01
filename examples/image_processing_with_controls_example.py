@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -29,9 +29,7 @@ dropdown, an "invert" checkbox, and a reactive statistics table -- every
 edit is undoable (Ctrl+Z steps back one edit at a time, all the way to
 the untouched original).
 
-No scipy, no real image file: the base image and the blur are both plain
-numpy (PLAN.md's own R4-EX brief: "Plain numpy for the processing, no
-scipy").
+No scipy, no real image file: the base image and the blur are both plain numpy.
 
 **A real gap this example works around, reported rather than hidden.**
 `Series.set_data(x, y)` (series.py) requires `len(x) == len(y)` with a
@@ -210,9 +208,9 @@ def main():
                 value='CET-L1', on_change=on_colormap)
     win.checkbox('Invert', checked=False, on_change=on_invert)
     win.button('Reset (undoable)', on_click=on_reset)
-    # The colorbar's two fixed dashed lines (lafigure/colorbar.py, R4-CBAR)
-    # already track item.sigImageChanged on their own -- every setImage()
-    # call above moves them live, with no extra wiring needed here.
+    # The colorbar's two fixed dashed lines already track item.sigImageChanged
+    # on their own -- every setImage() call above moves them live, with no extra
+    # wiring needed here.
     win.table(stats, depends_on=[trigger])
 
     fig.show()

@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -22,7 +22,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""R4-MISC: the 'errorband' SeriesKind -- reachable as
+"""the 'errorband' SeriesKind -- reachable as
 ax.errorband(x, y, yerr=..., ...) (or `y_lower=`/`y_upper=` for an
 asymmetric band) once this module is imported. The user's requested
 "errorbar with shaded area": a shaded uncertainty band around a center

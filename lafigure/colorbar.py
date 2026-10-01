@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -22,7 +22,7 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 # POSSIBILITY OF SUCH DAMAGE.
 
-"""R4-CBAR: `LaColorBar`, an interactive colorbar that fixes the two user
+"""`LaColorBar`, an interactive colorbar that fixes the two user
 complaints pyqtgraph's own `pg.ColorBarItem` has:
 
 1. There was no visual indication of where the actual plotted data's
@@ -66,7 +66,7 @@ image, ..." -- so nothing here assumes `item` is a `pg.ImageItem`.
 return the current 1-D or 2-D array whose min/max should drive the two
 dashed lines; that is the ONLY thing this module needs from `item` to
 track live data changes for the dashed lines. Live refresh is wired at
-three levels, exactly per the R4-CBAR brief:
+three levels:
   1. `item.sigImageChanged`, if the item has one (an `ImageItem`'s own
      data-changed signal).
   2. `source.on_change(...)`, if an explicit `DataSource` is passed --

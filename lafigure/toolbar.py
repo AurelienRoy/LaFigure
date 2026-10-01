@@ -1,4 +1,4 @@
-# Copyright 2026, Aurélien ROY, <aurroy@hotmail.com>
+# Copyright 2026, Aurélien ROY, <lafigure@proton.me>
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are met:
@@ -32,6 +32,7 @@ import os
 import sys
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
+from . import toolbar_icons as ti
 from .annotations import SHAPE_KINDS, SHAPE_LABELS
 
 # icons/ lives next to this package's containing directory (the repo
@@ -95,7 +96,9 @@ class ToolbarMixin:
 
         def action(label, slot, checkable=False, icon=None, tooltip=None):
             act = QtGui.QAction(label, self)
-            if isinstance(icon, str):
+            if isinstance(icon, QtGui.QIcon):
+                act.setIcon(icon)
+            elif isinstance(icon, str):
                 # Filename in icons/; missing file falls back to no icon.
                 path = os.path.join(ICON_DIR, icon)
                 if os.path.isfile(path):
@@ -114,11 +117,14 @@ class ToolbarMixin:
             # entries: list of (label, slot)
             btn = QtWidgets.QToolButton()
             btn.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
-            path = os.path.join(ICON_DIR, icon)
-            if os.path.isfile(path):
-                btn.setIcon(QtGui.QIcon(path))
+            if isinstance(icon, QtGui.QIcon):
+                btn.setIcon(icon)
             else:
-                print(f"WARNING: icon file not found: {path}", file=sys.stderr)
+                path = os.path.join(ICON_DIR, icon)
+                if os.path.isfile(path):
+                    btn.setIcon(QtGui.QIcon(path))
+                else:
+                    print(f"WARNING: icon file not found: {path}", file=sys.stderr)
             btn.setToolTip(tooltip)
             btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
             menu = QtWidgets.QMenu(btn)
@@ -146,17 +152,17 @@ class ToolbarMixin:
         self.redo_action.setEnabled(False)
 
         tb.addSeparator()
-        menu_button('pencil.png', "Place a shape on the figure", [
+        menu_button(ti.pencil_icon(), "Place a shape on the figure", [
             (SHAPE_LABELS[kind], lambda checked=False, kind=kind: self.start_placing_annotation(kind))
             for kind in SHAPE_KINDS if kind != 'cursor'
         ])
         action("Data Cursor", lambda: self.start_placing_annotation('cursor'),
-               icon='tool_data_cursor.png', tooltip="Place a data-readout marker on a curve")
+               icon=ti.data_cursor_icon(), tooltip="Place a data-readout marker on a curve")
 
-        action("Toggle Legend", self.toggle_legend, icon='tool_legend.png',
+        action("Toggle Legend", self.toggle_legend, icon=ti.legend_icon(),
                tooltip="Show or hide the legend")
 
-        menu_button('tool_text_textbox.png', "Edit the X or Y axis label", [
+        menu_button(ti.text_box_icon(), "Edit the X or Y axis label", [
             ("X Label", lambda: self.set_axis_label('bottom')),
             ("Y Label", lambda: self.set_axis_label('left')),
         ])
@@ -165,7 +171,7 @@ class ToolbarMixin:
         # their exclusive group below, so picking one unchecks the other.
         self.brush_action = action(
             "Brush", lambda checked: self.set_interaction_mode('brush'), checkable=True,
-            icon='tool_data_brush.png',
+            icon=ti.data_brush_icon(),
             tooltip="Drag a rectangle to select points for editing",
         )
         self.hide_points_action = action(
@@ -182,22 +188,22 @@ class ToolbarMixin:
         mode_group.setExclusive(True)
         self.select_action = action(
             "Select", lambda checked: self.set_interaction_mode('select'), checkable=True,
-            icon='tool_pointer.png',
+            icon=ti.pointer_icon(),
             tooltip="Click to select; drag handles to resize or move",
         )
         self.hand_action = action(
             "Hand", lambda checked: self.set_interaction_mode('hand'), checkable=True,
-            icon='tool_hand.png',
+            icon=ti.hand_icon(),
             tooltip="Pan or zoom the subplot under the cursor",
         )
         self.zoom_action = action(
             "Zoom Rect", lambda checked: self.set_interaction_mode('zoom'), checkable=True,
-            icon='tool_zoom_in.png',
+            icon=ti.zoom_in_icon(),
             tooltip="Drag a rectangle to zoom in",
         )
         self.rotate_action = action(
             "Rotate + Zoom", lambda checked: self.set_interaction_mode('rotate'), checkable=True,
-            icon='tool_rotate_3d.png',
+            icon=ti.rotate_3d_icon(),
             tooltip="Orbit/pan/dolly a 3D subplot's camera (enabled only while one is focused)",
         )
         mode_group.addAction(self.select_action)
@@ -207,7 +213,7 @@ class ToolbarMixin:
         mode_group.addAction(self.brush_action)
         self.select_action.setChecked(True)
         self._update_rotate_action_enabled()
-        action("Home", self.reset_view, icon='ico_breadcrumb_home_on.png',
+        action("Home", self.reset_view, icon=ti.home_icon(),
                tooltip="Reset the view to show all data")
         fit_y = action("Fit Vertical", self.fit_view_vertical,
                        tooltip="Fit the Y range to visible data")
@@ -219,11 +225,11 @@ class ToolbarMixin:
         tb.addSeparator()
         self.link_x_action = action(
             "Link X", self.toggle_link_x, checkable=True,
-            icon='tool_plot_linked.png', tooltip="Link the X axis across subplots",
+            icon=ti.link_icon(), tooltip="Link the X axis across subplots",
         )
-        action("FFT -> subplot below", self.fft_below, icon='fft_icon6.png',
+        action("FFT -> subplot below", self.fft_below, icon=ti.fft_icon(),
                tooltip="Plot the FFT of the selected curve below")
-        action("Remove Average", self.remove_average, icon='icon1b1.png',
+        action("Remove Average", self.remove_average, icon=ti.remove_average_icon(),
                tooltip="Subtract the mean from every curve")
 
         self.console_action = action(
