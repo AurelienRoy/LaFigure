@@ -280,11 +280,6 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     HANDLE_SIZE = 8
     ROTATE_OFFSET = 34  # constant on-screen px above the shape's center, pre-rotation
     SHIFT_SNAP_DEG = 45  # LibreOffice-Draw-style constraint step while Shift is held
-    # 'cursor' only: how far back toward p0 its end handle sits, as a
-    # fraction of p1_local -- pulled off the exact label point (see
-    # paint()'s cursor branch, which centers the text bubble there too),
-    # so the opaque handle box doesn't mask the text.
-    END_HANDLE_PULLBACK = 0.7
 
     def __init__(self, figure, kind, anchor, parent_plot, pen, brush=None, text='', point_ref=None,
                  head_length=None, head_width=None, head_type=None):
@@ -333,8 +328,11 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         self.setCursor(QtCore.Qt.SizeAllCursor)
 
         has_extent = kind in ('rect', 'ellipse', 'line', 'arrow', 'doublearrow', 'textarrow')
-        # 'cursor' has no extent, but p1 is draggable: label offset from the data point.
-        has_p1_handle = has_extent or kind == 'cursor'
+        # 'cursor' has no extent, and -- unlike every other kind -- no
+        # grab-handle objects at all: its marker/text are grabbed directly
+        # via native hit-testing (_cursor_region_at/_cursor_mouse_press),
+        # not an AnnotationHandle child.
+        has_p1_handle = has_extent
         if has_extent:
             self.p1_local = QtCore.QPointF(self._px_to_local(60), self._px_to_local(40))
         elif kind == 'cursor':
@@ -392,22 +390,15 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             self._rotate_handle.setParentItem(self)
             self._position_rotate_handle()
 
-        # 'cursor' only: a handle at p0 (its own origin) that re-picks
-        # WHICH sample this cursor is pinned to, on the SAME curve/series
-        # point_ref already names (never a different one -- confirmed with
-        # the user via /lafigure-scope) -- unlike TWO_ENDPOINT_KINDS'
-        # _start_handle, which moves p0 freely. p0 stays fixed exactly on
-        # a curve value at all times; only WHICH value it names changes.
-        self._anchor_handle = None
-        self._anchor_drag_origin = None
+        # 'cursor' only: no handle objects (see has_p1_handle above) --
+        # just drag state for whichever region (marker/text) a press
+        # landed on, and hover-cursor support. See _cursor_mouse_press/
+        # _cursor_mouse_move/_cursor_mouse_release and
+        # _update_cursor_hover_cursor below.
+        self._anchor_handle = None  # kept None; referenced by set_selected's generic handle loop
+        self._cursor_drag = None
         if kind == 'cursor':
-            self._anchor_handle = AnnotationHandle(
-                self.HANDLE_SIZE, on_press=self._on_anchor_press,
-                on_move=self._on_anchor_drag, on_release=self._on_anchor_release,
-                cursor=QtCore.Qt.PointingHandCursor,
-            )
-            self._anchor_handle.setParentItem(self)
-            self._anchor_handle.setPos(0, 0)
+            self.setAcceptHoverEvents(True)
 
         self.set_selected(False)
 
@@ -436,14 +427,11 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         return QtCore.QPointF(0, 0)
 
     def _end_handle_pos(self):
-        """Where the end-point drag handle sits: exactly at p1_local for
-        every kind except 'cursor', which pulls it back toward p0 (see
-        END_HANDLE_PULLBACK) so it doesn't sit on top of the label's own
-        text bubble -- both would otherwise be centered on the same point."""
+        """Where the end-point drag handle sits: exactly at p1_local.
+        ('cursor' never has an _end_handle at all -- see has_p1_handle in
+        __init__ -- so this is never called for it.)"""
         if self.p1_local is None:
             return QtCore.QPointF(0, 0)
-        if self.kind == 'cursor':
-            return self.p1_local * self.END_HANDLE_PULLBACK
         return QtCore.QPointF(self.p1_local)
 
     @property
@@ -632,6 +620,12 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             self._draw_arrowhead(painter, self.p1_local, p0)
         elif self.kind == 'cursor':
             label_pos = self.p1_local if self.p1_local is not None else QtCore.QPointF(50, -30)
+            if self._selected:
+                # No dashed selection outline for 'cursor' (unlike every
+                # other kind, see below) -- the line turns red instead.
+                sel_pen = pg.mkPen(self.pen)
+                sel_pen.setColor(SUBPLOT_FILIATION_COLOR)
+                painter.setPen(sel_pen)
             painter.drawLine(p0, label_pos)
             # Can't use ItemIgnoresTransformations here (raw QPainter draw) --
             # map to device pos and reset transform so the marker stays a
@@ -659,7 +653,7 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         # 'text' has nothing of its own to paint -- the child QGraphicsTextItem
         # does all the rendering.
 
-        if self._selected:
+        if self._selected and self.kind != 'cursor':
             outline_pen = pg.mkPen(filiation_color(self.parent_plot, self.figure.plots),
                                     width=2, style=QtCore.Qt.DashLine)
             outline_pen.setCosmetic(True)  # constant on-screen width/dash length, not data-scaled
@@ -833,46 +827,150 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
                 handle.setVisible(selected)
         self.update()
 
-    # -- anchor handle ('cursor' only): re-pick WHICH sample p0 names -----
-    def _on_anchor_press(self, scene_pos):
-        self._anchor_drag_origin = {
-            'pos': QtCore.QPointF(self.pos()),
-            'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
-            'text': self.text,
-        }
+    # -- 'cursor' only: marker/text grab (no handle objects -- native hit-
+    # testing instead), hover cursors, red-while-selected line. Works in
+    # BOTH Select mode and Data Cursor mode (confirmed with the user via
+    # /lafigure-scope) -- unlike every other kind, gated to Select only
+    # (see mousePressEvent below). ------------------------------------
+    CURSOR_MARKER_GRAB_PAD_PX = 6  # extra hit-tolerance beyond the drawn marker radius
 
-    def _on_anchor_drag(self, scene_pos):
-        if self.point_ref is None or self.parent_plot is None:
+    def _cursor_region_at(self, local_pos):
+        """Which part of a 'cursor' annotation `local_pos` (this item's own
+        local coords) falls on, in DEVICE (viewport) pixels so the test is
+        uniform regardless of an 'axes' anchor's data scale: 'marker' (the
+        round data-point dot, padded CURSOR_MARKER_GRAB_PAD_PX wider than
+        its drawn radius), 'text' (the label's own white bubble, same
+        rect paint()/the selection outline already use), or 'line'
+        (anywhere else inside shape(), i.e. the connecting line) -- or
+        None if outside the annotation entirely."""
+        vt = self._view_transform()
+        dev_pt = vt.map(self.mapToScene(local_pos))
+        dev_marker = vt.map(self.mapToScene(QtCore.QPointF(0, 0)))
+        r = self.CURSOR_MARKER_PX + self.CURSOR_MARKER_GRAB_PAD_PX
+        dx, dy = dev_pt.x() - dev_marker.x(), dev_pt.y() - dev_marker.y()
+        if dx * dx + dy * dy <= r * r:
+            return 'marker'
+        label = self._cursor_label()
+        if label and self.p1_local is not None:
+            box = self._cursor_bubble_device_rect(label, vt.map(self.mapToScene(self.p1_local)))
+            if box.contains(dev_pt):
+                return 'text'
+        if self.contains(local_pos):
+            return 'line'
+        return None
+
+    def _update_cursor_hover_cursor(self, local_pos):
+        region = self._cursor_region_at(local_pos)
+        if region == 'marker':
+            self.setCursor(QtCore.Qt.CrossCursor)  # "insertion" glyph: snaps onto a curve sample
+        elif region == 'text':
+            self.setCursor(QtCore.Qt.SizeAllCursor)  # horizontal/vertical arrows
+        else:
+            self.unsetCursor()
+
+    def hoverEnterEvent(self, ev):
+        if self.kind == 'cursor':
+            self._update_cursor_hover_cursor(ev.pos())
+
+    def hoverMoveEvent(self, ev):
+        if self.kind == 'cursor':
+            self._update_cursor_hover_cursor(ev.pos())
+
+    def hoverLeaveEvent(self, ev):
+        if self.kind == 'cursor':
+            self.unsetCursor()
+
+    def _cursor_mouse_press(self, ev):
+        fig = self.figure
+        if ev.button() != QtCore.Qt.LeftButton or fig.interaction_mode not in ('select', 'cursor'):
+            ev.ignore()
             return
-        hit = self.figure._nearest_sample_on_ref(self.parent_plot, self.point_ref, scene_pos)
-        if hit is None:
+        region = self._cursor_region_at(ev.pos())
+        if region is None:
+            ev.ignore()
             return
-        new_ref, local_pos, text = hit
-        self.prepareGeometryChange()
-        self.point_ref = new_ref
-        self.setPos(local_pos)
-        self.text = text
-        self.update()
+        ev.accept()
+        self._cursor_drag = None
+        if ev.modifiers() & QtCore.Qt.ShiftModifier:
+            fig._select_annotation(self, additive=True)
+            return  # Shift only ever toggles selection -- no drag, any region
+        fig._select_annotation(self)
+        if region == 'marker':
+            self._cursor_drag = {
+                'region': 'marker',
+                'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
+                'pos': QtCore.QPointF(self.pos()),
+                'text': self.text,
+            }
+        elif region == 'text':
+            self._end_drag_start_local = QtCore.QPointF(self.p1_local)
+            self._cursor_drag = {'region': 'text'}
+        # region == 'line': select only -- no whole-body drag for 'cursor'
+        # (unlike every other kind; the user's own explicit choice).
 
-    def _on_anchor_release(self, scene_pos):
-        old = self._anchor_drag_origin
-        self._anchor_drag_origin = None
-        if old is None or old['point_ref'] == self.point_ref:
-            return  # never actually landed on a different sample
-        new = {
-            'pos': QtCore.QPointF(self.pos()),
-            'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
-            'text': self.text,
-        }
-
-        def apply(state):
+    def _cursor_mouse_move(self, ev):
+        if self._cursor_drag is None:
+            return
+        region = self._cursor_drag['region']
+        if region == 'marker':
+            if self.point_ref is None or self.parent_plot is None:
+                return
+            fig = self.figure
+            if ev.modifiers() & QtCore.Qt.AltModifier:
+                hit = fig._nearest_sample_switch_curve(self.parent_plot, self.point_ref, ev.scenePos())
+            else:
+                hit = fig._nearest_sample_on_ref(self.parent_plot, self.point_ref, ev.scenePos())
+            if hit is None:
+                return
+            new_ref, local_pos, text = hit
             self.prepareGeometryChange()
-            self.point_ref = dict(state['point_ref']) if state['point_ref'] is not None else None
-            self.setPos(state['pos'])
-            self.text = state['text']
+            self.point_ref = new_ref
+            self.setPos(local_pos)
+            self.text = text
+            self.update()
+        elif region == 'text':
+            self.prepareGeometryChange()
+            scene_pos = ev.scenePos()
+            if ev.modifiers() & QtCore.Qt.ShiftModifier:
+                origin_scene = self.mapToScene(QtCore.QPointF(0, 0))
+                scene_pos = origin_scene + constrain_extent_vector(
+                    self.kind, scene_pos - origin_scene, self.SHIFT_SNAP_DEG)
+            self.p1_local = self.mapFromScene(scene_pos)
             self.update()
 
-        self.figure._push_history(undo_fn=lambda: apply(old), redo_fn=lambda: apply(new))
+    def _cursor_mouse_release(self, ev):
+        drag, self._cursor_drag = self._cursor_drag, None
+        moved = False
+        if drag is not None and drag['region'] == 'marker':
+            old = drag
+            new = {'point_ref': dict(self.point_ref) if self.point_ref is not None else None,
+                   'pos': QtCore.QPointF(self.pos()), 'text': self.text}
+            if old['point_ref'] != new['point_ref']:
+                moved = True
+
+                def apply(state):
+                    self.prepareGeometryChange()
+                    self.point_ref = dict(state['point_ref']) if state['point_ref'] is not None else None
+                    self.setPos(state['pos'])
+                    self.text = state['text']
+                    self.update()
+
+                self.figure._push_history(undo_fn=lambda: apply(old), redo_fn=lambda: apply(new))
+        elif drag is not None and drag['region'] == 'text':
+            old, new = self._end_drag_start_local, QtCore.QPointF(self.p1_local)
+            self._end_drag_start_local = None
+            if old is not None and old != new:
+                moved = True
+
+                def set_p1(pt):
+                    self.prepareGeometryChange()
+                    self.p1_local = pt
+                    self.update()
+
+                self.figure._push_history(undo_fn=lambda: set_p1(old), redo_fn=lambda: set_p1(new))
+        if not moved and not (ev.modifiers() & QtCore.Qt.ShiftModifier):
+            self.figure._apply_click_cycle(ev.scenePos())
+        ev.accept()
 
     # -- whole-body drag (native Qt overrides -- see CLAUDE.md) ----------
     def _parent_point(self, scene_pt):
@@ -898,7 +996,13 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         Rect/Brush are all "no selection" modes (see CLAUDE.md), and a
         click there needs to fall through to the ViewBox instead (Zoom
         Rect's own click-to-zoom, Hand's pan-drag start, ...), not be
-        eaten here just because an annotation happens to sit on top."""
+        eaten here just because an annotation happens to sit on top.
+        'cursor' is a special case (see the dedicated section above): no
+        whole-body drag, its own marker/text hit-testing instead of
+        handles, and it's also live in Data Cursor mode, not just Select."""
+        if self.kind == 'cursor':
+            self._cursor_mouse_press(ev)
+            return
         if ev.button() != QtCore.Qt.LeftButton or self.figure.interaction_mode != 'select':
             ev.ignore()
             return
@@ -922,6 +1026,9 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         self._group_drag_origin_scene = QtCore.QPointF(ev.scenePos())
 
     def mouseMoveEvent(self, ev):
+        if self.kind == 'cursor':
+            self._cursor_mouse_move(ev)
+            return
         if self._group_drag is None:
             return
         scene_pos = ev.scenePos()
@@ -937,6 +1044,9 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         ev.accept()
 
     def mouseReleaseEvent(self, ev):
+        if self.kind == 'cursor':
+            self._cursor_mouse_release(ev)
+            return
         if self._group_drag is None:
             return
         group, self._group_drag = self._group_drag, None
@@ -1360,11 +1470,17 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         # follows for Copy/Delete/Link to...), as ONE undo entry.
         targets = list(fig.selected_annotations) if self in fig.selected_annotations else [self]
         menu = QtWidgets.QMenu()
-        menu.addAction("Copy Annotation").triggered.connect(lambda: self.figure.copy_annotation())
-        paste_action = menu.addAction("Paste Annotation")
-        paste_action.setEnabled(bool(self.figure.clipboard.annotation))
-        paste_action.triggered.connect(lambda: self.figure.paste_annotation())
-        menu.addSeparator()
+        is_cursor = self.kind == 'cursor'
+        if not is_cursor:
+            menu.addAction("Copy Annotation").triggered.connect(lambda: self.figure.copy_annotation())
+            paste_action = menu.addAction("Paste Annotation")
+            paste_action.setEnabled(bool(self.figure.clipboard.annotation))
+            paste_action.triggered.connect(lambda: self.figure.paste_annotation())
+            menu.addSeparator()
+        else:
+            menu.addAction("Add New Datacursor").triggered.connect(
+                lambda: self.figure._add_datacursor_near(self))
+            menu.addSeparator()
         if self._text_item is not None:
             menu.addAction("Edit Text").triggered.connect(lambda: self.start_text_edit())
             menu.addAction("Font...").triggered.connect(
@@ -1418,20 +1534,21 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
             menu.addAction("Arrow Style...").triggered.connect(
                 lambda: fig.open_arrow_style_dialog(self))
 
-        menu.addSeparator()
-        if self.figure._relink_source is self:
-            menu.addAction("Cancel Link").triggered.connect(self.figure._cancel_relink)
-        else:
-            menu.addAction("Link to...").triggered.connect(lambda: self.figure._start_relink(self))
-            if self.anchor == 'figure':
-                # Unlinked: offer a direct shortcut for every subplot its
-                # own (un-rotated) bounding box currently overlaps, instead
-                # of always requiring the click-to-choose gesture above.
-                for p in self.figure._subplots_under_annotation(self):
-                    name = self.figure.subplot_name(p) or "(untitled)"
-                    menu.addAction(f"Link to subplot {name}").triggered.connect(
-                        lambda checked=False, p=p: self.figure._link_annotation_to_subplot(self, p)
-                    )
+        if not is_cursor:
+            menu.addSeparator()
+            if self.figure._relink_source is self:
+                menu.addAction("Cancel Link").triggered.connect(self.figure._cancel_relink)
+            else:
+                menu.addAction("Link to...").triggered.connect(lambda: self.figure._start_relink(self))
+                if self.anchor == 'figure':
+                    # Unlinked: offer a direct shortcut for every subplot its
+                    # own (un-rotated) bounding box currently overlaps, instead
+                    # of always requiring the click-to-choose gesture above.
+                    for p in self.figure._subplots_under_annotation(self):
+                        name = self.figure.subplot_name(p) or "(untitled)"
+                        menu.addAction(f"Link to subplot {name}").triggered.connect(
+                            lambda checked=False, p=p: self.figure._link_annotation_to_subplot(self, p)
+                        )
         menu.addSeparator()
         menu.addAction("Delete").triggered.connect(lambda: self.figure.delete_annotation(self))
         menu.exec_(ev.screenPos())

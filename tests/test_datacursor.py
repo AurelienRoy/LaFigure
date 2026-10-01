@@ -42,7 +42,7 @@ from pyqtgraph.Qt import QtCore
 from lafigure import DataSource
 from lafigure.annotations import ORIENTED_OUTLINE_KINDS
 from lafigure.console import datatip_text
-from tests.helpers import app, m
+from tests.helpers import app, m, FakeClickEvent
 
 
 def _figure(n_plots=1):
@@ -62,6 +62,38 @@ def _brush_rows(f, series, rows, additive=False):
 def _ramp_source(n=50):
     t = np.arange(n, dtype=float)
     return DataSource({'t': t, 'a': t * 2.0})
+
+
+class _FakeEv:
+    """Minimal stand-in for a QGraphicsSceneMouseEvent, covering only what
+    AnnotationItem._cursor_mouse_press/_cursor_mouse_move/_cursor_mouse_release
+    read -- same level of directness the data-cursor overhaul's own
+    anchor-handle tests used before this feature replaced the handle
+    object with these three methods (ann._on_anchor_press(None), etc.)."""
+    def __init__(self, scene_pos=None, local_pos=None, modifiers=QtCore.Qt.NoModifier,
+                 button=QtCore.Qt.LeftButton):
+        self._scene_pos = scene_pos
+        self._local_pos = local_pos if local_pos is not None else QtCore.QPointF(0, 0)
+        self._modifiers = modifiers
+        self._button = button
+
+    def button(self):
+        return self._button
+
+    def modifiers(self):
+        return self._modifiers
+
+    def scenePos(self):
+        return self._scene_pos
+
+    def pos(self):
+        return self._local_pos
+
+    def accept(self):
+        pass
+
+    def ignore(self):
+        pass
 
 
 def _figure_3d(n=30, seed=0):
@@ -95,15 +127,19 @@ def test_cursor_is_an_oriented_outline_kind_and_not_warped_off_square():
     f.close()
 
 
-def test_end_handle_is_pulled_back_for_cursor_but_not_other_kinds():
+def test_cursor_has_no_grab_handles_unlike_every_other_kind():
+    """A datacursor has none of the yellow grab-handle objects every other
+    annotation kind gets -- its round marker and label text are grabbed
+    directly via native hit-testing (_cursor_region_at/_cursor_mouse_press)
+    instead, per the Data Cursor mode feature's own design."""
     f, (ax,) = _figure()
     cursor = f._create_annotation('cursor', 'axes', ax.plot_item, QtCore.QPointF(0, 0), None, text="x")
-    assert 0 < cursor.END_HANDLE_PULLBACK < 1
-    assert cursor._end_handle_pos() == cursor.p1_local * cursor.END_HANDLE_PULLBACK
-    assert cursor._end_handle_pos() != cursor.p1_local, \
-        "the handle must clear the label bubble, which sits exactly at p1_local"
+    assert cursor._end_handle is None
+    assert cursor._anchor_handle is None
+    assert cursor._start_handle is None
+    assert cursor._rotate_handle is None
     line = f._create_annotation('line', 'axes', ax.plot_item, QtCore.QPointF(0, 0), QtCore.QPointF(1, 1))
-    assert line._end_handle_pos() == line.p1_local, "only 'cursor' pulls its handle back"
+    assert line._end_handle is not None, "every other kind keeps its handles"
     f.close()
 
 
@@ -162,7 +198,7 @@ def test_deleting_the_cursors_own_row_removes_it_with_the_delete_as_one_undo():
     f.close()
 
 
-def test_dragging_the_anchor_handle_repicks_the_row_on_the_same_curve_and_is_undoable():
+def test_marker_drag_repicks_the_row_on_the_same_curve_and_is_undoable():
     f, (ax,) = _figure()
     src = _ramp_source()
     s = ax.plot(src, x='t', y='a')
@@ -172,16 +208,16 @@ def test_dragging_the_anchor_handle_repicks_the_row_on_the_same_curve_and_is_und
     point_ref = {'is_3d': False, 'curve_index': items.index(s.item), 'row': f._row_id(s, row0)}
     ann = f._create_annotation('cursor', 'axes', ax.plot_item, QtCore.QPointF(x0, y0), None,
                                 text="", point_ref=point_ref)
-    assert ann._anchor_handle is not None
 
     row1 = 20
     target_scene = ax.plot_item.getViewBox().mapViewToScene(
         QtCore.QPointF(float(s.item.xData[row1]), float(s.item.yData[row1])))
-    ann._on_anchor_press(None)
-    ann._on_anchor_drag(target_scene)
+    ann._cursor_mouse_press(_FakeEv(scene_pos=ann.mapToScene(QtCore.QPointF(0, 0))))
+    assert ann._cursor_drag is not None and ann._cursor_drag['region'] == 'marker'
+    ann._cursor_mouse_move(_FakeEv(scene_pos=target_scene))
     assert ann.point_ref['row'] == f._row_id(s, row1)
     assert abs(ann.pos().x() - s.item.xData[row1]) < 1e-6
-    ann._on_anchor_release(target_scene)
+    ann._cursor_mouse_release(_FakeEv(scene_pos=target_scene))
 
     f.undo()
     assert ann.point_ref['row'] == f._row_id(s, row0)
@@ -191,7 +227,7 @@ def test_dragging_the_anchor_handle_repicks_the_row_on_the_same_curve_and_is_und
     f.close()
 
 
-def test_dragging_the_anchor_handle_never_jumps_to_a_different_curve():
+def test_marker_drag_never_jumps_to_a_different_curve_without_alt():
     f, (ax,) = _figure()
     src = _ramp_source()
     s1 = ax.plot(src, x='t', y='a')
@@ -204,13 +240,35 @@ def test_dragging_the_anchor_handle_never_jumps_to_a_different_curve():
         QtCore.QPointF(float(s1.item.xData[row0]), float(s1.item.yData[row0])),
         None, text="", point_ref=point_ref)
 
-    # Drag toward a point that sits on s2, not s1.
+    # Drag toward a point that sits on s2, not s1, with no Alt held.
     target_scene = ax.plot_item.getViewBox().mapViewToScene(
         QtCore.QPointF(float(s2.item.xData[40]), float(s2.item.yData[40])))
-    ann._on_anchor_press(None)
-    ann._on_anchor_drag(target_scene)
+    ann._cursor_mouse_press(_FakeEv(scene_pos=ann.mapToScene(QtCore.QPointF(0, 0))))
+    ann._cursor_mouse_move(_FakeEv(scene_pos=target_scene))
     resolved_item = f._cursor_ref_item(ax.plot_item, ann.point_ref)
-    assert resolved_item is s1.item, "must stay on the curve it started on, never switch curves"
+    assert resolved_item is s1.item, "must stay on the curve it started on without Alt"
+    f.close()
+
+
+def test_alt_held_marker_drag_switches_to_the_nearest_other_curve():
+    f, (ax,) = _figure()
+    src = _ramp_source()
+    s1 = ax.plot(src, x='t', y='a')
+    s2 = ax.plot(src, x='t', y='t')
+    row0 = 5
+    items = f._plot_data_items_for_ref(ax.plot_item, False)
+    point_ref = {'is_3d': False, 'curve_index': items.index(s1.item), 'row': f._row_id(s1, row0)}
+    ann = f._create_annotation(
+        'cursor', 'axes', ax.plot_item,
+        QtCore.QPointF(float(s1.item.xData[row0]), float(s1.item.yData[row0])),
+        None, text="", point_ref=point_ref)
+
+    target_scene = ax.plot_item.getViewBox().mapViewToScene(
+        QtCore.QPointF(float(s2.item.xData[40]), float(s2.item.yData[40])))
+    ann._cursor_mouse_press(_FakeEv(scene_pos=ann.mapToScene(QtCore.QPointF(0, 0))))
+    ann._cursor_mouse_move(_FakeEv(scene_pos=target_scene, modifiers=QtCore.Qt.AltModifier))
+    resolved_item = f._cursor_ref_item(ax.plot_item, ann.point_ref)
+    assert resolved_item is s2.item, "Alt must switch to the nearest OTHER curve"
     f.close()
 
 
@@ -305,4 +363,159 @@ def test_delete_brushed_points_on_a_3d_series_removes_the_row_and_its_cursor():
 
     f.undo()
     assert len(s.item.positions()) == n_before
+    f.close()
+
+
+# -- Data Cursor mode (toolbar): click-to-move/add, per-subplot tracking ----
+
+def test_cursor_mode_is_exclusive_with_the_other_modes():
+    f, (ax,) = _figure()
+    f.cursor_action.trigger()
+    assert f.interaction_mode == 'cursor'
+    assert f.cursor_action.isChecked() and not f.select_action.isChecked()
+    vb = ax.plot_item.getViewBox()
+    assert not vb.mouseEnabled()[0], "Data Cursor mode must disable pan, like Select/Brush"
+    f.select_action.trigger()
+    assert f.interaction_mode == 'select' and not f.cursor_action.isChecked()
+    f.close()
+
+
+def test_plain_click_in_cursor_mode_creates_a_datacursor_at_the_nearest_point():
+    f, (ax,) = _figure()
+    src = _ramp_source()
+    s = ax.plot(src, x='t', y='a')
+    ax.plot_item.getViewBox().setRange(xRange=(0, 49), yRange=(0, 98), padding=0.1)
+    f.cursor_action.trigger()
+    assert not any(a.kind == 'cursor' for a in f.annotations)
+
+    row = 12
+    scene_pt = ax.plot_item.getViewBox().mapViewToScene(
+        QtCore.QPointF(float(s.item.xData[row]), float(s.item.yData[row])))
+    f._on_scene_clicked(FakeClickEvent(scene_pt))
+    cursors = [a for a in f.annotations if a.kind == 'cursor']
+    assert len(cursors) == 1
+    assert cursors[0].point_ref['row'] == f._row_id(s, row)
+    assert f._last_cursor_by_plot[ax.plot_item] is cursors[0]
+    f.close()
+
+
+def test_second_plain_click_moves_the_same_datacursor_instead_of_adding_one():
+    f, (ax,) = _figure()
+    src = _ramp_source()
+    s = ax.plot(src, x='t', y='a')
+    vb = ax.plot_item.getViewBox()
+    vb.setRange(xRange=(0, 49), yRange=(0, 98), padding=0.1)
+    f.cursor_action.trigger()
+
+    row0 = 5
+    f._on_scene_clicked(FakeClickEvent(vb.mapViewToScene(
+        QtCore.QPointF(float(s.item.xData[row0]), float(s.item.yData[row0])))))
+    cursors = [a for a in f.annotations if a.kind == 'cursor']
+    assert len(cursors) == 1
+    ann = cursors[0]
+
+    row1 = 30
+    f._on_scene_clicked(FakeClickEvent(vb.mapViewToScene(
+        QtCore.QPointF(float(s.item.xData[row1]), float(s.item.yData[row1])))))
+    cursors = [a for a in f.annotations if a.kind == 'cursor']
+    assert cursors == [ann], "the SAME datacursor instance must have moved, not a new one"
+    assert ann.point_ref['row'] == f._row_id(s, row1)
+
+    f.undo()
+    assert ann.point_ref['row'] == f._row_id(s, row0)
+    f.close()
+
+
+def test_shift_click_always_adds_a_new_datacursor():
+    f, (ax,) = _figure()
+    src = _ramp_source()
+    s = ax.plot(src, x='t', y='a')
+    vb = ax.plot_item.getViewBox()
+    vb.setRange(xRange=(0, 49), yRange=(0, 98), padding=0.1)
+    f.cursor_action.trigger()
+
+    for row in (5, 30):
+        f._on_scene_clicked(FakeClickEvent(
+            vb.mapViewToScene(QtCore.QPointF(float(s.item.xData[row]), float(s.item.yData[row]))),
+            modifiers=QtCore.Qt.ShiftModifier))
+    cursors = [a for a in f.annotations if a.kind == 'cursor']
+    assert len(cursors) == 2, "Shift+click must always add, never move an existing one"
+    f.close()
+
+
+def test_last_cursor_tracking_is_per_subplot():
+    f, (ax0, ax1) = _figure(n_plots=2)
+    src = _ramp_source()
+    s0 = ax0.plot(src, x='t', y='a')
+    s1 = ax1.plot(src, x='t', y='a')
+    ax0.plot_item.getViewBox().setRange(xRange=(0, 49), yRange=(0, 98), padding=0.1)
+    ax1.plot_item.getViewBox().setRange(xRange=(0, 49), yRange=(0, 98), padding=0.1)
+    f.cursor_action.trigger()
+
+    row = 7
+    f._on_scene_clicked(FakeClickEvent(ax0.plot_item.getViewBox().mapViewToScene(
+        QtCore.QPointF(float(s0.item.xData[row]), float(s0.item.yData[row])))))
+    f._on_scene_clicked(FakeClickEvent(ax1.plot_item.getViewBox().mapViewToScene(
+        QtCore.QPointF(float(s1.item.xData[row]), float(s1.item.yData[row])))))
+
+    cursors = [a for a in f.annotations if a.kind == 'cursor']
+    assert len(cursors) == 2, "clicking subplot 1 must not move subplot 0's datacursor"
+    assert f._last_cursor_by_plot[ax0.plot_item] is not f._last_cursor_by_plot[ax1.plot_item]
+    f.close()
+
+
+def test_cursor_context_menu_has_no_link_or_copy_paste_but_has_add_new():
+    f, (ax,) = _figure()
+    src = _ramp_source()
+    s = ax.plot(src, x='t', y='a')
+    row = 3
+    items = f._plot_data_items_for_ref(ax.plot_item, False)
+    point_ref = {'is_3d': False, 'curve_index': items.index(s.item), 'row': f._row_id(s, row)}
+    ann = f._create_annotation('cursor', 'axes', ax.plot_item,
+                                QtCore.QPointF(float(s.item.xData[row]), float(s.item.yData[row])),
+                                None, text="", point_ref=point_ref)
+
+    class _FakeCtxEv:
+        def screenPos(self):
+            return QtCore.QPoint(0, 0)
+
+        def accept(self):
+            pass
+
+    # Patch QMenu.exec_ to capture action labels instead of blocking on a
+    # real popup -- same trick a modal-dialog-avoidance test would use.
+    from pyqtgraph.Qt import QtWidgets
+    orig_menu_exec = QtWidgets.QMenu.exec_
+    captured = {}
+
+    def fake_exec(self, *a, **k):
+        captured['labels'] = [act.text() for act in self.actions()]
+
+    QtWidgets.QMenu.exec_ = fake_exec
+    try:
+        ann.contextMenuEvent(_FakeCtxEv())
+    finally:
+        QtWidgets.QMenu.exec_ = orig_menu_exec
+
+    labels = captured['labels']
+    assert "Add New Datacursor" in labels
+    assert not any("Copy" in l or "Paste" in l or "Link" in l for l in labels)
+    f.close()
+
+
+def test_add_new_datacursor_menu_action_creates_a_second_one_offset_nearby():
+    f, (ax,) = _figure()
+    src = _ramp_source()
+    s = ax.plot(src, x='t', y='a')
+    row = 3
+    items = f._plot_data_items_for_ref(ax.plot_item, False)
+    point_ref = {'is_3d': False, 'curve_index': items.index(s.item), 'row': f._row_id(s, row)}
+    ann = f._create_annotation('cursor', 'axes', ax.plot_item,
+                                QtCore.QPointF(float(s.item.xData[row]), float(s.item.yData[row])),
+                                None, text="", point_ref=point_ref)
+    assert len([a for a in f.annotations if a.kind == 'cursor']) == 1
+
+    f._add_datacursor_near(ann)
+    cursors = [a for a in f.annotations if a.kind == 'cursor']
+    assert len(cursors) == 2
     f.close()

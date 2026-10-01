@@ -645,8 +645,9 @@ the actual code — this list is a summary, not a substitute for checking.
       (`PlotItem`), not the figure, so they travel along with
       `copy_subplot`/`paste_subplot` above (`'figure'`-anchored ones don't
       — they aren't any subplot's). Placed via one dropdown "Annotate"
-      toolbar button listing all 8 shapes: point kinds (text, data cursor)
-      place on a single click; every extent-having shape (rect, ellipse,
+      toolbar button listing 7 of the 8 shapes (data cursor excluded,
+      2026-10-02 — see "Data Cursor mode" below): the `text` point kind
+      places on a single click; every extent-having shape (rect, ellipse,
       line, arrow, double arrow, text+arrow) places via one MATLAB-style
       press-drag-release gesture, intercepted with a scene `eventFilter`
       because pyqtgraph's `sigMouseClicked` never fires for a real
@@ -917,11 +918,88 @@ the actual code — this list is a summary, not a substitute for checking.
         point is screen-closer (`annotation_ops.py`'s
         `_nearest_sample_on_ref`, deliberately curve-scoped, per the
         user's own confirmed choice) — one undo entry per drag, only if
-        the row actually changed.
+        the row actually changed. **Superseded by the Data Cursor mode
+        pass below (2026-10-02)**: `_anchor_handle` (and the generic
+        `_end_handle`) are gone for `'cursor'` — the same curve-scoped
+        drag is still there, just driven by native hit-testing instead
+        of a handle object, and Alt now lets it switch curves.
       - **The label's drag handle no longer masks the label text.**
         `AnnotationItem.END_HANDLE_PULLBACK` (0.7): the end handle sits
         70% of the way from p0 to the label point instead of exactly on
         it, where the label's own white text bubble is centered too.
+        **Superseded by the Data Cursor mode pass below**: with no
+        handle object left to mask the label, `END_HANDLE_PULLBACK`
+        itself is gone too.
+- [x] **Data Cursor mode** (2026-10-02), scoped via `/lafigure-scope`
+      (four judgment calls confirmed with the user — see below): the
+      toolbar's "Data Cursor" button is now a persistent, exclusive
+      interaction mode (`toolbar.py`'s `cursor_action`, joins the same
+      `mode_group` as Select/Hand/Zoom Rect/Rotate + Zoom/Brush; Brush's
+      own 2026-09-29 precedent — "exclusive, not a one-shot" — applied
+      here too), not a one-shot "Annotate" placement entry (removed from
+      both the toolbar and `_handle_placement_click`'s `'cursor'`
+      branch, now dead and deleted).
+      - **Click-to-move/add** (`annotation_ops.py`'s
+        `_handle_cursor_mode_click`, dispatched from `selection_ui.
+        _on_scene_clicked`'s new `'cursor'`-mode branch, mirroring Zoom
+        Rect's own click branch): a plain left click in a subplot's data
+        area moves that **one subplot's own last datacursor**
+        (`self._last_cursor_by_plot`, a `{plot_item: AnnotationItem}`
+        map — **per-subplot, confirmed with the user**, not one
+        figure-wide pointer) to the nearest curve point; Shift+click
+        always adds a new one instead. **A plain click in a subplot
+        with no datacursor yet creates one** (same as Shift — confirmed
+        with the user), since there's nothing to move yet. Nearest-point
+        search across every curve on the subplot
+        (`_nearest_point_across_curves`: each curve's own nearest-X
+        candidate, same convention `_nearest_sample_on_ref` already
+        used, then ranked by true on-screen distance across curves) or,
+        on a 3D cell, the pre-existing `_nearest_3d_point` (already
+        cross-curve). `_track_last_cursor`/`_purge_annotation` keep the
+        map correct across undo/redo of a create or delete.
+      - **Datacursors are a distinct kind with special-cased UI**
+        (`annotations.py`'s `AnnotationItem`, `kind == 'cursor'`), all
+        working in **both** Select mode and Data Cursor mode (the
+        user's own confirmed choice, over Select-mode-only like every
+        other kind): no grab-handle objects at all (`_end_handle`/
+        `_anchor_handle` removed from `__init__`); the round marker and
+        the label's own bounding box are grabbed directly via native
+        hit-testing (`_cursor_region_at`, device-pixel distance, so it
+        works the same regardless of an `'axes'` anchor's data scale) in
+        new `_cursor_mouse_press`/`_cursor_mouse_move`/
+        `_cursor_mouse_release` methods, dispatched from the existing
+        `mousePressEvent`/`mouseMoveEvent`/`mouseReleaseEvent` overrides
+        by an early `if self.kind == 'cursor':` branch. Marker drag
+        without Alt stays on the same curve (`_nearest_sample_on_ref`,
+        unchanged); **Alt switches to the nearest sample on a different
+        curve** (`_nearest_sample_switch_curve`, new — excludes the
+        current curve from `_nearest_point_across_curves`). Text drag
+        repositions the label (Shift snaps the angle, same
+        `constrain_extent_vector` every line-like shape already used).
+        No whole-body drag on the connecting line (click there selects
+        only) — unlike every other kind. Hover cursors
+        (`hoverEnterEvent`/`hoverMoveEvent`/`_update_cursor_hover_cursor`):
+        a crosshair over the marker, `SizeAllCursor` over the text,
+        default elsewhere. Selection is **no dashed outline** — the
+        line turns `SUBPLOT_FILIATION_COLOR` red instead
+        (`paint()`'s `'cursor'` branch, guarded out of the generic
+        dashed-outline block at the bottom of `paint()`). Right-click
+        menu (`contextMenuEvent`'s new `is_cursor` branch): no Copy/
+        Paste Annotation, no Link to.../Link-to-subplot shortcuts —
+        instead **Add New Datacursor** (`_add_datacursor_near`: a
+        nearest-real-sample snap `ANNOTATION_PASTE_OFFSET_PX` scene
+        pixels away, confirmed with the user over an exact-position
+        copy or a frozen offset — reusing the Paste Annotation offset
+        convention so position/point_ref never drift apart); Line
+        Style/Width/Color/Font... all stay (not called out for
+        removal). Del still deletes a selected datacursor in either
+        mode — `delete_selection`/`delete_annotation` are mode-agnostic
+        already, so this needed no new code.
+      - `menus.py`/`handles.py` untouched (out of scope, confirmed in
+        the scope proposal): the cursor-kind menu lives entirely in
+        `AnnotationItem.contextMenuEvent`, and the marker/text grab uses
+        native hit-testing rather than a new `AnnotationHandle`
+        subclass.
 - [x] **Debug mode** (2026-09-30, `lafigure/debug.py`): `lafigure.
       enable_debug_mode(log_path=None) -> str` configures the root
       `'lafigure'` logger (every `logging.getLogger('lafigure.<module>')`

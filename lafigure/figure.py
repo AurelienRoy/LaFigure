@@ -169,6 +169,11 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         self._placing_state = None  # {'anchor','parent_plot','p0'} between a two-click shape's clicks
         # Set by "Link to...": next click on a subplot/empty space reparents this annotation.
         self._relink_source = None
+        # Data Cursor mode: plot_item -> the last datacursor AnnotationItem
+        # added/moved in that subplot (one per subplot, independent across
+        # subplots) -- see AnnotationOpsMixin._handle_cursor_mode_click.
+        # Pruned (entry removed) when that cursor is deleted.
+        self._last_cursor_by_plot = {}
 
         # select: click to select, drag handles to resize/move. Default.
         # hand: plain pan/zoom, no selection UI.

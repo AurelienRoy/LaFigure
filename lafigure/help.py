@@ -109,9 +109,10 @@ class HelpMixin:
   Curves..., Remove Average, FFT, CSV
 
 ### Annotations
-- **Annotate toolbar button** to place a shape: point kinds (text, data
-  cursor) on a single click; rect/ellipse/line/arrow/double arrow/text+arrow
-  via press-drag-release
+- **Annotate toolbar button** to place a shape: **text** on a single
+  click; rect/ellipse/line/arrow/double arrow/text+arrow via
+  press-drag-release. Data cursors are placed via their own **Data
+  Cursor mode** instead (below), not this button.
 - **Drag the shape body** to move it; **drag its end-point handle(s)** to
   resize; **drag its rotate handle** (green) to rotate
 - **Hold Shift** while placing, resizing, dragging, or rotating an
@@ -129,11 +130,20 @@ class HelpMixin:
   unlinked annotation also lists a direct **Link to subplot `<name>`**
   shortcut for every subplot its own bounding box currently overlaps --
   and Delete
-- **Data Cursor**: its point stays pinned exactly on a curve sample (2D or
-  3D, following the camera as it orbits) -- **drag its anchor handle** to
-  re-pick a different sample on the same curve, or **drag the label** to
-  move just the text; deleting that sample via Brush mode removes the
-  cursor too, as one undo
+- **Data Cursor** annotations are a special case, unlike every other
+  kind: no yellow grab handles at all. **Drag the round marker** on the
+  curve to slide it to a nearby sample on the SAME curve (**Alt+drag**
+  switches it to the nearest sample on a DIFFERENT curve instead); **drag
+  the label text** to reposition it (Shift snaps the angle, same as a
+  line). Hovering shows an insertion cursor over the marker, a
+  horizontal/vertical-arrows cursor over the text. Clicking the marker,
+  text, or line selects it -- **no dashed outline**; the line turns red
+  instead. Its right-click menu has no Copy/Paste or Link to... (only
+  **Add New Datacursor**, a nearby copy), but keeps Line Style/Width/
+  Color/Font. Its point stays pinned exactly on a curve sample (2D or
+  3D, following the camera as it orbits); deleting that sample via Brush
+  mode removes the cursor too, as one undo. These gestures and this menu
+  work in **both** Select mode and Data Cursor mode (below).
 
 ### Hand Mode
 - **Pan and zoom** the subplot under the cursor
@@ -163,7 +173,21 @@ class HelpMixin:
 - **Drag a rectangle** to brush points; **Shift+drag** adds to the brushed set
 - **Right-click** for the brushed-point actions (delete, transform, stats, fit, hide)
 - **Del** deletes the brushed points (not a subplot/curve/annotation selection)
-- A mode like Select/Hand/Zoom Rect/Rotate + Zoom: choosing one unchecks the others
+- A mode like Select/Hand/Zoom Rect/Rotate + Zoom/Data Cursor: choosing
+  one unchecks the others
+
+### Data Cursor Mode
+- A persistent mode (toolbar), not a one-shot placement: **no pan**
+- **Click** a subplot's data area to move that subplot's own last
+  datacursor to the nearest curve point; **Shift+click** always adds a
+  new one instead of moving
+- A plain click in a subplot with no datacursor yet creates one (same as
+  Shift+click), since there's nothing to move
+- Each subplot tracks its own "last datacursor" independently -- clicking
+  in one subplot never moves another subplot's
+- An existing datacursor's own marker/text drag, hover cursors, and Del
+  to delete all still work in this mode exactly as in Select mode (see
+  the Data Cursor annotation bullet above)
 
 Every zoom and pan (rectangle, wheel, drag, Home, Fit, View All) is one
 **Ctrl+Z / Ctrl+Y** step.

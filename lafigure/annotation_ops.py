@@ -63,9 +63,12 @@ class AnnotationOpsMixin:
 
     # -- annotations -------------------------------------------------
     # Placement arms self._placing_kind, then the next scene interaction
-    # creates the annotation instead of selecting a subplot/curve. Point
-    # kinds (text, cursor) place on a single click, handled by
+    # creates the annotation instead of selecting a subplot/curve. The
+    # 'text' point kind places on a single click, handled by
     # _handle_placement_click via _on_scene_clicked's sigMouseClicked.
+    # ('cursor' used to place this same way too; it's now Data Cursor
+    # mode's own click-to-move/add gesture, never self._placing_kind --
+    # see _handle_cursor_mode_click.)
     # Extent kinds (TWO_CLICK_KINDS) place via a single press-drag-release
     # gesture instead: sigMouseClicked only fires for a genuine "click" (a
     # release near the press point within pyqtgraph's own click-vs-drag
@@ -216,11 +219,144 @@ class AnnotationOpsMixin:
         _, item, row, xyz, local_pos = best
         return item, row, xyz, local_pos
 
+    def _nearest_point_across_curves(self, parent_plot, scene_pos, exclude_item=None):
+        """The (item, array_index, x, y) whose sample is closest, in real
+        on-screen pixels, to scene_pos -- across every plottable 2D curve
+        on parent_plot (never the downsampled display: full xData/yData).
+        Each curve's own candidate sample is its nearest-X point (matching
+        _nearest_sample_on_ref's existing same-curve convention below), so
+        this only adds cross-curve comparison on top, not a different
+        per-curve metric; candidates are then ranked by true 2-D scene
+        distance (via mapViewToScene), not by X alone, since two curves
+        can sit at very different Y -- see the lafigure-axes-geometry
+        skill on not comparing raw data-space distances across curves
+        with different units/scales. `exclude_item`: skip one curve (Alt-
+        drag reassignment, which must land on a DIFFERENT curve than the
+        one currently referenced). None if parent_plot has no data."""
+        vb = parent_plot.getViewBox()
+        data_pos = vb.mapSceneToView(scene_pos)
+        best = None
+        for item in parent_plot.listDataItems():
+            if not isinstance(item, pg.PlotDataItem) or not item.isVisible() or item is exclude_item:
+                continue
+            x_arr, y_arr = item.xData, item.yData
+            if x_arr is None or not len(x_arr):
+                continue
+            idx = int(np.argmin(np.abs(np.asarray(x_arr) - data_pos.x())))
+            x, y = float(x_arr[idx]), float(y_arr[idx])
+            scene_pt = vb.mapViewToScene(QtCore.QPointF(x, y))
+            d2 = (scene_pt.x() - scene_pos.x()) ** 2 + (scene_pt.y() - scene_pos.y()) ** 2
+            if best is None or d2 < best[0]:
+                best = (d2, item, idx, x, y)
+        if best is None:
+            return None
+        _, item, idx, x, y = best
+        return item, idx, x, y
+
+    def _cursor_hit_at(self, parent_plot, scene_pos, exclude_item=None):
+        """(point_ref, local_pos, text) for the nearest curve/series sample
+        to scene_pos on parent_plot -- 2D via _nearest_point_across_curves
+        (every curve), 3D via _nearest_3d_point (already cross-curve,
+        `exclude_item` not supported there -- Alt-reassign is a 2D-only
+        gesture, see AnnotationItem._on_anchor_drag). None if parent_plot
+        has no plottable data. Shared by Data Cursor mode's click-to-
+        move/add gesture (_handle_cursor_mode_click) and the right-click
+        'Add New Datacursor' action (_add_datacursor_near)."""
+        if getattr(parent_plot, 'axes_type', 'cartesian') == '3d':
+            hit = self._nearest_3d_point(parent_plot, scene_pos)
+            if hit is None:
+                return None
+            item, array_idx, (x, y, z), local_pos = hit
+            series = self._series_of(item)
+            items = self._plot_data_items_for_ref(parent_plot, True)
+            point_ref = {'is_3d': True, 'curve_index': items.index(item),
+                         'row': self._row_id(series, array_idx)}
+            text = datatip_text(self, parent_plot, item, array_idx, x, y, z=z)
+            return point_ref, local_pos, text
+        hit = self._nearest_point_across_curves(parent_plot, scene_pos, exclude_item=exclude_item)
+        if hit is None:
+            return None
+        item, array_idx, x, y = hit
+        series = self._series_of(item)
+        items = self._plot_data_items_for_ref(parent_plot, False)
+        point_ref = {'is_3d': False, 'curve_index': items.index(item),
+                     'row': self._row_id(series, array_idx)}
+        text = datatip_text(self, parent_plot, item, array_idx, x, y)
+        return point_ref, QtCore.QPointF(x, y), text
+
+    # -- Data Cursor mode: click-to-move/add, and the per-subplot "last
+    # datacursor" tracking a plain click acts on (confirmed with the user
+    # via /lafigure-scope: per-subplot, not one figure-wide pointer; a
+    # plain click in a subplot with no datacursor yet creates one, same as
+    # Shift) -----------------------------------------------------------
+    def _move_cursor_annotation(self, ann, new_point_ref, new_local_pos, new_text):
+        """Move an existing datacursor to a freshly hit-tested point, as
+        one undo entry -- same apply-closure shape as AnnotationItem.
+        _on_anchor_release, just driven from the figure side (Data Cursor
+        mode's click, not a handle drag) and not restricted to the same
+        curve."""
+        old = {'pos': QtCore.QPointF(ann.pos()),
+               'point_ref': dict(ann.point_ref) if ann.point_ref is not None else None,
+               'text': ann.text}
+        new = {'pos': QtCore.QPointF(new_local_pos), 'point_ref': dict(new_point_ref), 'text': new_text}
+        if old['pos'] == new['pos'] and old['point_ref'] == new['point_ref']:
+            return  # clicked back onto the same nearest sample -- nothing to push
+
+        def apply(state):
+            ann.prepareGeometryChange()
+            ann.point_ref = dict(state['point_ref']) if state['point_ref'] is not None else None
+            ann.setPos(state['pos'])
+            ann.text = state['text']
+            ann.update()
+
+        apply(new)
+        self._push_history(undo_fn=lambda: apply(old), redo_fn=lambda: apply(new))
+
+    def _handle_cursor_mode_click(self, parent_plot, scene_pos, additive=False):
+        """Data Cursor mode (toolbar), a left click inside parent_plot's
+        data area: plain click moves this subplot's last datacursor to
+        the nearest curve point; Shift always adds a new one instead. A
+        plain click in a subplot with no datacursor yet creates one (the
+        same as Shift), since there's nothing to move."""
+        hit = self._cursor_hit_at(parent_plot, scene_pos)
+        if hit is None:
+            return
+        point_ref, local_pos, text = hit
+        existing = self._last_cursor_by_plot.get(parent_plot)
+        if not additive and existing is not None and existing in self.annotations:
+            logger.debug("cursor mode: moved datacursor on subplot")
+            self._move_cursor_annotation(existing, point_ref, local_pos, text)
+        else:
+            logger.debug("cursor mode: added new datacursor on subplot")
+            self._create_annotation('cursor', 'axes', parent_plot, local_pos, None,
+                                     text=text, point_ref=point_ref)
+
+    def _add_datacursor_near(self, ann):
+        """Right-click 'Add New Datacursor' (kind == 'cursor' only): a new
+        datacursor near this one, ANNOTATION_PASTE_OFFSET_PX scene pixels
+        away (same convention as Paste Annotation) -- snapped to the
+        nearest real sample there, not a frozen offset copy, so its
+        point_ref/position never drift out of sync (see
+        AnnotationItem.refresh_point)."""
+        parent_plot = ann.parent_plot
+        if parent_plot is None:
+            return
+        marker_scene = ann.mapToScene(QtCore.QPointF(0, 0))
+        probe = marker_scene + QtCore.QPointF(self.ANNOTATION_PASTE_OFFSET_PX, self.ANNOTATION_PASTE_OFFSET_PX)
+        hit = self._cursor_hit_at(parent_plot, probe)
+        if hit is None:
+            return
+        point_ref, local_pos, text = hit
+        self._create_annotation('cursor', 'axes', parent_plot, local_pos, None,
+                                 text=text, point_ref=point_ref)
+
     def _nearest_sample_on_ref(self, parent_plot, point_ref, scene_pos):
-        """While dragging a cursor's own anchor handle (annotations.py's
-        AnnotationHandle._on_anchor_drag): the nearest sample to a live
-        drag position, on THE SAME curve/series point_ref already names --
-        never a different one, the user's own confirmed choice. Returns
+        """While dragging a datacursor's round marker with no modifier held
+        (annotations.py's AnnotationItem, kind == 'cursor', native
+        mousePressEvent/mouseMoveEvent hit-testing -- no handle object):
+        the nearest sample to a live drag position, on THE SAME curve/
+        series point_ref already names -- never a different one, unless
+        Alt is held (see _nearest_sample_switch_curve below). Returns
         (new_point_ref, local_pos, text) or None if that curve is gone."""
         item = self._cursor_ref_item(parent_plot, point_ref)
         if item is None:
@@ -252,6 +388,21 @@ class AnnotationOpsMixin:
         local_pos = QtCore.QPointF(float(x_arr[row]), float(y_arr[row]))
         text = datatip_text(self, parent_plot, item, row, float(x_arr[row]), float(y_arr[row]))
         return new_ref, local_pos, text
+
+    def _nearest_sample_switch_curve(self, parent_plot, point_ref, scene_pos):
+        """Alt-held marker drag (kind == 'cursor' only): re-pick the
+        nearest sample to scene_pos on the nearest OTHER curve -- i.e. the
+        same cross-curve search _cursor_hit_at does, excluding the curve
+        point_ref currently names, so Alt always lands on a different
+        curve rather than snapping right back. 2D only (3D has no
+        Alt-reassign gesture -- a 3D cell's own camera-projection search,
+        _nearest_3d_point, is already cross-curve with no 'current curve'
+        concept to exclude). Returns (new_point_ref, local_pos, text) or
+        None if no other curve has data."""
+        if getattr(parent_plot, 'axes_type', 'cartesian') == '3d':
+            return None
+        current_item = self._cursor_ref_item(parent_plot, point_ref)
+        return self._cursor_hit_at(parent_plot, scene_pos, exclude_item=current_item)
 
     def _annotation_at(self, scene_pos):
         """The topmost annotation whose shape contains scene_pos, or None.
@@ -291,54 +442,16 @@ class AnnotationOpsMixin:
         self._reparent_annotation(ann, 'border', parent_plot, ann.scenePos())
 
     def _handle_placement_click(self, scene_pos):
-        """Single-click placement for point kinds (cursor, text). Extent
-        kinds (TWO_CLICK_KINDS) are placed by a press-drag-release gesture
+        """Single-click placement for the 'text' point kind. Extent kinds
+        (TWO_CLICK_KINDS) are placed by a press-drag-release gesture
         instead -- see eventFilter -- so they never reach here; guarded by
-        _on_scene_clicked, which only calls this for non-extent kinds."""
+        _on_scene_clicked, which only calls this for non-extent kinds.
+        'cursor' is no longer placed this way at all -- it's Data Cursor
+        mode's own click-to-move/add gesture now (_handle_cursor_mode_click),
+        not a one-shot "Annotate" entry."""
         kind = self._placing_kind
         anchor, parent_plot = self._annotation_zone(scene_pos)
         logger.debug("annotation placement start: kind=%s anchor=%s", kind, anchor)
-        if kind == 'cursor':
-            if anchor != 'axes':
-                return  # a data cursor needs a subplot's data axes -- ignore clicks elsewhere
-            if getattr(parent_plot, 'axes_type', 'cartesian') == '3d':
-                hit = self._nearest_3d_point(parent_plot, scene_pos)
-                if hit is None:
-                    self._cancel_placing()  # logs its own "cancelled" record
-                    return
-                item, array_idx, (x, y, z), local_pos = hit
-                series = self._series_of(item)
-                items = self._plot_data_items_for_ref(parent_plot, True)
-                point_ref = {'is_3d': True, 'curve_index': items.index(item),
-                             'row': self._row_id(series, array_idx)}
-                text = datatip_text(self, parent_plot, item, array_idx, x, y, z=z)
-                self._create_annotation('cursor', 'axes', parent_plot, local_pos,
-                                         None, text=text, point_ref=point_ref)
-                logger.debug("annotation placement completed: kind=cursor anchor=axes pos=%s (3d)", local_pos)
-                self._placing_kind = None  # see _cancel_placing's own docstring
-                self._cancel_placing()
-                return
-            data_pos = parent_plot.getViewBox().mapSceneToView(scene_pos)
-            curve = self._active_curve_on(parent_plot)
-            idx = None
-            point_ref = None
-            if curve is not None and curve.xData is not None and curve.xData.size:
-                idx = int(np.argmin(np.abs(curve.xData - data_pos.x())))
-                x, y = float(curve.xData[idx]), float(curve.yData[idx])
-                series = self._series_of(curve)
-                items = self._plot_data_items_for_ref(parent_plot, False)
-                point_ref = {'is_3d': False, 'curve_index': items.index(curve),
-                             'row': self._row_id(series, idx)}
-            else:
-                x, y = data_pos.x(), data_pos.y()
-            text = datatip_text(self, parent_plot, curve, idx, x, y)
-            self._create_annotation('cursor', 'axes', parent_plot, QtCore.QPointF(x, y),
-                                     None, text=text, point_ref=point_ref)
-            logger.debug("annotation placement completed: kind=cursor anchor=axes pos=(%.6g, %.6g)", x, y)
-            self._placing_kind = None  # see _cancel_placing's own docstring
-            self._cancel_placing()
-            return
-
         p0 = (parent_plot.getViewBox().mapSceneToView(scene_pos) if anchor == 'axes'
               else QtCore.QPointF(scene_pos))
         ann = self._create_annotation(kind, anchor, parent_plot, p0, None,
@@ -447,6 +560,7 @@ class AnnotationOpsMixin:
             ann.anchor_offset = self._box_fraction(parent_plot, p0)
         self._add_annotation_to_scene(ann, p0)
         self._select_annotation(ann)
+        self._track_last_cursor(ann)
 
         snapshot = ann.to_dict()
         holder = {'ann': ann}
@@ -460,9 +574,20 @@ class AnnotationOpsMixin:
             a = AnnotationItem.from_dict(self, parent_plot, snapshot)
             holder['ann'] = a
             self._select_annotation(a)
+            self._track_last_cursor(a)
 
         self._push_history(undo_fn, redo_fn)
         return ann
+
+    def _track_last_cursor(self, ann):
+        """Register `ann` as its subplot's last datacursor (Data Cursor
+        mode's per-subplot tracking, see _handle_cursor_mode_click) -- a
+        no-op for every other kind. Called from every site that can bring
+        a 'cursor' annotation into existence (initial creation, redo of a
+        delete/placement undo), so the map stays correct across undo/redo
+        without each call site needing its own kind check."""
+        if ann.kind == 'cursor':
+            self._last_cursor_by_plot[ann.parent_plot] = ann
 
     def _add_annotation_to_scene(self, ann, local_pos):
         """Place `ann` into its anchor's coordinate parent: the shared
@@ -511,6 +636,8 @@ class AnnotationOpsMixin:
         self._detach_annotation(ann)
         if ann in self.annotations:
             self.annotations.remove(ann)
+        if self._last_cursor_by_plot.get(ann.parent_plot) is ann:
+            del self._last_cursor_by_plot[ann.parent_plot]
 
     def delete_annotation(self, ann):
         """Right-click 'Delete' / Del key on a selected annotation."""
@@ -523,6 +650,7 @@ class AnnotationOpsMixin:
             a = AnnotationItem.from_dict(self, parent_plot, snapshot)
             holder['ann'] = a
             self._select_annotation(a)
+            self._track_last_cursor(a)
 
         def redo_fn():
             a = holder.get('ann')

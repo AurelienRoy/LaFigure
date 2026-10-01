@@ -218,6 +218,20 @@ class SelectionUIMixin:
                                       "zoom %s" % ('out' if ev.double() else 'in'))
             return
 
+        if (self.interaction_mode == 'cursor' and hit_plot is not None
+                and ev.button() == QtCore.Qt.LeftButton):
+            # Data Cursor mode: a click on empty data area moves (or, with
+            # Shift, adds) that subplot's datacursor -- see
+            # _handle_cursor_mode_click. A click that actually lands on an
+            # existing datacursor's own marker/text/line never reaches
+            # here at all: AnnotationItem's native mousePressEvent (kind
+            # == 'cursor') consumes it first, same as every other
+            # annotation drag (see CLAUDE.md's note on native-vs-pyqtgraph
+            # click dispatch).
+            self._handle_cursor_mode_click(hit_plot, pos, additive=additive)
+            self._log_click_dispatch(ev, additive, hit_plot, pos, "cursor mode click")
+            return
+
         if (hit_plot is None and ev.button() == QtCore.Qt.RightButton
                 and not ev.double() and not ev.isAccepted()
                 and self._annotation_at(pos) is None):

@@ -183,7 +183,7 @@ class ViewOpsMixin:
             return _rotate_cursor()
         if mode == 'brush':
             return QtCore.Qt.CrossCursor
-        return QtCore.Qt.ArrowCursor
+        return QtCore.Qt.ArrowCursor  # 'select', 'cursor'
 
     def _apply_view_mouse_mode(self, vb):
         """Set a ViewBox's pan/rect mouse mode from self.interaction_mode,
@@ -230,7 +230,15 @@ class ViewOpsMixin:
         pan. Brush used to be a separate on/off toggle stacked on the other
         modes; it's exclusive since 2026-09-29 (user request) -- it already
         took over the left drag and disabled pan/wheel, so no combination
-        was lost. self.brushing stays, derived from the mode."""
+        was lost. self.brushing stays, derived from the mode.
+        'cursor': Data Cursor mode -- no pan; a plain left click moves that
+        subplot's last datacursor annotation to the nearest curve point,
+        Shift+click always adds a new one instead (see
+        AnnotationOpsMixin._handle_cursor_mode_click, dispatched from
+        selection_ui._on_scene_clicked). Existing datacursor annotations
+        stay directly editable (marker/text drag, hover cursors, Del) in
+        this mode exactly as in Select mode -- see annotations.py's
+        AnnotationItem, kind == 'cursor'."""
         old_mode = self.interaction_mode
         self.interaction_mode = mode
         if mode != old_mode:
@@ -264,7 +272,7 @@ class ViewOpsMixin:
         here would be if toolbar.py somehow hadn't built it."""
         action = getattr(self, {'select': 'select_action', 'hand': 'hand_action',
                                 'zoom': 'zoom_action', 'brush': 'brush_action',
-                                'rotate': 'rotate_action'}[self.interaction_mode], None)
+                                'rotate': 'rotate_action', 'cursor': 'cursor_action'}[self.interaction_mode], None)
         if action is not None and not action.isChecked():
             action.setChecked(True)
 
@@ -695,11 +703,12 @@ class ViewOpsMixin:
         self._push_history(undo_fn, redo_fn)
 
     def _apply_mouse_enabled(self, vb):
-        """The only writer of a ViewBox's mouse-enabled state: Select and
-        Brush modes both disable pan (and the wheel). 'rotate' (R4-3D)
-        needs no extra case here -- it behaves like 'hand'/'zoom' (mouse
-        stays on) already, simply by not being 'select' or 'brush'."""
-        enabled = self.interaction_mode not in ('select', 'brush')
+        """The only writer of a ViewBox's mouse-enabled state: Select,
+        Brush and Data Cursor modes all disable pan (and the wheel).
+        'rotate' (R4-3D) needs no extra case here -- it behaves like
+        'hand'/'zoom' (mouse stays on) already, simply by not being
+        'select'/'brush'/'cursor'."""
+        enabled = self.interaction_mode not in ('select', 'brush', 'cursor')
         vb.setMouseEnabled(x=enabled, y=enabled)
 
     def _apply_link_x(self):

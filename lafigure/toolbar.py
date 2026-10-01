@@ -156,8 +156,6 @@ class ToolbarMixin:
             (SHAPE_LABELS[kind], lambda checked=False, kind=kind: self.start_placing_annotation(kind))
             for kind in SHAPE_KINDS if kind != 'cursor'
         ])
-        action("Data Cursor", lambda: self.start_placing_annotation('cursor'),
-               icon=ti.data_cursor_icon(), tooltip="Place a data-readout marker on a curve")
 
         action("Toggle Legend", self.toggle_legend, icon=ti.legend_icon(),
                tooltip="Show or hide the legend")
@@ -206,11 +204,21 @@ class ToolbarMixin:
             icon=ti.rotate_3d_icon(),
             tooltip="Orbit/pan/dolly a 3D subplot's camera (enabled only while one is focused)",
         )
+        # Data Cursor is an exclusive mode like Select/Hand/Zoom Rect, not a
+        # one-shot placement action: while active, every left click moves
+        # that subplot's last datacursor to the nearest curve point (Shift
+        # adds a new one instead) -- see annotation_ops._handle_cursor_mode_click.
+        self.cursor_action = action(
+            "Data Cursor", lambda checked: self.set_interaction_mode('cursor'), checkable=True,
+            icon=ti.data_cursor_icon(),
+            tooltip="Click to move the subplot's datacursor to the nearest point (Shift = add a new one)",
+        )
         mode_group.addAction(self.select_action)
         mode_group.addAction(self.hand_action)
         mode_group.addAction(self.zoom_action)
         mode_group.addAction(self.rotate_action)
         mode_group.addAction(self.brush_action)
+        mode_group.addAction(self.cursor_action)
         self.select_action.setChecked(True)
         self._update_rotate_action_enabled()
         action("Home", self.reset_view, icon=ti.home_icon(),
