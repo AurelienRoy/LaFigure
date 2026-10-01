@@ -146,9 +146,9 @@ annotations (its "next planned piece") were implemented. **This file's
 feature list below is the source of truth**, together with the phased
 **Roadmap** section after it (the agreed next work).
 
-## Example scripts (`examples/`, added 2026-09-29)
+## Example scripts (`examples/`, added 2026-09-29; 3 more in round 4, 2026-09-30)
 
-Seven standalone, runnable scripts, each coded the way a library customer
+Ten standalone, runnable scripts, each coded the way a library customer
 would (`import lafigure`, `fig.subplot(...)`, `ax.plot`/`ax.scatter`/
 `ax.bar`/etc.), one per broad slice of the public API:
 `line_signal_annotations.py` (a line plot + textarrow/cursor/rect
@@ -166,11 +166,34 @@ LaFigure windows; a whole subplot and a single curve copied from one
 into the other through the shared, process-wide `Clipboard`, by setting
 `fig.focused_plot`/`fig.active_curve` the way a click would before
 calling the same `copy_subplot`/`copy_curve`/`paste_subplot`/
-`paste_curve` the toolbar/menu actions call). Run any of them with
-`python examples/<name>.py` from anywhere — each inserts the repo root
-into `sys.path` itself at the top (`lafigure` isn't pip-installed;
-there's no `setup.py`/`pyproject.toml`), so no `PYTHONPATH` or `-m`
-gymnastics are needed.
+`paste_curve` the toolbar/menu actions call). **Round 4 added three
+more**: `custom_datatip_example.py` (`ax.datatip` as both a format
+string and a Python callable, multi-line formats, and a 3D curve's
+cursor text — data cursors placed non-interactively via
+`_create_annotation`, text computed through `lafigure.console.
+datatip_text`), `image_processing_with_controls_example.py` (a
+procedural grayscale `imshow` image driven live by a
+`ControlPanelWindow`: sliders for brightness/contrast/blur, a colormap
+dropdown, an invert checkbox, a Reset button, and a reactive stats
+table — every edit undoable via Ctrl+Z, routed through
+`LaFigure._push_history` directly rather than `Series.set_data`, see
+the gap noted below), and `expanded_series_kinds_gallery.py` (one
+subplot per round-4 series kind — all 19, see the Round 4 section
+below). Run any of them with `python examples/<name>.py` from
+anywhere — each inserts the repo root into `sys.path` itself at the
+top (`lafigure` isn't pip-installed; there's no `setup.py`/
+`pyproject.toml`), so no `PYTHONPATH` or `-m` gymnastics are needed.
+
+**`Series.set_data` has no image-kind branch.** It requires `len(x) ==
+len(y)` with a non-`None` y; an image kind's `get_xy` returns `(2-D
+matrix, None)`, so calling `set_data` on an `imshow`/`heatmap` series
+raises `TypeError: len() of unsized object` (confirmed empirically
+while building `image_processing_with_controls_example.py`, round 4).
+The example works around it by pushing undo directly through
+`LaFigure._push_history` instead — the same precedent
+`_create_annotation` already set for a construct with no public
+undoable setter. A future session giving `Series.set_data` a real
+image-kind branch should update that example to use it.
 
 **Annotations have no public, non-interactive constructor yet.**
 Normally a user picks a shape from the toolbar's "Annotate" dropdown and
@@ -306,6 +329,13 @@ the actual code — this list is a summary, not a substitute for checking.
       already-selected curve reliably keeps it selected while its own
       menu opens (traced to click-cycling firing on right-clicks too,
       not just left — see bug #22 for the click-tolerance mechanism).
+      **Surface Color.../Surface Opacity** (round 4, 2026-09-30,
+      `curve_style.has_fill`/`set_curve_fill_color`/
+      `set_curve_fill_opacity`): two curve-menu entries for any series
+      whose kind actually fills, gated on the item's own
+      `opts.get('fillBrush') is not None` rather than a hardcoded kind
+      list (CLAUDE.md bug #16's lesson applied going forward) — present
+      for `area` and absent for a plain line.
 - [ ] Manipulate individual numeric points (drag a sample to edit its
       value) — not implemented
 - [x] Add/remove a legend (toolbar toggle, or the subplot right-click
@@ -587,8 +617,16 @@ the actual code — this list is a summary, not a substitute for checking.
       end-point handle — the opposite corner for rect/ellipse, the tip for
       line/arrow/textarrow/cursor's label), and rotate (a second handle
       above the shape's center) are all native `QGraphicsItem` overrides,
-      each pushing one undo/redo entry. Right-click properties menu (line
-      color/width, and a fill color for rect/ellipse). `'border'`- and
+      each pushing one undo/redo entry. **Right-click styling menu**
+      (replaced a single "Properties..." dialog in round 4, 2026-09-30 —
+      see the Round 4 section below): individual Line Style / Line
+      Width / Color... entries (Line Style/Width disabled for `text`,
+      which has no stroke), plus Fill... for rect/ellipse, each applying
+      to the whole annotation selection as one undo entry. A shape with
+      an arrowhead (`arrow`/`doublearrow`/`textarrow`) also gets an
+      **Arrow Style...** popup (head length/width/type —
+      arrow/round/diamond/none — live-previewed, modeless, undoable as
+      one entry on commit). `'border'`- and
       `'axes'`-anchored annotations are parented to the **subplot**
       (`PlotItem`), not the figure, so they travel along with
       `copy_subplot`/`paste_subplot` above (`'figure'`-anchored ones don't
@@ -1018,7 +1056,16 @@ against memory of having launched the package.)
       `SeriesKind` methods proper (J didn't own `series.py` either) — see
       Phase 3 below. `to_plotly` and true click-selection for a
       non-`PlotDataItem` kind are still **not yet built** (M and a future
-      package, respectively).
+      package, respectively). **19 more kinds built in round 4**
+      (2026-09-30) — `loglog`/`semilogx`/`semilogy`, `boxchart`/
+      `violinplot`, `polar`/`polarhistogram`/`piechart`, `bubblechart`/
+      `swarmchart`/`binscatter`/`spy`, `quiver`/`feather`/`contour`,
+      `barh`/`stem`/`heatmap`/`errorband`, `plot3`/`bubblechart3d` — see
+      the dedicated **Round 4** section below for what each one draws,
+      its capabilities, and known gaps; every one delegates to an
+      existing kind (`line`/`scatter`/`bar`/`imshow`/`line3d`) or to the
+      shared `lafigure/kinds/_base.py` rather than building a from-scratch
+      item, per that round's own explicit requirement.
 - [x] `Axes` facade, `lafigure/axes.py` (WP-H): `fig.subplot(row, col,
       ...)` returns one (`add_subplot` itself is unchanged, still returns
       a raw `PlotItem`); `ax.plot(x, y)` / `ax.plot(source, x='col',
@@ -1310,6 +1357,190 @@ against memory of having launched the package.)
       triangles falls back to vertices only. `PyOpenGL` itself was never
       installed — the renderer uses PyQt5's own raw GL bindings, per the
       spike's own approach.
+
+## Round 4 — new plot kinds, colorbar, 3D modes, styling (2026-09-30)
+
+A second user-driven push after the roadmap above (WP-00 through WP-O)
+was already fully merged. Delivered as waves of parallel worker agents,
+same pattern as the roadmap; full execution plan, file ownership and
+package briefs are in `PLAN.md`'s own "Round 4" section — this is the
+durable summary. Explicit requirement across every new kind: **reuse an
+existing kind or the shared base, never a from-scratch item** — every
+kind below delegates to `line`/`scatter`/`bar`/`imshow`/`line3d` or to
+`lafigure/kinds/_base.py` (new: `CompositeSeriesItem`, `DerivedKind`,
+plus `categories`/`jitter`/`value_colors`/`size_scale`/`quantiles`/
+`kde`/`bin2d` helpers shared by several kinds below). Full suite: 746
+tests, green.
+
+### 19 new SeriesKinds
+
+- **Log kinds** (`loglog`, `semilogx`, `semilogy`, `log_kinds.py`):
+  `DerivedKind` on `'line'` — a plain `pg.PlotDataItem`, `setup()` just
+  calls `PlotItem.setLogMode(log_x, log_y)`. **Log mode is a
+  SUBPLOT-wide pyqtgraph setting, not per-series** — calling
+  `semilogy` after `loglog` on the same subplot overwrites the axis
+  mode. Non-positive values aren't dropped from the raw data, only the
+  *displayed* mapped value becomes NaN (a gap in the curve).
+- **Distribution kinds** (`boxchart`, `violinplot`, `kinds/{box,violin}
+  chart.py`): each a single composite item, one box/violin per category
+  code (`_base.categories`), `{'copy'}` only — **not click-selectable**
+  (no `.curve`). `boxchart` draws whiskers/box/median/outliers (Tukey
+  1.5×IQR via `_base.quantiles`); `violinplot` draws a mirrored KDE
+  outline (`_base.kde`, plain-numpy Gaussian KDE, Silverman bandwidth)
+  normalized to its own peak. Both round-trip through the *original*
+  category labels, not codes.
+- **Polar family** (`polar`, `polarhistogram`, `piechart`,
+  `kinds/_polar_base.py` + their own files) — **confirmed decision: no
+  new `axes_type`**; each draws on an ordinary cartesian `PlotItem`
+  with hidden axes and a locked 1:1 aspect (`setup_polar_axes`).
+  `polar` is a `DerivedKind` on `'line'` (real `PlotDataItem`,
+  cartesian-converted via `polar_to_xy`; capabilities narrowed to
+  `{'brush','copy'}` — FFT/Remove Average/Fit judged not meaningful on
+  a polar projection); it draws/grows a shared radial-ring +
+  angular-spoke grid (`draw_polar_grid`/`grow_polar_grid`, cached on
+  `plot_item._lafigure_polar_grid`). `polarhistogram` and `piechart`
+  are each a single composite wedge-path item, `{'copy'}` only, not
+  brushable (no per-point identity in a wedge); `piechart` skips the
+  radial grid (nothing to annotate) and draws its own label+percentage
+  text per slice from a qualitative color cycle.
+- **Scatter-derived kinds** (`bubblechart`, `swarmchart`, `binscatter`,
+  `spy`) — all delegate their actual drawing to `SERIES_KINDS['scatter'
+  ].create(...)`, so they get a real `PlotDataItem`/`ScatterPlotItem`,
+  `{'brush','copy'}`, for free:
+  - `bubblechart`: `size=`/`color=` columns map to exact per-point
+    `symbolSize`/`symbolBrush` (`_base.size_scale`/`value_colors`); a
+    colorbar attaches only when `color=` is given.
+  - `swarmchart`: jitters X position by category (`_base.jitter`,
+    seeded `np.random.default_rng` — `to_dict` stores the RAW category
+    + seed so copy/paste re-derives the identical jitter, not frozen
+    positions); sets category tick labels.
+  - `binscatter`: one colored point per non-empty 2-D histogram bin
+    (`_base.bin2d`) — deliberately NOT an `ImageItem`, so it stays
+    click-selectable/brushable; round-trips the raw (x,y) samples, so
+    brush/delete acts on bin centers and can't trace back to originals
+    (documented, non-recoverable).
+  - `spy` (MATLAB's `spy(matrix)`): plots nonzero `(col,row)` positions
+    of a 2-D matrix, `invertY(True)` to match `imshow`'s row-0-at-top
+    convention; only the nonzero PATTERN round-trips, not cell values.
+- **Field kinds** (`quiver`, `feather`, `contour`, `kinds/{quiver,
+  feather,contour}.py`) — `{'copy'}` only, not click-selectable:
+  - `quiver`: one composite item, a shaft + filled triangular arrowhead
+    per sample; autoscales so the longest arrow is `fraction` (default
+    0.15) of the data's bounding-box diagonal unless `scale=` is given
+    explicit. Arrowhead built in SCENE space then mapped back (mirrors
+    `AnnotationItem._draw_arrowhead`, duplicated not shared, per the
+    `lafigure-axes-geometry` skill).
+  - `feather`: `QuiverKind` subclass — every arrow's tail pinned to
+    `(x[i], 0)` (MATLAB `feather()` convention), reuses quiver's
+    autoscale/arrowhead machinery.
+  - `contour`: **marching squares from scratch in plain numpy — no
+    scipy/skimage**, per the round's own constraint
+    (`marching_squares(matrix, level)`, standalone and independently
+    testable; resolves the 4-crossing "saddle" case via the cell's mean
+    corner value). Draws one independent line-segment set per level
+    (not stitched into continuous polylines — same visual result since
+    adjacent cells share exact edge points). Grid-index coordinates
+    (`matrix[row,col]`), **not** Y-inverted like `imshow` — a `contour`
+    over the same array as an `imshow` needs an explicit flip to align.
+    `Series.set_data` is a documented no-op (the real data is the 2-D
+    matrix).
+- **`barh`/`stem`/`heatmap`/`errorband`** (`kinds/{barh,stem,heatmap,
+  errorband}.py`):
+  - `barh`: `DerivedKind` on `'bar'` but fully overrides `create`/
+    `to_dict`/`get_xy`/`set_xy` to swap axis roles on the same
+    `BarGraphItem`; category ticks go on the left axis via its own
+    code path (not shared with `bar.py`'s bottom-axis version —
+    documented duplication).
+  - `stem`: plain `SeriesKind` (not derived), one composite item per
+    series (vertical line + tip marker) — deliberately ONE item, not a
+    line+scatter pair, to avoid the companion-item orphan-on-delete gap
+    `errorbar.py` already has. Marker size is constant SCREEN pixels
+    (`pixelWidth()`/`pixelHeight()`), not data units.
+  - `heatmap`: `DerivedKind` on `'imshow'` — inherits everything
+    (colorbar included) except `setup()`, which places the image via
+    `x_coords=`/`y_coords=` (not `x=`/`y=`, reserved by `Axes._plot_kind`
+    for source-column selection) using only their first/last values —
+    non-uniform spacing isn't modeled pixel-by-pixel.
+  - `errorband`: TWO real `PlotDataItem`s — a center line plus a
+    transparent-filled polygon band (`fillLevel='enclosed'`, alpha-0
+    pen per bug #15's lesson, never `pen=None`), kept in lockstep via
+    `item._lafigure_band`. **Same orphan-on-delete gap as
+    `errorbar.py`**: `clip_ops.py`'s `delete_curve` only knows the
+    primary item, so deleting an errorband leaves its shaded region on
+    the plot (flagged, not fixed — `clip_ops.py` wasn't this package's
+    file to own).
+- **3D kinds** (`plot3`, `bubblechart3d`, `kinds/{plot3,bubblechart3d}
+  .py`), 3D-cell only (`axes_type='3d'`):
+  - `plot3`: a pure `DerivedKind` alias of `'line3d'` — adds nothing,
+    exists only so `ax.plot3(x, y, z=z)` matches MATLAB's name.
+  - `bubblechart3d`: per-point size is **degraded, not exact** — the
+    3D renderer supports only one point size per GL draw call (or one
+    pen width in the `QPainter` fallback), unlike 2D scatter's free
+    per-point size. Buckets sizes into up to 6 discrete groups
+    (`_base.size_scale`, area-proportional), each its own GL primitive.
+    Sizes are pre-scaled once at construction from the full raw array
+    (stable under Hide Brushed Points); a later full position
+    replacement via `Series.set_data` can desync sizes from positions —
+    a known, unexercised limitation.
+
+None of the above except `bubblechart`/`swarmchart`/`binscatter`/`spy`/
+`polar` claim `'brush'`; none have an HTML/plotly export converter yet
+(falls back to a generic Scattergl, losing size/color/shape — same gap
+Phase 4's HTML export already had for any future unrecognized kind).
+
+### `lafigure.plotmatrix(data, columns=None, figure=None, kind='scatter', diagonal='hist')`
+
+New top-level function (`lafigure/plotmatrix.py`), not a `SeriesKind`.
+Builds an N×N grid of `Axes` from one shared `DataSource` — `data` can
+be a `DataSource` directly, a dict of columns, or a 2-D array (`columns=`
+names the variables). Off-diagonal cell `(row, col)` is
+`ax.<kind>(source, x=columns[col], y=columns[row])`; diagonal cells are
+`ax.hist(source, x=columns[i])` (or left empty if `diagonal=None`).
+Labels only the outer edge, MATLAB/pandas style. **Every cell is built
+from the SAME `DataSource`** — deliberately, so brushing a rectangle on
+one cell highlights the same rows on every other cell for free, through
+the pre-existing source-keyed brushing machinery; `plotmatrix.py` itself
+has no bespoke linking code. Returns the flat, row-major list of `Axes`.
+
+### Interactive colorbar (R4-CBAR, `lafigure/colorbar.py`)
+
+A colorbar's axis spans a *display range* covering both the data's
+min/max and both movable limit values. Two FIXED, non-draggable dashed
+lines mark the data min/max, refreshed live when the underlying data
+changes. Two movable limit lines control the actual color mapping;
+dragging one changes only that limit's *value* — the untouched limit
+keeps its value and only moves in *pixels* if the display range has to
+grow to keep showing it. Used by `imshow`/`heatmap` (already had a
+colorbar pre-round-4) and now also `bubblechart` (conditional on
+`color=`) and `binscatter` (always).
+
+### 3D interaction modes (R4-3D)
+
+A new **"Rotate + Zoom"** toolbar mode, to the right of Zoom Rect,
+holding the pre-round-4 3D camera behavior (orbit/pan/dolly) — greyed
+out unless the focused subplot is 3D. **Zoom Rect on a 3D cell is now a
+real drag-a-rectangle zoom** (previously 3D cells only supported
+Rotate+Zoom-style camera moves). A 3D subplot's right-click menu gained
+a "Camera View" submenu (X-Y, X-Z, Y-Z, Sideway presets) and a
+"Projection" submenu (Perspective/Orthographic), and lost FFT (never
+meaningful on a 3D scene). Also
+added, cross-cutting: a subplot-menu **"Scale"** submenu (X/Y:
+Linear/Log), undoable — so an existing 2D plot can be switched to log
+mode without rebuilding it as `loglog`/`semilogx`/`semilogy`.
+
+### Figure-browser tree focus-on-click (R4-TREE)
+
+Clicking a row in the Figure Manager's figure-browser tree now also
+sets that figure's `focused_plot` to the clicked subplot (previously
+the tree only showed/edited state, never drove focus) — so toolbar
+actions and the Curve Browser tab immediately target the subplot you
+just clicked in the tree, not whatever was last clicked in the figure
+itself.
+
+### Annotation and area styling
+
+Covered under the **Annotations** and curve-style bullets in the
+feature list above (search "round 4" there) — not repeated here.
 
 ## What worked well (keep doing this)
 

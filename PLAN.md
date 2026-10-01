@@ -810,20 +810,22 @@ branch of that wave, not once per merge. Baseline before round 4:
 
 | WP | Title | Wave | Depends on | Model | Status |
 |----|-------|------|-----------|-------|--------|
-| R4-BASE  | Shared kind base: composite item, derived kinds, category/jitter/color/size/bin helpers | 1 | — | sonnet | merged |
-| R4-CBAR  | Interactive colorbar: fixed data-min/max lines, independent limits, live refresh | 1 | — | sonnet | merged |
-| R4-3D    | Rotate+Zoom mode, 3D rect zoom, 3D menu (views, projection, no FFT), axis Scale submenu | 1 | — | sonnet | merged |
-| R4-TREE  | Figure-browser row click sets the focused subplot | 1 | — | sonnet | merged |
-| R4-LOG   | Kinds: loglog, semilogx, semilogy | 2 | R4-BASE | sonnet | running |
-| R4-SCAT  | Kinds: bubblechart, swarmchart, binscatter, spy | 2 | R4-BASE, R4-CBAR | sonnet | running |
-| R4-DIST  | Kinds: boxchart, violinplot | 2 | R4-BASE | sonnet | running |
-| R4-POLAR | Kinds: polar, polarhistogram, piechart (+ shared polar grid) | 2 | R4-BASE | sonnet | running |
-| R4-FIELD | Kinds: quiver, feather, contour | 2 | R4-BASE | sonnet | running |
-| R4-MISC  | Kinds: barh, stem, heatmap, errorband | 2 | R4-BASE, R4-CBAR | sonnet | running |
-| R4-K3D   | Kinds: plot3, bubblechart3d | 2 | R4-BASE | sonnet | running |
-| R4-PMAT  | `lafigure.plotmatrix(...)`: a grid of subplots from a DataSource | 2 | R4-BASE | sonnet | running |
-| R4-STYLE | Annotation line style/width/color + Arrow Style popup; area surface color/opacity | 3 | R4-3D | sonnet | todo |
-| R4-EX    | Examples: custom datatip, image processing with controls, expanded gallery | 3 | every kind package | sonnet | todo |
+| R4-BASE  | Shared kind base: composite item, derived kinds, category/jitter/color/size/bin helpers | 1 | — | sonnet | merged (ab87a64) |
+| R4-CBAR  | Interactive colorbar: fixed data-min/max lines, independent limits, live refresh | 1 | — | sonnet | merged (058c4de) |
+| R4-3D    | Rotate+Zoom mode, 3D rect zoom, 3D menu (views, projection, no FFT), axis Scale submenu | 1 | — | sonnet | merged (52f5b5b) |
+| R4-TREE  | Figure-browser row click sets the focused subplot | 1 | — | sonnet | merged (a64430d) |
+| R4-LOG   | Kinds: loglog, semilogx, semilogy | 2 | R4-BASE | sonnet | merged (7b137c6) |
+| R4-SCAT  | Kinds: bubblechart, swarmchart, binscatter, spy | 2 | R4-BASE, R4-CBAR | sonnet | merged (65a2181) |
+| R4-DIST  | Kinds: boxchart, violinplot | 2 | R4-BASE | sonnet | merged (421f24a) |
+| R4-POLAR | Kinds: polar, polarhistogram, piechart (+ shared polar grid) | 2 | R4-BASE | sonnet | merged (8ed80f3) |
+| R4-FIELD | Kinds: quiver, feather, contour | 2 | R4-BASE | sonnet | merged (f166e94) |
+| R4-MISC  | Kinds: barh, stem, heatmap, errorband | 2 | R4-BASE, R4-CBAR | sonnet | merged (6e441d8) |
+| R4-K3D   | Kinds: plot3, bubblechart3d | 2 | R4-BASE | sonnet | merged (e40acc0) |
+| R4-PMAT  | `lafigure.plotmatrix(...)`: a grid of subplots from a DataSource | 2 | R4-BASE | sonnet | merged (f132310) |
+| R4-STYLE | Annotation line style/width/color + Arrow Style popup; area surface color/opacity | 3 | R4-3D | sonnet | merged (5861f00; coordinator fixed 4 pre-existing tests broken by removing `_edit_annotation_properties`, see CLAUDE.md) |
+| R4-EX    | Examples: custom datatip, image processing with controls, expanded gallery | 3 | every kind package | sonnet | merged (b157be2) |
+
+**Round 4 complete — every package above is merged, full suite green (746/746).**
 
 ## File ownership (round 4)
 

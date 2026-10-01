@@ -148,11 +148,22 @@ class HelpMixin:
 - **No selection** borders or handles shown -- a click never selects a
   subplot/curve/annotation in this mode, even one right under the cursor
 
+### Rotate + Zoom Mode
+- **3D subplots only** -- enabled only while a 3D subplot is focused;
+  acts like Hand mode on a 2D subplot
+- **Drag** to orbit the camera, **right-drag** to pan, **wheel** to dolly
+  (today's default 3D camera behavior, moved under its own mode)
+- A 3D subplot's right-click menu adds a **Camera View** submenu (X-Y,
+  X-Z, Y-Z, Sideway presets) and a **Projection** submenu
+  (Perspective/Orthographic), and drops FFT (not meaningful on a 3D
+  scene); a 2D subplot's menu gets a **Scale** submenu instead (X/Y:
+  Linear/Log), undoable
+
 ### Brush Mode
 - **Drag a rectangle** to brush points; **Shift+drag** adds to the brushed set
 - **Right-click** for the brushed-point actions (delete, transform, stats, fit, hide)
 - **Del** deletes the brushed points (not a subplot/curve/annotation selection)
-- A mode like Select/Hand/Zoom Rect: choosing one unchecks the others
+- A mode like Select/Hand/Zoom Rect/Rotate + Zoom: choosing one unchecks the others
 
 Every zoom and pan (rectangle, wheel, drag, Home, Fit, View All) is one
 **Ctrl+Z / Ctrl+Y** step.
