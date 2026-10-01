@@ -29,6 +29,19 @@ You start with no other context — everything you need is in the repo.
 - If you need to change a file someone else owns, or an interface you
   were told to consume doesn't exist or doesn't fit: **stop and report**,
   don't work around it.
+- **Stay in your own worktree.** Never run `git checkout`/`git switch`/
+  `git branch -f` in the main checkout (`C:\code\LaFigure`) — other
+  agents and the user work there. If you have no worktree, stop and report.
+- **Shell commands that don't trigger permission prompts** (you run in the
+  background; a prompt stalls you until the user answers):
+  - Search/read with the Grep, Glob and Read tools, not shell `grep`,
+    `find`, `cat`, `head` or pipes into them.
+  - No multi-line `python -c "..."` (each line is checked as its own
+    command): write the script to your scratchpad and run
+    `python <file>.py`, or use a `python - <<'EOF'` heredoc.
+  - No shell loops (`for`/`while`) — they always prompt. Run the commands
+    one by one, or loop inside a Python script.
+  - One simple command per call (`cd <worktree> && <one command>` is fine).
 - **Tests first**: write the tests for your package in
   `tests/test_<id>.py` (`run_tests.py` collects every `test_*` function in
   every `tests/test_*.py` automatically — nothing to register by hand; add
