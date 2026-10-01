@@ -34,10 +34,18 @@ or gets reverted by the next deselect. So every edit here unhighlights,
 applies to the real style, and re-highlights.
 
 MATLAB-style values: LINE_STYLES/MARKERS map MATLAB's codes onto QPen
-styles and pyqtgraph symbols. Line style 'none' is a fully transparent
-pen, never pen=None -- pyqtgraph skips building a curve's hit-test path
-when its pen is None, which would make the curve unclickable (CLAUDE.md
-bug #15; kinds/scatter.py does the same).
+styles and pyqtgraph symbols. Line style 'none' sets QtCore.Qt.NoPen,
+never pen=None (pyqtgraph skips building a curve's hit-test path when its
+pen is None, which would make the curve unclickable -- CLAUDE.md bug #15;
+kinds/scatter.py does the same) and, as of CLAUDE.md bug #27, no longer a
+merely-transparent (alpha 0) color either: this app's useOpenGL=True +
+antialias=False defaults route a plain PlotCurveItem through pyqtgraph's
+native paintGL(), which only skips drawing a stroke on pen.style() ==
+NoPen, never on alpha -- a transparent-but-not-NoPen pen was still being
+drawn fully opaque, just at the GL-forced minimum cosmetic width (a faint
+but very real line). NoPen is a real, non-None QPen, so hit-testing still
+works; only the stroke itself is skipped, in both paintGL() and the
+ordinary software paint() path.
 """
 from pyqtgraph.Qt import QtCore, QtGui
 import pyqtgraph as pg
@@ -135,7 +143,9 @@ def has_fill(item):
 
 
 def pen_style_of(pen):
-    """The MATLAB line-style code a pen draws: 'none' for no/transparent line."""
+    """The MATLAB line-style code a pen draws: 'none' for no/NoPen/transparent
+    line. Alpha 0 is still recognized (not just NoPen) for pens built before
+    CLAUDE.md bug #27's fix, e.g. restored from an old undo entry or paste."""
     if pen is None:
         return 'none'
     pen = pg.mkPen(pen)
@@ -219,7 +229,9 @@ class CurveStyleMixin:
         self._edit_curve_styles(items, change)
 
     def set_curve_line_style(self, items, code):
-        """code: a MATLAB line style ('-', '--', ':', '-.', 'none')."""
+        """code: a MATLAB line style ('-', '--', ':', '-.', 'none'). 'none'
+        sets QtCore.Qt.NoPen (see the module docstring, CLAUDE.md bug #27)
+        -- not a transparent color, which paintGL() still draws opaque."""
         style = next(v for _, c, v in LINE_STYLES if c == code)
 
         def change(item, s):
@@ -230,14 +242,14 @@ class CurveStyleMixin:
             if not line_capable(self._curve_kind(item)):
                 return None
             pen = pg.mkPen(s['pen']) if s['pen'] is not None else pg.mkPen('k')
-            color = QtGui.QColor(pen.color())
-            if style is None:
-                color.setAlpha(0)              # invisible, still hit-testable
-            else:
-                if color.alpha() == 0:
-                    color.setAlpha(255)        # coming back from 'none'
-                pen.setStyle(style)
-            pen.setColor(color)
+            if pen.color().alpha() == 0:
+                # Coming back from a legacy alpha-0 'none' pen (an old undo
+                # entry/paste) -- restore full opacity regardless of which
+                # style we're headed to; NoPen (below) hides it if needed.
+                color = QtGui.QColor(pen.color())
+                color.setAlpha(255)
+                pen.setColor(color)
+            pen.setStyle(QtCore.Qt.NoPen if style is None else style)
             s['pen'] = pen
             return s
         self._edit_curve_styles(items, change)
@@ -273,7 +285,7 @@ class CurveStyleMixin:
         def change(item, s):
             color = pg.mkColor(rgba)
             pen = pg.mkPen(s['pen']) if s['pen'] is not None else None
-            if pen is not None and pen.color().alpha() > 0:
+            if pen is not None and pen_style_of(pen) != 'none':
                 pen.setColor(color)
                 s['pen'] = pen
             if s['symbolBrush'] is not None:

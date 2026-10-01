@@ -71,7 +71,8 @@ def test_edit_while_unselected_is_not_reverted_by_a_later_deselect():
 def test_line_style_none_keeps_the_curve_hit_testable_and_comes_back():
     f, p, c = _line_figure()
     f.set_curve_line_style([c], 'none')
-    assert c.opts['pen'] is not None and pg.mkPen(c.opts['pen']).color().alpha() == 0
+    assert c.opts['pen'] is not None and pg.mkPen(c.opts['pen']).style() == QtCore.Qt.NoPen, \
+        "NoPen, not merely a transparent color -- paintGL() ignores alpha (CLAUDE.md bug #27)"
     f.set_curve_line_style([c], '--')
     pen = pg.mkPen(c.opts['pen'])
     assert pen.style() == QtCore.Qt.DashLine and pen.color().alpha() == 255
@@ -135,7 +136,7 @@ def test_line_color_on_a_none_style_line_stays_invisible():
     f.set_curve_line_style([c], 'none')
     f.set_curve_line_color([c], (0, 255, 0))
     pen = pg.mkPen(c.opts['pen'])
-    assert pen.color().alpha() == 0, "still invisible: 'none' style isn't undone by recoloring"
+    assert pen.style() == QtCore.Qt.NoPen, "still invisible: 'none' style isn't undone by recoloring"
     assert pen.color().getRgb()[:3] == (0, 255, 0), "but the color underneath did change"
     f.set_curve_line_style([c], '-')
     assert pg.mkPen(c.opts['pen']).color().getRgb()[:3] == (0, 255, 0), "the new color shows once visible"

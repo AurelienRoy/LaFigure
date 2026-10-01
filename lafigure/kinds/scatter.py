@@ -35,19 +35,28 @@ is not None`; with `pen=None` the internal PlotCurveItem never gets any
 data at all, so its `mouseShape()` is permanently empty and a click on a
 symbol never reaches `_wire_curve_clickable`'s `curve.curve.sigClicked`
 (confirmed empirically: `item.curve.mouseShape().isEmpty()` is True with
-pen=None, False with a fully transparent pen). A fully transparent pen
-(alpha 0) makes `updateItems` treat the curve as visible-enough to build
-real path data -- so hit-testing works -- while painting nothing, which
-is visually identical to no connecting line at all."""
+pen=None, False with a NoPen-style pen).
+
+**Not a transparent (alpha 0) color either (CLAUDE.md bug #27).** This
+app's useOpenGL=True + antialias=False defaults route a plain
+PlotCurveItem through pyqtgraph's native paintGL(), which skips drawing a
+stroke only on `pen.style() == QtCore.Qt.NoPen`, never on alpha -- a
+merely-transparent pen was still drawn fully opaque, just at the
+GL-forced minimum cosmetic width: a faint but very real connecting line
+between every point. `QtCore.Qt.NoPen` is a real, non-None QPen, so
+`updateItems` still builds the real path (hit-testing keeps working),
+while both paintGL() and the ordinary software paint() path skip the
+stroke unconditionally."""
 import numpy as np
 import pyqtgraph as pg
+from pyqtgraph.Qt import QtCore
 
 from ..series import SeriesKind, register_series_kind
 
 DEFAULT_SIZE = 8
 DEFAULT_SYMBOL = 'o'
 DEFAULT_COLOR = 'b'
-_TRANSPARENT = (0, 0, 0, 0)
+_NO_LINE_PEN = pg.mkPen((0, 0, 0, 255), style=QtCore.Qt.NoPen)
 
 
 class ScatterKind(SeriesKind):
@@ -65,7 +74,7 @@ class ScatterKind(SeriesKind):
             symbolBrush = pg.mkBrush(color)
         if symbolPen is None:
             symbolPen = pg.mkPen(color)
-        return plot_item.plot(x, y, pen=pg.mkPen(_TRANSPARENT), symbol=symbol, symbolSize=size,
+        return plot_item.plot(x, y, pen=_NO_LINE_PEN, symbol=symbol, symbolSize=size,
                               symbolBrush=symbolBrush, symbolPen=symbolPen, name=name)
 
     def to_dict(self, item):

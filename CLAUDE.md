@@ -2567,6 +2567,60 @@ thing that happened to tip it over). When a shared singleton is involved,
 audit the register/unregister pair, not the code that runs right before
 the crash.
 
+### 27. A "transparent pen" invisibility trick only works in pyqtgraph's software paint path — its native `paintGL()` ignores alpha entirely
+
+**Symptom (reported live, 2026-10-02):** setting a curve's (or scatter's
+default) Line Style to "None" didn't hide the line — it still drew a
+visible connecting line between points, just thinner than the curve's
+set width.
+
+**Root cause:** the app's own standing config
+(`pg.setConfigOptions(antialias=False, useOpenGL=True, ...)`, `figure.py`)
+routes every plain, non-stepped `PlotCurveItem` (a `'line'`/`'scatter'`/
+`'area'`/`'errorbar'`-kind curve with no fill or a numeric `fillLevel`)
+through pyqtgraph's native `paintGL()` instead of its ordinary
+`QPainter`-based `paint()`. `paintGL()` skips drawing a stroke only on
+`pen.style() == QtCore.Qt.NoPen` — never on the pen color's alpha — and,
+separately, enables `GL_BLEND` only inside its `if aa:` branch (this app
+runs with `antialias=False` by default), so a merely-transparent (alpha 0)
+pen's RGB is written straight to the framebuffer with no blending at all:
+visually identical to a fully opaque line, at whatever minimum width
+`paintGL`'s own cosmetic-pen clamp (`if pen.isCosmetic() and width < 1:
+width = 1`) enforces — which is why it looked "thinner than usual" rather
+than simply the wrong color. This had been the app's own established
+convention for "invisible but still hit-testable" since bug #15
+(`curve_style.py`'s Line Style "None", and `kinds/scatter.py`'s default
+no-visible-line pen) — both built and tested long before `useOpenGL=True`
++ `antialias=False` together were confirmed to actually defeat it; the
+existing tests only ever asserted on `pen.color().alpha() == 0`, never on
+a real rendered pixel, so the gap went uncaught (the same class of miss
+CLAUDE.md's own bug #15/#18 already call out: assert the user-visible
+outcome, not a proxy for it).
+
+**Fix:** both sites now set `QtCore.Qt.NoPen` directly (keeping the pen
+non-`None`, so `PlotDataItem.updateItems` still builds the item's real
+hit-test path, exactly as bug #15 already required) instead of zeroing
+the color's alpha. `paint()` and `paintGL()` both check `pen.style() ==
+NoPen` unconditionally, so this hides the line in both the software and
+the GL-accelerated path. `curve_style.pen_style_of` still also recognizes
+a legacy alpha-0 pen as `'none'` (an old undo entry or paste could still
+hold one), and `set_curve_line_style` restores full opacity on any such
+pen before applying the real style, so switching back to a visible style
+on one shows correctly.
+
+**Lesson:** an "invisible but still real" `QGraphicsItem` trick built on
+a `QPen`'s alpha channel is only as good as the paint path that actually
+consumes it — a library item with its own native/GL paint override
+(`paintGL()`, `beginNativePainting()`) is free to interpret pen state
+differently (and did, here: style gates the stroke, alpha doesn't) from
+its own ordinary software `paint()`. Before trusting an alpha-based
+invisibility trick on a pyqtgraph item, check whether that item has a
+`paintGL`-style override and, if so, read what it actually checks —
+don't assume every paint path treats a `QPen`'s fields the same way
+(the same family as bug #7/#8/#16's "an object's state doesn't mean what
+its name suggests" — here it's "which paint path even looks at this
+field" rather than "what does this attribute hold").
+
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 
 **This section described the codebase from the original single-file POC
