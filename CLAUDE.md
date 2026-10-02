@@ -1141,15 +1141,21 @@ the actual code — this list is a summary, not a substitute for checking.
       top bar (`<variables>`/`<time>` read-only fields +
       `_ClickableField`) is a Paint.NET foreground/background-swatch
       convention: clicking one arms whether the next table row click(s)
-      feed the Y selection (multi) or the X selection (single) —
-      `_var_arm_select`/`_on_var_table_clicked` — shown in blue
-      (`_var_apply_row_colors`, the same "a different concept from the
-      table's own native selection" split the Figure/Curve Browser tabs'
-      own blue-row coloring already uses) and as comma-joined names in
-      the fields; picking a variable from a different `DataSource` than
-      the current Y selection starts a fresh one rather than mixing
-      sources. A small "✕" button next to `<time>` appears only once X
-      has been overridden, to revert to the default. **New Figure**
+      feed the Y selection (multi) or the X selection (single) --
+      `_var_arm_select`/`_on_var_table_clicked` -- and the ARMED field
+      itself is highlighted amber (`ARMED_FIELD_STYLE`,
+      `_var_update_armed_field_style`), so it's clear which one table
+      clicks currently feed. The picked variables themselves show as
+      comma-joined names in the fields and as colored table rows --
+      **red** for the X variable, **blue** for a Y variable
+      (`_var_apply_row_colors`/`X_SELECTED_BG`; blue is the same "a
+      different concept from the table's own native selection" split the
+      Figure/Curve Browser tabs' own blue-row coloring already uses; X
+      wins if a variable is picked as both); picking a variable from a
+      different `DataSource` than the current Y selection starts a fresh
+      one rather than mixing sources. A small "✕" button next to `<time>`
+      appears only once X has been overridden, to revert to the default.
+      **New Figure**
       builds a brand-new, empty `LaFigure` window with one subplot from
       the current selection. Live-updated from the existing
       `registry.figureOpened`/`figureClosed`/`subplotsChanged` signals

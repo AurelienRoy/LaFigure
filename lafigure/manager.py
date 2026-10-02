@@ -154,6 +154,12 @@ class FigureManager(QtWidgets.QMainWindow):
     ROLE_OBJ = QtCore.Qt.UserRole + 2    # None | PlotItem | PlotDataItem | AnnotationItem
 
     SELECTED_BG = QtGui.QColor(200, 220, 255)
+    # Variable Browser tab: the X variable's own row is red, not blue, so
+    # it reads as a different role from the (blue) Y selection; the armed
+    # field itself (whichever of <variables>/<time> was clicked last) gets
+    # a light amber background so it's clear which one table clicks feed.
+    X_SELECTED_BG = QtGui.QColor(255, 195, 195)
+    ARMED_FIELD_STYLE = "background-color: #ffe9a8;"
 
     def __init__(self):
         super().__init__()
@@ -1407,16 +1413,22 @@ class FigureManager(QtWidgets.QMainWindow):
             self.var_table.setRowHidden(row, not visible)
 
     def _var_apply_row_colors(self):
-        """Blue = currently armed (X or Y) selection -- a DIFFERENT concept
+        """Red = the X variable's row, blue = a Y variable's row -- two
+        different roles, so two different colors -- a DIFFERENT concept
         from the table's own native row selection (which drag uses), same
-        split as the Figure/Curve Browser tabs' own selection-color rows."""
+        split as the Figure/Curve Browser tabs' own selection-color rows.
+        X wins if a variable is (unusually) picked as both."""
         y_set = set(self._var_y)
         x_val = self._var_x
         for row in range(self.var_table.rowCount()):
             item = self.var_table.item(row, 0)
             data = item.data(QtCore.Qt.UserRole) if item is not None else None
-            hit = data in y_set or data == x_val
-            brush = QtGui.QBrush(self.SELECTED_BG) if hit else QtGui.QBrush()
+            if x_val is not None and data == x_val:
+                brush = QtGui.QBrush(self.X_SELECTED_BG)
+            elif data in y_set:
+                brush = QtGui.QBrush(self.SELECTED_BG)
+            else:
+                brush = QtGui.QBrush()
             for col in range(3):
                 cell = self.var_table.item(row, col)
                 if cell is not None:
@@ -1434,8 +1446,14 @@ class FigureManager(QtWidgets.QMainWindow):
     def _var_arm_select(self, which):
         """Click on the <variables> or <time> field: arms which one the
         next table row click(s) feed, Paint.NET foreground/background-
-        swatch style -- stays armed until the OTHER field is clicked."""
+        swatch style -- stays armed until the OTHER field is clicked. The
+        armed field itself is highlighted so it's clear which one is active."""
         self._var_arm = which
+        self._var_update_armed_field_style()
+
+    def _var_update_armed_field_style(self):
+        self.var_y_field.setStyleSheet(self.ARMED_FIELD_STYLE if self._var_arm == 'y' else "")
+        self.var_x_field.setStyleSheet(self.ARMED_FIELD_STYLE if self._var_arm == 'x' else "")
 
     def _var_reset_x(self):
         self._var_x = None

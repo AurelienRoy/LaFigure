@@ -287,6 +287,57 @@ def test_picking_a_y_variable_from_a_different_source_clears_the_previous_select
     fig.close()
 
 
+def test_armed_field_is_highlighted_and_unarmed_field_is_not():
+    fig = shown_figure()
+    src = _source()
+    fig.subplot(2, 0).plot(src, x='time', y='temp')
+
+    mgr = m.FigureManager()
+    app.processEvents()
+
+    assert mgr.var_y_field.styleSheet() == ""
+    assert mgr.var_x_field.styleSheet() == ""
+
+    mgr._var_arm_select('y')
+    assert mgr.var_y_field.styleSheet() == mgr.ARMED_FIELD_STYLE
+    assert mgr.var_x_field.styleSheet() == ""
+
+    mgr._var_arm_select('x')
+    assert mgr.var_y_field.styleSheet() == ""
+    assert mgr.var_x_field.styleSheet() == mgr.ARMED_FIELD_STYLE
+
+    mgr.close()
+    fig.close()
+
+
+def test_x_variable_row_is_red_and_y_variable_rows_are_blue():
+    fig = shown_figure()
+    src = _source()
+    fig.subplot(2, 0).plot(src, x='time', y='temp')
+
+    mgr = m.FigureManager()
+    app.processEvents()
+
+    def row_for(name):
+        for r in range(mgr.var_table.rowCount()):
+            if mgr.var_table.item(r, 0).text() == name:
+                return r
+        raise AssertionError(name)
+
+    mgr._var_arm_select('y')
+    mgr._on_var_table_clicked(mgr.var_table.item(row_for('pwm'), 0))
+    mgr._var_arm_select('x')
+    mgr._on_var_table_clicked(mgr.var_table.item(row_for('time'), 0))
+
+    pwm_row, time_row, temp_row = row_for('pwm'), row_for('time'), row_for('temp')
+    assert mgr.var_table.item(pwm_row, 0).background().color() == mgr.SELECTED_BG
+    assert mgr.var_table.item(time_row, 0).background().color() == mgr.X_SELECTED_BG
+    assert mgr.var_table.item(temp_row, 0).background() == QtGui.QBrush()
+
+    mgr.close()
+    fig.close()
+
+
 def test_layout_event_filter_accepts_and_handles_a_variable_drop():
     """LayoutMixin.eventFilter's own Drag/Drop branch, driven with a real
     QDropEvent carrying our mime format (no real QDrag -- see module
