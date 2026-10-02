@@ -179,10 +179,21 @@ table — every edit undoable via Ctrl+Z, routed through
 `LaFigure._push_history` directly rather than `Series.set_data`, see
 the gap noted below), and `expanded_series_kinds_gallery.py` (one
 subplot per round-4 series kind — all 19, see the Round 4 section
-below). Run any of them with `python examples/<name>.py` from
-anywhere — each inserts the repo root into `sys.path` itself at the
-top (`lafigure` isn't pip-installed; there's no `setup.py`/
-`pyproject.toml`), so no `PYTHONPATH` or `-m` gymnastics are needed.
+below). **`accelerometer_thermal_bias_example.py`** (added 2026-10-02):
+a synthetic IMU dataset — a first-order-lag temperature driven by a
+heating PWM schedule (baseline, four echelons, a feed-forward
+ramp-then-inverse-exponential hold, cooldown), a mostly-zero tilt with
+one brief twitch, and an AccZ signal equal to `-9.81*cos(tilt)` plus a
+temperature/dT-dt/PWM-coupled bias — five subplots (time vs AccZ/temp/
+pwm/tilt, plus temp vs AccZ) built from one shared `DataSource`, so
+brushing a rectangle on the PWM or tilt time-series highlights the same
+instants on the temp-vs-AccZ coupling plot, the same linked-brushing
+pattern `linked_brushing_scatter.py` already demonstrates, applied to a
+time-series/sensor-bias scenario instead of a plain scatter pair. Run
+any of them with `python examples/<name>.py` from anywhere — each
+inserts the repo root into `sys.path` itself at the top (`lafigure`
+isn't pip-installed; there's no `setup.py`/`pyproject.toml`), so no
+`PYTHONPATH` or `-m` gymnastics are needed.
 
 **`Series.set_data` has no image-kind branch.** It requires `len(x) ==
 len(y)` with a non-`None` y; an image kind's `get_xy` returns `(2-D
