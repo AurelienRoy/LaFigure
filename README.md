@@ -13,6 +13,8 @@ It is aimed at data analysis, with a lot of freedom in the interactive plotting 
 make it easier to find unknown patterns, investigate time series, then share reports
 with the rest of the team.
 
+![One of the series-kinds gallery figures, showing bubblechart3d, barh, stem, heatmap, errorband, quiver, feather, contour, and surface subplots](docs/screenshot_series_kind_gallery3.png)
+
 ## Install
 
 Requires Python >= 3.9.
