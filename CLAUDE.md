@@ -2621,6 +2621,56 @@ don't assume every paint path treats a `QPen`'s fields the same way
 its name suggests" — here it's "which paint path even looks at this
 field" rather than "what does this attribute hold").
 
+### 28. The Curve Browser's style/marker combos were a hardcoded subset of the real option tables, so an out-of-subset value silently misread
+**Symptom (reported live, 2026-10-02):** a curve styled to line style
+`'none'` (invisible) or marker `'t1'` (triangle-up) via the curve
+right-click menu showed as "Solid"/"None" in the Curve Browser's bottom
+editor instead.
+
+**Root cause:** `manager.py`'s `curve_style_combo`/`curve_marker_combo`
+were built from their own small, hardcoded item lists (4 line styles with
+no "None", 6 markers) instead of `curve_style.py`'s `LINE_STYLES`/
+`MARKERS` tables the curve menu actually uses — a strict subset, so a
+value the menu could set had nowhere to land when read back
+(`findText`/a local `QPen`-style dict both failed silently to a default
+index instead of erroring).
+
+**Fix:** both combos are now built from `LINE_STYLES`/`MARKERS` directly
+(item data = the MATLAB code / pyqtgraph symbol, not display text), and
+read back via `curve_style.pen_style_of()` / `findData()` — the same
+source of truth the menu uses, so the two can't diverge again.
+
+**Lesson:** a second UI entry point for the same underlying state (here:
+the curve menu's submenus and the Curve Browser's editor, both setting/
+reading a curve's line style and marker) needs to share the *same* table
+of valid values, not each hardcode its own — otherwise one silently
+becomes a lossy subset of the other, readable only by accident for the
+values they happen to overlap on.
+
+### 29. `QColorDialog.ShowAlphaChannel` is silently ignored on Windows unless `DontUseNativeDialog` is also set
+**Symptom (reported live, 2026-10-02):** picking a new color for a curve
+via the Curve Browser always reset it to fully opaque, even after adding
+`ShowAlphaChannel` to the `getColor()` call (which fixed the *symptom*
+for every other platform's dialog, per Qt's own docs).
+
+**Root cause:** on Windows, `QColorDialog` prefers the OS-native "Select
+Color" picker, whose underlying `COLORREF` has no alpha channel at all —
+the native dialog simply has no alpha slider to show, `ShowAlphaChannel`
+or not, and the color it returns is always fully opaque. Qt's own
+cross-platform dialog (used when `DontUseNativeDialog` forces it) is the
+only one that actually implements `ShowAlphaChannel` with a real slider.
+Confirmed live on Windows 11: the three `ShowAlphaChannel` call sites in
+this project (`manager.py`'s Curve Browser color picker,
+`annotations.py`'s Fill Color, `editable_text.py`'s text color) all had
+this gap — only the Curve Browser one had been exercised enough to
+report it, but all three got the same fix.
+
+**Lesson:** `ShowAlphaChannel` alone is not a cross-platform guarantee —
+on Windows it has no effect at all unless paired with
+`DontUseNativeDialog`. Any current or future `QColorDialog.getColor()`
+call that needs the user to actually set a non-opaque color must pass
+both flags together, never `ShowAlphaChannel` alone.
+
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 
 **This section described the codebase from the original single-file POC

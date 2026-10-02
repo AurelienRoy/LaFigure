@@ -95,7 +95,8 @@ from .registry import get_registry
 from .annotations import AnnotationItem, SHAPE_LABELS
 from .series import Series
 from .groups import Group, _ungroup_one
-from .curve_style import CurveStyleMixin, line_options_apply, marker_options_apply
+from .curve_style import (CurveStyleMixin, line_options_apply, marker_options_apply,
+                          LINE_STYLES, MARKERS, pen_style_of)
 
 
 @contextmanager
@@ -964,13 +965,22 @@ class FigureManager(QtWidgets.QMainWindow):
         self.curve_width_spin.editingFinished.connect(self._on_curve_width_edited)
         form.addRow("Line width", self.curve_width_spin)
 
+        # Item data is the MATLAB code (curve_style.LINE_STYLES) -- the same
+        # table the curve menu uses, so every style it can set (including
+        # "None", missing from this combo until now) round-trips correctly.
         self.curve_style_combo = QtWidgets.QComboBox()
-        self.curve_style_combo.addItems(["Solid", "Dash", "Dot", "DashDot"])
+        for label, code, _ in LINE_STYLES:
+            self.curve_style_combo.addItem(label, code)
         self.curve_style_combo.currentIndexChanged.connect(self._on_curve_style_edited)
         form.addRow("Line style", self.curve_style_combo)
 
+        # Item data is the pyqtgraph symbol (curve_style.MARKERS' own 3rd
+        # column; 'none' stands in for None, since QComboBox can't
+        # distinguish "no data set" from "data is None"), so this offers
+        # every marker the curve menu can set, not a hardcoded subset.
         self.curve_marker_combo = QtWidgets.QComboBox()
-        self.curve_marker_combo.addItems(["None", "o", "s", "t", "d", "+", "x"])
+        for label, code, symbol in MARKERS:
+            self.curve_marker_combo.addItem(label, symbol if symbol is not None else 'none')
         self.curve_marker_combo.currentIndexChanged.connect(self._on_curve_marker_edited)
         form.addRow("Marker", self.curve_marker_combo)
 
@@ -1055,9 +1065,14 @@ class FigureManager(QtWidgets.QMainWindow):
             if is_line:
                 pen = pg.mkPen(opts.get('pen')) if opts.get('pen') is not None else pg.mkPen('k')
                 self.curve_width_spin.setValue(pen.widthF() or 1.0)
-                style_index = {QtCore.Qt.SolidLine: 0, QtCore.Qt.DashLine: 1,
-                              QtCore.Qt.DotLine: 2, QtCore.Qt.DashDotLine: 3}.get(pen.style(), 0)
-                self.curve_style_combo.setCurrentIndex(style_index)
+                # pen_style_of (curve_style.py) is the one place that already
+                # knows NoPen/alpha-0 both mean 'none' -- reuse it instead of
+                # a local QPen-style table that couldn't represent 'none' at
+                # all (CLAUDE.md-class readback bug: a style the curve menu
+                # can set that this combo couldn't show).
+                code = pen_style_of(opts.get('pen'))
+                idx = self.curve_style_combo.findData(code)
+                self.curve_style_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
             # PlotDataItem.opts always has a 'symbol' key (default None) even
             # for kinds that can't draw one -- gate on the kind itself, the
@@ -1067,7 +1082,7 @@ class FigureManager(QtWidgets.QMainWindow):
             self._curve_set_row_visible(self.curve_marker_combo, supports_marker)
             if supports_marker:
                 sym = opts.get('symbol')
-                idx = self.curve_marker_combo.findText(sym) if sym else 0
+                idx = self.curve_marker_combo.findData(sym if sym is not None else 'none')
                 self.curve_marker_combo.setCurrentIndex(idx if idx >= 0 else 0)
 
             self._curve_set_row_visible(self.curve_label_pos_combo, kind == 'group')
@@ -1126,7 +1141,14 @@ class FigureManager(QtWidgets.QMainWindow):
             return
         fig = self._curve_current_fig
         current = self._curve_series_color(obj)
-        color = QtWidgets.QColorDialog.getColor(current, self, "Choose color")
+        # ShowAlphaChannel alone isn't enough on Windows: QColorDialog
+        # still prefers the OS-native picker, which has no alpha control at
+        # all (COLORREF has no alpha channel) and silently discards it --
+        # DontUseNativeDialog forces Qt's own cross-platform dialog, the
+        # only one that actually honors ShowAlphaChannel.
+        color = QtWidgets.QColorDialog.getColor(
+            current, self, "Choose color",
+            QtWidgets.QColorDialog.ShowAlphaChannel | QtWidgets.QColorDialog.DontUseNativeDialog)
         if not color.isValid():
             return
         self._curve_recolor(fig, obj, (color.red(), color.green(), color.blue(), color.alpha()))
@@ -1140,15 +1162,14 @@ class FigureManager(QtWidgets.QMainWindow):
             return
         self._curve_current_fig.set_curve_line_width([obj.item], self.curve_width_spin.value())
 
-    _STYLE_CODES = ['-', '--', ':', '-.']
-
     def _on_curve_style_edited(self, index):
         if self._curve_editor_updating:
             return
         kind, obj = self._curve_editor_target
         if kind != 'series':
             return
-        self._curve_current_fig.set_curve_line_style([obj.item], self._STYLE_CODES[index])
+        code = self.curve_style_combo.itemData(index)
+        self._curve_current_fig.set_curve_line_style([obj.item], code)
 
     def _on_curve_marker_edited(self, index):
         if self._curve_editor_updating:
@@ -1156,8 +1177,8 @@ class FigureManager(QtWidgets.QMainWindow):
         kind, obj = self._curve_editor_target
         if kind != 'series':
             return
-        text = self.curve_marker_combo.currentText()
-        self._curve_current_fig.set_curve_marker([obj.item], None if text == 'None' else text)
+        symbol = self.curve_marker_combo.itemData(index)
+        self._curve_current_fig.set_curve_marker([obj.item], None if symbol == 'none' else symbol)
 
     def _on_curve_alpha_edited(self):
         if self._curve_editor_updating:

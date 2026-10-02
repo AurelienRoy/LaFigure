@@ -338,8 +338,13 @@ class FontDialog(QtWidgets.QDialog):
         self._update_color_button()
 
     def _pick_color(self):
-        color = QtWidgets.QColorDialog.getColor(self._color, self, "Text color",
-                                                QtWidgets.QColorDialog.ShowAlphaChannel)
+        # DontUseNativeDialog alongside ShowAlphaChannel: on Windows the
+        # native picker has no alpha control at all and ShowAlphaChannel
+        # alone is silently ignored (see manager.py's curve-color picker
+        # for the same fix and the full explanation).
+        color = QtWidgets.QColorDialog.getColor(
+            self._color, self, "Text color",
+            QtWidgets.QColorDialog.ShowAlphaChannel | QtWidgets.QColorDialog.DontUseNativeDialog)
         if color.isValid():
             self.set_color(color)
 

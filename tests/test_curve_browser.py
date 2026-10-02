@@ -30,7 +30,7 @@ two-way selection sync, and the bottom editor's undoable property edits.
 import sys
 
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtTest
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets, QtTest
 
 from lafigure.groups import Group
 from tests.helpers import app, m, _place, _mouse, _vb_center
@@ -577,6 +577,80 @@ def test_series_editor_shows_name_and_color_and_width_are_undoable():
     f.undo()
     assert pg.mkPen(s1.item.opts['pen']).widthF() != 7.0
 
+    f.close()
+    mgr.close()
+
+
+def test_editor_reads_back_a_marker_outside_the_old_hardcoded_subset():
+    # The combo used to be a hardcoded ["None", "o", "s", "t", "d", "+", "x"]
+    # -- a strict subset of curve_style.MARKERS -- so a marker set through
+    # the curve menu (e.g. 't1'/triangle-up, or 'star'/asterisk) couldn't be
+    # found by the old findText(sym) lookup and silently showed "None".
+    f, p, s1, s2 = _two_curve_figure()
+    f.set_curve_marker([s1.item], 't1')
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+
+    mgr._curve_show_editor('series', s1)
+    assert mgr.curve_marker_combo.currentData() == 't1'
+    f.close()
+    mgr.close()
+
+
+def test_editor_reads_back_line_style_none_instead_of_showing_solid():
+    # The style combo had no "None" entry at all and mapped an unrecognized
+    # QPen style (NoPen) to index 0 ("Solid") -- an invisible line showed as
+    # a plain solid line in the editor.
+    f, p, s1, s2 = _two_curve_figure()
+    f.set_curve_line_style([s1.item], 'none')
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+
+    mgr._curve_show_editor('series', s1)
+    assert mgr.curve_style_combo.currentData() == 'none'
+    f.close()
+    mgr.close()
+
+
+def test_editor_color_picker_preserves_alpha():
+    # QColorDialog.getColor() needs both ShowAlphaChannel (an alpha slider
+    # at all) and DontUseNativeDialog (Windows' native picker has no alpha
+    # control and silently ignores ShowAlphaChannel on its own) -- without
+    # both, the dialog always returns alpha=255, dropping any existing
+    # transparency when recoloring from the Curve Browser.
+    f, p, s1, s2 = _two_curve_figure()
+    pen = pg.mkPen(s1.item.opts['pen'])
+    color = pen.color()
+    color.setAlpha(80)
+    pen.setColor(color)
+    s1.item.setPen(pen)
+
+    mgr = m.FigureManager()
+    app.processEvents()
+    f._on_plot_clicked(p)
+    app.processEvents()
+    mgr._curve_show_editor('series', s1)
+
+    seen_options = {}
+
+    def fake_get_color(*args, **kwargs):
+        seen_options['options'] = args[-1] if args else kwargs.get('options')
+        return QtGui.QColor(10, 20, 30, 80)
+
+    real_get_color = QtWidgets.QColorDialog.getColor
+    QtWidgets.QColorDialog.getColor = staticmethod(fake_get_color)
+    try:
+        mgr._on_curve_color_clicked()
+    finally:
+        QtWidgets.QColorDialog.getColor = real_get_color
+
+    expected = QtWidgets.QColorDialog.ShowAlphaChannel | QtWidgets.QColorDialog.DontUseNativeDialog
+    assert seen_options.get('options') == expected
+    assert pg.mkPen(s1.item.opts['pen']).color().alpha() == 80
     f.close()
     mgr.close()
 

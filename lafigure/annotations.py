@@ -1523,8 +1523,13 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
                 default = (self.brush.color() if self.brush is not None else
                            QtGui.QColor(self.pen.color().red(), self.pen.color().green(),
                                         self.pen.color().blue(), 60))
+                # DontUseNativeDialog alongside ShowAlphaChannel: on Windows
+                # the native picker has no alpha control at all and
+                # ShowAlphaChannel alone is silently ignored (see
+                # manager.py's curve-color picker for the full explanation).
                 color = QtWidgets.QColorDialog.getColor(
-                    default, None, "Fill Color", QtWidgets.QColorDialog.ShowAlphaChannel)
+                    default, None, "Fill Color",
+                    QtWidgets.QColorDialog.ShowAlphaChannel | QtWidgets.QColorDialog.DontUseNativeDialog)
                 if color.isValid():
                     fig.set_annotation_fill(targets, pg.mkBrush(color))
 
