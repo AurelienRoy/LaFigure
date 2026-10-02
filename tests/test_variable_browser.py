@@ -205,6 +205,23 @@ def test_variable_table_header_does_not_bold_on_row_selection():
     mgr.close()
 
 
+def test_variable_table_has_no_native_selection_highlight():
+    """Qt's default item delegate paints a selected cell's background from
+    the palette's Highlight color, overriding setBackground() -- this
+    table's own red/blue "armed" coloring must never visually disappear
+    under a native blue selection highlight. The selection MODEL itself
+    must stay on (drag depends on selectedIndexes()), so this checks the
+    palette colors are neutralized, not that selection is disabled."""
+    mgr = m.FigureManager()
+    app.processEvents()
+    pal = mgr.var_table.palette()
+    for group in (QtGui.QPalette.Active, QtGui.QPalette.Inactive, QtGui.QPalette.Disabled):
+        assert pal.color(group, QtGui.QPalette.Highlight) == pal.color(group, QtGui.QPalette.Base)
+        assert pal.color(group, QtGui.QPalette.HighlightedText) == pal.color(group, QtGui.QPalette.Text)
+    assert mgr.var_table.selectionMode() != QtWidgets.QAbstractItemView.NoSelection
+    mgr.close()
+
+
 def test_variable_table_lists_columns_with_size_and_type_and_filters_live():
     fig = shown_figure()
     src = _source()

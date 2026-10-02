@@ -1396,6 +1396,21 @@ class FigureManager(QtWidgets.QMainWindow):
         # actually picked, so Qt's native selection highlighting is never
         # wanted here.
         self.var_table.horizontalHeader().setHighlightSections(False)
+        # Qt's default item delegate paints a selected cell's background
+        # using the palette's Highlight color, OVERRIDING whatever
+        # setBackground() gave it -- so our own red/blue "armed" row
+        # colors (_var_apply_row_colors) would briefly disappear under a
+        # native blue selection highlight the instant a row is clicked,
+        # until _on_var_table_clicked's own clearSelection() removes it.
+        # The selection model itself must stay on (drag depends on
+        # selectedIndexes() -- see mimeData above), so this turns off only
+        # the VISUAL highlight by making Highlight/HighlightedText equal
+        # to the normal, unselected colors, for every color group.
+        palette = self.var_table.palette()
+        for group in (QtGui.QPalette.Active, QtGui.QPalette.Inactive, QtGui.QPalette.Disabled):
+            palette.setColor(group, QtGui.QPalette.Highlight, palette.color(group, QtGui.QPalette.Base))
+            palette.setColor(group, QtGui.QPalette.HighlightedText, palette.color(group, QtGui.QPalette.Text))
+        self.var_table.setPalette(palette)
         self.var_table.setDragEnabled(True)
         self.var_table.setDragDropMode(QtWidgets.QAbstractItemView.DragOnly)
         self.var_table.itemClicked.connect(self._on_var_table_clicked)

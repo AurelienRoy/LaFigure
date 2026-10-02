@@ -1167,7 +1167,16 @@ the actual code — this list is a summary, not a substitute for checking.
       cell falls under it, which with row selection means every header at
       once, and `_on_var_table_clicked`'s own `clearSelection()` made that
       happen and un-happen on every armed click, reading as a header
-      "flash". A small "✕" button next to `<time>` appears only once X
+      "flash" -- plus a palette override neutralizing `Highlight`/
+      `HighlightedText` to the ordinary `Base`/`Text` colors for every
+      color group, since Qt's default item delegate paints a selected
+      cell's background from the palette's `Highlight` color, overriding
+      `setBackground()` entirely, so the table's own red/blue rows would
+      otherwise flash native blue the instant a row is clicked. The
+      selection MODEL stays on throughout (only the paint color is
+      neutralized) since drag depends on `selectedIndexes()` (see
+      `_VariableTable.mimeData`). A small "✕" button next to `<time>`
+      appears only once X
       has been overridden, to revert to the default. **New Figure**
       builds a brand-new, empty `LaFigure` window with one subplot from
       the current selection. Live-updated from the existing
