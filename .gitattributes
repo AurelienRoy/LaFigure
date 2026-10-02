@@ -1,0 +1,11 @@
+# Normalize text files to LF in the repository; Git converts to the
+# platform's native line ending on checkout (CRLF on Windows). Keeps
+# diffs clean across the Windows/Ubuntu contributors and CI matrix.
+* text=auto eol=lf
+
+# Binary assets -- never run text/EOL conversion on these.
+*.png binary
+*.gif binary
+*.jpg binary
+*.jpeg binary
+*.ico binary

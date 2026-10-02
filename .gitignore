@@ -3,6 +3,9 @@ __pycache__/
 *.log
 count_python_lines.bat
 
+# Build artifact from `pip install -e .` -- regenerated locally, not source
+/lafigure.egg-info/
+
 # Per-agent git worktrees created for parallel PLAN.md work packages
 /.claude/worktrees/
 
