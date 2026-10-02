@@ -1387,6 +1387,15 @@ class FigureManager(QtWidgets.QMainWindow):
         self.var_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.var_table.verticalHeader().setVisible(False)
         self.var_table.horizontalHeader().setStretchLastSection(True)
+        # Qt's default QHeaderView.highlightSections bolds a column's
+        # header whenever a selected cell falls under it -- with row
+        # selection, picking any row bolds every column header at once,
+        # and _on_var_table_clicked's own clearSelection() (below) makes
+        # that happen and un-happen right away, reading as a header
+        # "flash". This table has its own red/blue row coloring for what's
+        # actually picked, so Qt's native selection highlighting is never
+        # wanted here.
+        self.var_table.horizontalHeader().setHighlightSections(False)
         self.var_table.setDragEnabled(True)
         self.var_table.setDragDropMode(QtWidgets.QAbstractItemView.DragOnly)
         self.var_table.itemClicked.connect(self._on_var_table_clicked)

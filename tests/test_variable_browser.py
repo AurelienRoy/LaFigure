@@ -195,6 +195,16 @@ def test_handle_drop_only_uses_variables_from_the_first_sources_source():
 
 # -- manager.py's tab: table population, filter, arm/select, drag payload --
 
+def test_variable_table_header_does_not_bold_on_row_selection():
+    """QHeaderView.highlightSections defaults to True, which would bold
+    every column header when a row is selected -- distracting, and this
+    table already has its own red/blue row coloring for what's picked."""
+    mgr = m.FigureManager()
+    app.processEvents()
+    assert mgr.var_table.horizontalHeader().highlightSections() is False
+    mgr.close()
+
+
 def test_variable_table_lists_columns_with_size_and_type_and_filters_live():
     fig = shown_figure()
     src = _source()

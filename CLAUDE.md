@@ -1161,11 +1161,17 @@ the actual code — this list is a summary, not a substitute for checking.
       table's own native selection" split the Figure/Curve Browser tabs'
       own blue-row coloring already uses; X wins if a variable is picked
       as both); picking a variable from a different `DataSource` than the
-      current Y selection starts a fresh one rather than mixing sources. A
-      small "✕" button next to `<time>` appears only once X has been
-      overridden, to revert to the default. **New Figure** builds a
-      brand-new, empty `LaFigure` window with one subplot from the current
-      selection. Live-updated from the existing `registry.figureOpened`/
+      current Y selection starts a fresh one rather than mixing sources.
+      The table's `horizontalHeader().setHighlightSections(False)` --
+      Qt's default (`True`) bolds a column's header whenever a selected
+      cell falls under it, which with row selection means every header at
+      once, and `_on_var_table_clicked`'s own `clearSelection()` made that
+      happen and un-happen on every armed click, reading as a header
+      "flash". A small "✕" button next to `<time>` appears only once X
+      has been overridden, to revert to the default. **New Figure**
+      builds a brand-new, empty `LaFigure` window with one subplot from
+      the current selection. Live-updated from the existing
+      `registry.figureOpened`/
       `figureClosed`/`subplotsChanged` signals (added to the Figure/Curve
       Browser tabs' own existing handlers for those, not three new
       separate connections).
