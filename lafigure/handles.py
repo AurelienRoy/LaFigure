@@ -228,3 +228,61 @@ class AnnotationHandle(DragHandle):
                           round_shape=round_shape)
         self.setFlag(QtWidgets.QGraphicsItem.ItemIgnoresTransformations)
         self.setRect(-size / 2, -size / 2, size, size)
+
+
+class XLinkBadge(QtWidgets.QGraphicsItem):
+    """A small clickable "X-<n>" chip in a subplot's top-right corner,
+    shown only while Link X is on (layout.py's _update_x_link_badges /
+    _create_x_link_badge / _discard_x_link_badge). Clicking it cycles
+    which X-link group the subplot belongs to
+    (ViewOpsMixin._cycle_x_link_group). A plain QGraphicsItem (not a
+    DragHandle) since it's a click target, not a drag grip; added
+    directly to the scene like ResizeHandle/MoveHandle, not parented to
+    the PlotItem, since its position is recomputed in scene pixels every
+    layout pass (_update_x_link_badges)."""
+
+    WIDTH = 30
+    HEIGHT = 16
+    Z = 1002   # above resize/move handles (1000/1001): always clickable
+
+    def __init__(self, figure, plot_item):
+        super().__init__()
+        self.figure = figure
+        self.plot_item = plot_item
+        self._label = ''
+        self.setZValue(self.Z)
+        self.setAcceptedMouseButtons(QtCore.Qt.LeftButton)
+        self.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
+        self.setToolTip("Click to change this subplot's X-link group")
+
+    def set_label(self, text):
+        if text != self._label:
+            self._label = text
+            self.update()
+
+    def boundingRect(self):
+        return QtCore.QRectF(0, 0, self.WIDTH, self.HEIGHT)
+
+    def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        pen = pg.mkPen((90, 90, 90), width=1)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(pg.mkBrush(255, 255, 255, 225))
+        painter.drawRoundedRect(self.boundingRect(), 3, 3)
+        painter.setPen(pg.mkPen((30, 30, 30)))
+        font = painter.font()
+        font.setPointSize(8)
+        painter.setFont(font)
+        painter.drawText(self.boundingRect(), QtCore.Qt.AlignCenter, self._label)
+
+    def mousePressEvent(self, ev):
+        if ev.button() != QtCore.Qt.LeftButton:
+            ev.ignore()
+            return
+        ev.accept()
+
+    def mouseReleaseEvent(self, ev):
+        ev.accept()
+        if self.contains(ev.pos()):
+            self.figure._cycle_x_link_group(self.plot_item)

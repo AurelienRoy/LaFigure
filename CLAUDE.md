@@ -433,10 +433,50 @@ the actual code — this list is a summary, not a substitute for checking.
 - [x] Compute FFT and plot on a new subplot beneath the current one, acting
       on the **selected curve** if one is selected (falls back to the
       subplot's first curve otherwise — no longer *always* first-curve-only)
-- [x] Link subplots by X axis (toolbar toggle). Every subplot links to
-      `plots[0]`, re-applied on every add/remove (`_apply_link_x`), so a
-      subplot added/pasted/FFT'd while Link X is on is linked too, and
-      deleting `plots[0]` re-links the rest to the new `plots[0]`.
+- [x] **Link subplots by X axis, by auto-detected group** (toolbar
+      toggle; reworked 2026-10-02 from the original single-global-group
+      version -- superseded text kept nowhere, this is the current
+      design). Turning it on groups every 2D subplot by its longest
+      curve's X range (`view_ops.py`'s `_x_range_of_longest_curve` +
+      `np.isclose`, via `_detect_x_link_groups`): subplots whose ranges
+      match join one group, a subplot with no match (or no curves yet)
+      starts its own singleton group -- no longer one figure-wide link
+      to `plots[0]` regardless of what the data actually shares.
+      `_apply_link_x` links each group's members to that group's first
+      member (by `self.plots` order), re-run on every add/remove/cycle
+      so a group's reference re-elects itself if the old one is deleted
+      (`test_link_x_survives_deleting_the_reference_subplot`). While on,
+      every grouped subplot shows a small `X:<n>` click badge in its
+      top-right corner (`handles.py`'s `XLinkBadge`, positioned by
+      `layout.py`'s `_update_x_link_badges` from `_apply_layout`, the one
+      place a subplot's geometry is set); clicking it
+      (`_cycle_x_link_group`) cycles that subplot through every OTHER
+      existing group in order, then into a brand-new group of its own,
+      then wraps back to rejoining the first group -- a user-confirmed
+      design so repeated clicks reach every possible grouping, including
+      detaching a subplot entirely. Labels stay dense (`X:1`, `X:2`, ...,
+      no gaps) via `_renumber_x_link_groups`, which compacts ids by their
+      own NUMERIC order, not by which subplot appears first in
+      self.plots -- the latter was a real bug (reported 2026-10-02,
+      fixed same day): a subplot cycled out to a brand-new (highest) id
+      would get silently renumbered back down if it happened to sit
+      earlier in self.plots than its old group's remaining members, so
+      its badge never showed the new, higher group number it had
+      actually just joined
+      (`test_x_link_cycle_to_a_new_group_keeps_the_highest_label_even_when_earliest_in_plots`).
+      A subplot added while Link X
+      is on (`_add_x_link_group_for`, called from `add_subplot`) always
+      starts in its own new group: at that point it has no curves yet
+      (series are added afterwards), so there's nothing to range-match.
+      **Both the toggle and a badge click are undoable** (`_x_link_snapshot`/
+      `_restore_x_link`, the same before/after-snapshot shape as
+      `layout.py`'s `_push_layout_change`) -- a deliberate, user-requested
+      exception to this app's usual rule that a view/UI toggle (legend,
+      interaction mode, Grid Layout) isn't on the undo stack. A plot
+      recreated since an X-link undo entry was pushed (delete + undo
+      elsewhere gives it a new object identity) is silently dropped from
+      that snapshot rather than restored, the same stance
+      `_restore_layout` already takes.
 - [x] **Figure-wide toggles reach subplots created later.** Mode, Brush and
       Link X are all adopted in `add_subplot`, the only `addPlot()` call site
       (guarded by `test_add_subplot_is_the_only_subplot_construction_site`

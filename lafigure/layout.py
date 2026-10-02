@@ -49,7 +49,7 @@ import pyqtgraph as pg
 from . import grid
 from .grid import EPS
 from .selection import RectBrush
-from .handles import ResizeHandle, MoveHandle, GutterHandle, GUIDES_Z
+from .handles import ResizeHandle, MoveHandle, GutterHandle, XLinkBadge, GUIDES_Z
 from .editable_text import wire_plot_labels_editable
 from .annotations import AnnotationItem
 from .selection_ui import selection_op
@@ -214,6 +214,7 @@ class LayoutMixin:
             p.setGeometry(rect)
         self._update_backgrounds()
         self._position_handles()
+        self._update_x_link_badges()
 
     def _update_backgrounds(self):
         """A subplot drawn above another one it overlaps (an inset) gets an
@@ -355,6 +356,7 @@ class LayoutMixin:
         brusher.set_brushing(self.brushing)
         self._brushers[plot_item] = brusher
         self.plots.append(plot_item)
+        self._add_x_link_group_for(plot_item)
         self._apply_link_x()
         self._apply_layout()
         self.registry.notify_subplots_changed(self)
@@ -488,6 +490,10 @@ class LayoutMixin:
             self._hover_plot = None
         for c in [c for c in self.selected_curves if self._curve_plot(c) is None]:
             self._forget_curve_selection(c)
+        self._discard_x_link_badge(plot_item)
+        self._x_link_groups.pop(plot_item, None)
+        self._renumber_x_link_groups()
+        self._relabel_x_link_badges()
         self._apply_link_x()
 
     def add_new_subplot(self):
@@ -670,6 +676,27 @@ class LayoutMixin:
         center = rect.center()
         self.move_handle.setPos(center.x() - ms / 2, center.y() - ms / 2)
         self.move_handle.show()
+
+    # -- X-link badges (view_ops.py owns grouping/cycling; this owns the scene item) --
+    def _create_x_link_badge(self, plot_item):
+        badge = XLinkBadge(self, plot_item)
+        self.layout_widget.scene().addItem(badge)
+        self._x_link_badges[plot_item] = badge
+
+    def _discard_x_link_badge(self, plot_item):
+        badge = self._x_link_badges.pop(plot_item, None)
+        if badge is not None and badge.scene() is not None:
+            badge.scene().removeItem(badge)
+
+    def _update_x_link_badges(self):
+        """Position every X-link badge at its subplot's current top-right
+        corner, inset inward so it doesn't sit on the Select-mode resize
+        handle anchored at that same corner point. Called from
+        _apply_layout, the one place a subplot's geometry is set."""
+        pad = 4
+        for p, badge in self._x_link_badges.items():
+            rect = p.sceneBoundingRect()
+            badge.setPos(rect.right() - XLinkBadge.WIDTH - pad, rect.top() + pad)
 
     def _update_gutters(self):
         """One GutterHandle per stretch of an interior grid line that no

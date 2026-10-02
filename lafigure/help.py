@@ -201,7 +201,13 @@ Every zoom and pan (rectangle, wheel, drag, Home, Fit, View All) is one
 - **Toggle Legend** to show/hide curve names; a curve named with a
   leading `_` (matplotlib's `"_nolegend_"` convention) is never listed;
   entries are ordered front-most (highest z-order) first
-- **Link X** to link X axes across all subplots
+- **Link X** to link X axes across subplots sharing the same X range,
+  auto-detected by comparing each subplot's longest curve (min(x)/max(x));
+  subplots whose ranges don't match land in separate groups instead of
+  one figure-wide link. While on, every linked subplot shows a small
+  `X:n` badge in its top-right corner; click a badge to cycle that
+  subplot through every other group, then into a group of its own, then
+  back. Both the toggle and a badge click are undoable (Ctrl+Z/Ctrl+Y)
 - **FFT** to compute and display FFT of the selected curve
 - **Remove Average** to subtract the mean from all curves on the active subplot
 - **Home** to reset the view and show all data

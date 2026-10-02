@@ -137,6 +137,11 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         # own; only updated when the mouse is actually over a subplot.
         self._hover_plot = None
         self.linked_x = False
+        # X-link group membership while linked_x is True: PlotItem -> dense
+        # group id (1..M); its badge (layout.py/handles.py's XLinkBadge)
+        # shows "X-<id>" and cycles membership on click (view_ops.py).
+        self._x_link_groups = {}
+        self._x_link_badges = {}   # PlotItem -> XLinkBadge
         self.brushing = False
 
         self.max_history = 20

@@ -712,21 +712,194 @@ class ViewOpsMixin:
         vb.setMouseEnabled(x=enabled, y=enabled)
 
     def _apply_link_x(self):
-        """Link every subplot's X to plots[0], or unlink all. Re-run on any
-        add/remove, since plots[0] -- the reference -- can change.
+        """Link every subplot's X within its own X-link group
+        (self._x_link_groups); each group's first member (by self.plots
+        order) is that group's reference, setXLink(None) itself. Re-run on
+        any add/remove/cycle, since a group's reference can change.
         A 3D cell's view range is its own pixels (view3d.py): never a
-        reference, never linked."""
+        reference, never linked, never grouped."""
         plots = [p for p in self.plots if getattr(p, 'axes_type', 'cartesian') != '3d']
-        if not plots:
+        if not self.linked_x:
+            for p in plots:
+                p.setXLink(None)
             return
-        reference = plots[0]
-        reference.setXLink(None)
-        for p in plots[1:]:
-            p.setXLink(reference if self.linked_x else None)
+        by_group = {}
+        for p in plots:
+            gid = self._x_link_groups.get(p)
+            if gid is None:
+                p.setXLink(None)
+                continue
+            by_group.setdefault(gid, []).append(p)
+        for members in by_group.values():
+            reference = members[0]
+            reference.setXLink(None)
+            for p in members[1:]:
+                p.setXLink(reference)
+
+    # -- X-link groups: auto-detection, per-subplot cycling, undo --------------
+    def _x_range_of_longest_curve(self, plot_item):
+        """(min, max) of the longest curve's x on this subplot (by sample
+        count), or None if it has no plottable data yet -- used only to
+        auto-detect groups when Link X is first turned on; a brand-new
+        subplot (no curves yet at add_subplot time) always starts in its
+        own singleton group instead (_add_x_link_group_for)."""
+        best_len, best_range = -1, None
+        for s in self._series_on(plot_item):
+            x = s.x
+            if x is None:
+                continue
+            x = np.asarray(x)
+            n = x.size
+            if n == 0 or n <= best_len:
+                continue
+            lo, hi = np.nanmin(x), np.nanmax(x)
+            if not (np.isfinite(lo) and np.isfinite(hi)):
+                continue
+            best_len, best_range = n, (float(lo), float(hi))
+        return best_range
+
+    @staticmethod
+    def _x_ranges_match(a, b):
+        if a is None or b is None:
+            return False
+        return np.isclose(a[0], b[0]) and np.isclose(a[1], b[1])
+
+    def _detect_x_link_groups(self):
+        """Group every 2D subplot by its longest curve's X range (matching
+        ranges join the same group), in self.plots order -- the initial
+        grouping used when Link X is turned on. Dense ids 1..M, in order
+        of first appearance."""
+        plots = [p for p in self.plots if getattr(p, 'axes_type', 'cartesian') != '3d']
+        reps = []  # [(range_or_None, group_id)], one per group so far
+        groups = {}
+        for p in plots:
+            r = self._x_range_of_longest_curve(p)
+            gid = next((g for rr, g in reps if self._x_ranges_match(rr, r)), None)
+            if gid is None:
+                gid = len(reps) + 1
+                reps.append((r, gid))
+            groups[p] = gid
+        return groups
+
+    def _renumber_x_link_groups(self):
+        """Compact self._x_link_groups' ids to dense 1..M, preserving each
+        group's relative NUMERIC order -- not the self.plots order of
+        their members. A subplot just cycled into a brand-new group
+        always got the highest id (max(...)+1, see _cycle_x_link_group);
+        sorting by that id, rather than by which subplot appears first in
+        self.plots, is what keeps it displayed as the highest one even
+        when it appears earlier than an older group's other members.
+        Called after any reassignment that can empty a group (cycling,
+        subplot removal)."""
+        old_ids = sorted(set(self._x_link_groups.values()))
+        remap = {old: new for new, old in enumerate(old_ids, start=1)}
+        self._x_link_groups = {p: remap[g] for p, g in self._x_link_groups.items()}
+
+    def _relabel_x_link_badges(self):
+        for p, badge in self._x_link_badges.items():
+            gid = self._x_link_groups.get(p)
+            badge.set_label(f"X:{gid}" if gid is not None else "")
+
+    def _x_link_snapshot(self):
+        return (self.linked_x, dict(self._x_link_groups))
+
+    def _restore_x_link(self, snap):
+        """Undo/redo of toggle_link_x or a badge cycle. Like
+        layout.py's _restore_layout, a plot recreated since this entry was
+        pushed (delete + undo elsewhere) is a new object this snapshot
+        can't see -- silently dropped rather than restored."""
+        linked_x, groups = snap
+        groups = {p: g for p, g in groups.items() if p in self.plots}
+        self.linked_x = linked_x
+        wanted = set(groups) if linked_x else set()
+        for p in list(self._x_link_badges):
+            if p not in wanted:
+                self._discard_x_link_badge(p)
+        self._x_link_groups = groups
+        for p in wanted:
+            if p not in self._x_link_badges:
+                self._create_x_link_badge(p)
+        self._renumber_x_link_groups()
+        self._relabel_x_link_badges()
+        self._apply_link_x()
+        self._apply_layout()
+        self.link_x_action.setChecked(self.linked_x)
 
     def toggle_link_x(self, checked):
+        """The toolbar's Link X toggle: auto-detects X-range groups on
+        enable (_detect_x_link_groups), drops them on disable. Undoable,
+        like the per-badge cycle below -- a deliberate exception to the
+        rest of this app's convention that a view/UI toggle (legend,
+        interaction mode, Grid Layout) isn't on the undo stack; the user
+        asked for this one to be."""
+        before = self._x_link_snapshot()
         self.linked_x = checked
+        if checked:
+            self._x_link_groups = self._detect_x_link_groups()
+            for p in self._x_link_groups:
+                if p not in self._x_link_badges:
+                    self._create_x_link_badge(p)
+        else:
+            for p in list(self._x_link_badges):
+                self._discard_x_link_badge(p)
+            self._x_link_groups = {}
+        self._relabel_x_link_badges()
         self._apply_link_x()
+        self._apply_layout()
+        after = self._x_link_snapshot()
+        if after != before:
+            self._push_history(lambda: self._restore_x_link(before),
+                               lambda: self._restore_x_link(after))
+
+    def _add_x_link_group_for(self, plot_item):
+        """A freshly added, Link-X-eligible subplot always starts in its
+        own new singleton group: at add_subplot time it has no curves yet
+        (series are added afterwards -- _insert_subplot_at, FFT's
+        insert_subplot_below), so there is nothing yet to range-match
+        against. Not itself undoable: it's folded into whatever undo entry
+        the caller (Add Subplot, paste, FFT) already pushes for the
+        subplot's own creation, the same way a new subplot's other
+        figure-wide-toggle adoption (mode, brush) isn't separately undoable
+        either."""
+        if not self.linked_x or getattr(plot_item, 'axes_type', 'cartesian') == '3d':
+            return
+        gid = max(self._x_link_groups.values(), default=0) + 1
+        self._x_link_groups[plot_item] = gid
+        self._create_x_link_badge(plot_item)
+        self._relabel_x_link_badges()
+
+    def _cycle_x_link_group(self, plot_item):
+        """A badge click: moves plot_item through every OTHER existing
+        group in self.plots order, then into a brand-new group of its
+        own, then wraps back to rejoining the first group -- so repeated
+        clicks reach every possible grouping, including detaching the
+        subplot entirely. One undo entry per click."""
+        if not self.linked_x or plot_item not in self._x_link_groups:
+            return
+        before = self._x_link_snapshot()
+        groups = dict(self._x_link_groups)
+        current = groups[plot_item]
+        plots_in_order = [p for p in self.plots if p in groups]
+        others = [p for p in plots_in_order if p is not plot_item]
+        seen = []
+        for p in others:
+            g = groups[p]
+            if g not in seen:
+                seen.append(g)
+        alone = all(groups[p] != current for p in others)
+        sequence = seen + ['new']
+        idx = (len(sequence) - 1) if alone else seen.index(current)
+        next_slot = sequence[(idx + 1) % len(sequence)]
+        groups[plot_item] = max(groups.values(), default=0) + 1 if next_slot == 'new' else next_slot
+        self._x_link_groups = groups
+        self._renumber_x_link_groups()
+        self._relabel_x_link_badges()
+        self._apply_link_x()
+        self._apply_layout()
+        after = self._x_link_snapshot()
+        if after != before:
+            self._push_history(lambda: self._restore_x_link(before),
+                               lambda: self._restore_x_link(after))
 
     # -- axis Scale (X/Y linear/log), and the 3D-only camera menu actions --
     # (R4-3D; the subplot menu itself, incl. hiding these for a 2D/3D

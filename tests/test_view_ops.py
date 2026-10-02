@@ -208,26 +208,163 @@ def test_remove_average_folds_the_mean_of_the_transformed_y_into_dy():
 
 
 def test_new_subplot_adopts_link_x():
+    """A subplot added while Link X is on gets its own X-link group and
+    badge (it's under X-link management), but -- having no curves yet --
+    nothing to range-match against, so it starts alone rather than
+    joining an existing group (unlike the old single-global-group
+    behavior: see test_x_link_groups_* below for the actual grouping)."""
     f = m.LaFigure()
     f.link_x_action.trigger()
     f.add_new_subplot()
     new = f.plots[-1]
-    assert _is_x_linked(new), "a subplot added while Link X is on must be X-linked"
+    assert new in f._x_link_groups and new in f._x_link_badges
+    assert not _is_x_linked(new), "a brand-new, dataless subplot has nothing to auto-match -- starts alone"
     f.link_x_action.trigger()
     assert not any(_is_x_linked(p) for p in f.plots)
+    assert not f._x_link_groups and not f._x_link_badges, "disabling Link X drops every group/badge"
     f.close()
 
 
 def test_link_x_survives_deleting_the_reference_subplot():
+    """The demo's p1/p2 share the same t -> same auto-detected group.
+    Deleting the group's reference (plots[0]) must re-elect the
+    remaining member as the new reference, not leave it dangling."""
     f = m.LaFigure()
     f.link_x_action.trigger()
-    old_reference = f.plots[0]
-    f.delete_subplot(old_reference)
-    reference = f.plots[0]
-    assert not _is_x_linked(reference)
-    for p in f.plots[1:]:
-        assert p.getViewBox().linkedView(pg.ViewBox.XAxis) is reference.getViewBox(), \
-            "followers must re-link to the new plots[0], not the deleted one"
+    p1, p2 = f.plots[0], f.plots[1]
+    assert f._x_link_groups[p1] == f._x_link_groups[p2], "p1/p2 plot the same t -- same group"
+    f.delete_subplot(p1)
+    new_reference = f.plots[0]
+    assert new_reference is p2
+    assert not _is_x_linked(new_reference), "the sole remaining member of its group has nothing to follow"
+    f.close()
+
+
+def test_x_link_groups_auto_detect_by_matching_x_range():
+    """The demo's p1/p2 share one t array (same group); p3/p4 (different
+    DataSource columns) don't match it or each other."""
+    f = m.LaFigure()
+    f.link_x_action.trigger()
+    p1, p2, p3, p4 = f.plots
+    assert f._x_link_groups[p1] == f._x_link_groups[p2]
+    assert len({f._x_link_groups[p] for p in f.plots}) == 3, "p1==p2's group, p3 and p4 each their own"
+    assert _is_x_linked(p2) and not _is_x_linked(p1), "p1 (first in the group) is the reference"
+    assert not _is_x_linked(p3) and not _is_x_linked(p4), "each alone in its own group"
+    f.close()
+
+
+def test_x_link_badge_cycles_through_every_group_then_solo_then_wraps():
+    f = m.LaFigure()
+    f.link_x_action.trigger()
+    p1, p2, p3, p4 = f.plots
+    g1 = f._x_link_groups[p1]
+    assert f._x_link_groups[p2] == g1
+    # p3 starts alone; cycling it joins p1/p2's group first (the only
+    # "other" group), since it has no group of its own to skip past.
+    f._cycle_x_link_group(p3)
+    assert f._x_link_groups[p3] == f._x_link_groups[p1]
+    assert f._x_link_badges[p3]._label == f._x_link_badges[p1]._label
+    # p4, alone in its own group, cycles: join group 1+2+3 next (the
+    # only other group now), then back out to solo, then rejoin.
+    g_rest = f._x_link_groups[p1]
+    f._cycle_x_link_group(p4)
+    assert f._x_link_groups[p4] == g_rest
+    f._cycle_x_link_group(p4)
+    assert f._x_link_groups[p4] != f._x_link_groups[p1], "cycled on to its own group again"
+    f.close()
+
+
+def test_x_link_badge_real_click_cycles_its_group():
+    """A real QMouseEvent on the badge item, not a direct method call --
+    CLAUDE.md's own recurring lesson that Qt's hit-testing/dispatch can't
+    be trusted from a direct call alone (bugs #11/#14/#19/#21/#22)."""
+    f = shown_figure()
+    f.link_x_action.trigger()
+    p3 = f.plots[2]
+    badge = f._x_link_badges[p3]
+    before = f._x_link_groups[p3]
+    pt = badge.mapToScene(badge.boundingRect().center())
+    _mouse(f, QtCore.QEvent.MouseButtonPress, pt, QtCore.Qt.LeftButton)
+    _mouse(f, QtCore.QEvent.MouseButtonRelease, pt, QtCore.Qt.NoButton)
+    assert f._x_link_groups[p3] != before, "clicking the badge must cycle its group"
+    assert len(f.undo_stack) == 2, "one entry for enabling Link X, one for the badge click"
+    f.close()
+
+
+def test_x_link_badge_sits_in_the_top_right_corner():
+    f = shown_figure()
+    f.link_x_action.trigger()
+    p1 = f.plots[0]
+    badge = f._x_link_badges[p1]
+    rect = p1.sceneBoundingRect()
+    assert abs(badge.pos().y() - rect.top()) < 10
+    assert abs(badge.pos().x() + badge.WIDTH - rect.right()) < 10
+    f.close()
+
+
+def test_x_link_badge_labels_are_dense_and_update_live():
+    f = m.LaFigure()
+    f.link_x_action.trigger()
+    p1, p2, p3, p4 = f.plots
+    labels = {f._x_link_badges[p]._label for p in f.plots}
+    assert labels == {"X:1", "X:2", "X:3"}, "p1/p2 share a group -- 3 distinct labels for 4 subplots"
+    f.close()
+
+
+def test_toggle_link_x_and_badge_cycle_are_undoable():
+    f = m.LaFigure()
+    f.link_x_action.trigger()
+    p1, p2 = f.plots[0], f.plots[1]
+    assert f.link_x_action.isChecked()
+    f.undo()
+    assert not f.linked_x and not f.link_x_action.isChecked()
+    assert not f._x_link_groups and not f._x_link_badges
+    f.redo()
+    assert f.linked_x and f.link_x_action.isChecked()
+    assert f._x_link_groups[p1] == f._x_link_groups[p2]
+
+    before = dict(f._x_link_groups)
+    f._cycle_x_link_group(p2)
+    assert f._x_link_groups[p2] != before[p2]
+    f.undo()
+    assert f._x_link_groups == before
+    f.redo()
+    assert f._x_link_groups[p2] != before[p2]
+    f.close()
+
+
+def test_x_link_badge_removed_when_its_subplot_is_deleted():
+    f = m.LaFigure()
+    f.link_x_action.trigger()
+    p3 = f.plots[2]
+    f.delete_subplot(p3)
+    assert p3 not in f._x_link_groups and p3 not in f._x_link_badges
+    assert {f._x_link_badges[p]._label for p in f.plots} == {"X:1", "X:2"}, \
+        "labels stay dense (1..M) after a group disappears"
+    f.close()
+
+
+def test_x_link_cycle_to_a_new_group_keeps_the_highest_label_even_when_earliest_in_plots():
+    """Reported bug: cycling a subplot out to a brand-new group must show
+    it as the HIGHEST-numbered group (<previous group count> + 1), even
+    when that subplot is earlier in self.plots than the other members of
+    its old group -- renumbering must not reshuffle by self.plots
+    position and swap the new group back down to a lower number."""
+    f = m.LaFigure()
+    f.link_x_action.trigger()
+    p1, p2, p3, p4 = f.plots
+    # Force all four into one group (p1 first in self.plots), so the
+    # group p1 leaves still has members (p2) that come after it.
+    for p in (p3, p4):
+        while f._x_link_groups[p] != f._x_link_groups[p1]:
+            f._cycle_x_link_group(p)
+    assert len({f._x_link_groups[p] for p in f.plots}) == 1
+
+    f._cycle_x_link_group(p1)  # p1 (earliest) cycles out to a brand-new group
+    assert f._x_link_groups[p1] != f._x_link_groups[p2]
+    assert f._x_link_badges[p1]._label == "X:2", \
+        "the newly split-off group must be labeled 2 (1 existing group + 1), not clamped back to 1"
+    assert f._x_link_badges[p2]._label == "X:1"
     f.close()
 
 
