@@ -195,9 +195,18 @@ Every zoom and pan (rectangle, wheel, drag, Home, Fit, View All) is one
 ## Other Features
 
 - **Figure Manager** (toolbar, leftmost) to open the Figure Browser /
-  Curve Browser window -- the Curve Browser lists **Curves** and
-  **Annotations** as two separate categories, each with its own
-  checkbox that shows/hides every item under it
+  Curve Browser / Variable Browser window -- the Curve Browser lists
+  **Curves** and **Annotations** as two separate categories, each with
+  its own checkbox that shows/hides every item under it
+- **Variable Browser** (a Figure Manager tab): every named column of a
+  shared `DataSource` currently in use anywhere, with a regexp filter at
+  the bottom. Drag one or more rows onto a figure: on empty space it
+  creates a new subplot (time vs. that variable, or a legend'd multi-curve
+  subplot for more than one); on an existing subplot it asks whether to
+  create a new one or add to that one. The top bar's **variables**/
+  **time** fields act like Paint.NET's color swatches -- click one to arm
+  it, then click table rows to fill it -- and **New Figure** opens a fresh
+  figure plotting the chosen selection
 - **Toggle Legend** to show/hide curve names; a curve named with a
   leading `_` (matplotlib's `"_nolegend_"` convention) is never listed;
   entries are ordered front-most (highest z-order) first

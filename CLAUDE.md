@@ -65,7 +65,14 @@ LaFigure/
     controls.py                              # ControlPanel/ControlPanelWindow: buttons,
                                               # sliders, dropdowns, checkboxes, reactive tables
     manager.py                 # FigureManager: tree of open figures/subplots,
-                                # "New Figure" button (creates an empty figure)
+                                # "New Figure" button (creates an empty figure),
+                                # Variable Browser tab (table + top bar UI)
+    variable_browser.py         # Variable Browser's backing logic: explicit-
+                                 # DataSource column discovery, default "time"
+                                 # column, undoable subplot/curve creation from
+                                 # a drag-and-drop (manager.py's table is the
+                                 # drag source, layout.py's eventFilter the
+                                 # drop target)
     registry.py                 # FigureRegistry: process-wide list of open
                                  # LaFigure windows, with Qt signals
                                  # FigureManager listens to (figureOpened/
@@ -1097,6 +1104,57 @@ the actual code — this list is a summary, not a substitute for checking.
       the resulting selection (`selection_ui.py`), and brush-drag/
       annotation-placement gesture start/end (`brushing.py`/
       `annotation_ops.py`).
+- [x] **Variable Browser** (2026-10-02, a Figure Manager tab,
+      `lafigure/variable_browser.py` + `manager.py`'s `_build_variable_
+      browser`/`_var_*` methods): lists every column of an EXPLICIT,
+      shared `DataSource` currently in use anywhere (`Series._source`,
+      not the lazily-built private one every plain-array `ax.plot(arr)`
+      gets — a deliberate scope decision, since a private source's
+      columns are always literally named `'x'`/`'y'`/`'z'` and would
+      otherwise flood the table with meaningless duplicate names), as
+      Name/Size (row count)/Type (numpy dtype) columns, with a regexp
+      filter field at the bottom. Dragging one or more rows (multi-
+      select) onto a figure window — `manager.py`'s `_VariableTable.
+      mimeData` is the drag source, `LayoutMixin.eventFilter`'s new
+      `DragEnter`/`DragMove`/`Drop` branch on `self.layout_widget` (a
+      second, separate filter target from the existing one on
+      `.scene()`, since drag/drop events are delivered to the widget,
+      not the scene — wired in `figure.py`'s `__init__`) the drop target,
+      `variable_browser.handle_drop` the actual dispatch — either creates
+      a new subplot (empty space: `create_new_subplot_with_variables`,
+      placed the same "first empty grid cell, else a new row" way
+      `add_new_subplot` places one) or asks **"Create New Subplot" / "Add
+      to Subplot `<name>`"** (`ask_create_or_add`, a drop on an existing
+      one) and adds the curves there instead
+      (`add_variables_to_subplot`, mirroring `ClipOpsMixin.paste_curve`'s
+      own holder/undo_fn/redo_fn shape). Every dropped/selected variable
+      is plotted against a **default "time" column** — a column literally
+      named `time` (case-insensitive), a convention local to this
+      feature only and not used anywhere else in the project — falling
+      back to the plain row index if the source has none; a drop/
+      selection spanning more than one `DataSource` only keeps the
+      variables matching the FIRST one (another deliberate scope
+      decision: this feature has no gesture for plotting unrelated
+      sources against each other). More than one resulting curve on a
+      subplot shows its legend by default (`PlotItem.addLegend` via the
+      existing `_show_legend`, only if not already shown). The tab's own
+      top bar (`<variables>`/`<time>` read-only fields +
+      `_ClickableField`) is a Paint.NET foreground/background-swatch
+      convention: clicking one arms whether the next table row click(s)
+      feed the Y selection (multi) or the X selection (single) —
+      `_var_arm_select`/`_on_var_table_clicked` — shown in blue
+      (`_var_apply_row_colors`, the same "a different concept from the
+      table's own native selection" split the Figure/Curve Browser tabs'
+      own blue-row coloring already uses) and as comma-joined names in
+      the fields; picking a variable from a different `DataSource` than
+      the current Y selection starts a fresh one rather than mixing
+      sources. A small "✕" button next to `<time>` appears only once X
+      has been overridden, to revert to the default. **New Figure**
+      builds a brand-new, empty `LaFigure` window with one subplot from
+      the current selection. Live-updated from the existing
+      `registry.figureOpened`/`figureClosed`/`subplotsChanged` signals
+      (added to the Figure/Curve Browser tabs' own existing handlers for
+      those, not three new separate connections).
 
 ## Roadmap (agreed with the user 2026-09-28) — live backlog
 

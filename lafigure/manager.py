@@ -84,6 +84,7 @@ annotation row's own rename already has a dedicated, richer UI inside the
 figure itself (right-click "Rename Curve"; annotations have no rename at
 all yet), so this pass doesn't duplicate that in the tree.
 """
+import re
 import weakref
 from contextlib import contextmanager
 
@@ -97,6 +98,7 @@ from .series import Series
 from .groups import Group, _ungroup_one
 from .curve_style import (CurveStyleMixin, line_options_apply, marker_options_apply,
                           LINE_STYLES, MARKERS, pen_style_of)
+from . import variable_browser
 
 
 @contextmanager
@@ -109,6 +111,39 @@ def _no_item_signals(tree):
         yield
     finally:
         tree.blockSignals(False)
+
+
+class _ClickableField(QtWidgets.QLineEdit):
+    """A read-only field that acts like Paint.NET's foreground/background
+    color swatches: clicking it doesn't edit text, it arms which kind of
+    table selection subsequent row clicks feed (see FigureManager's
+    _var_arm_select)."""
+    clicked = QtCore.Signal()
+
+    def mousePressEvent(self, event):
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+
+class _VariableTable(QtWidgets.QTableWidget):
+    """The Variable Browser's table -- a plain QTableWidget except for drag
+    support: dragging a row (or several, multi-selected) out of it starts a
+    drag carrying variable_browser.VARIABLE_MIME_TYPE, whose actual payload
+    (DataSource, column) pairs are stashed via variable_browser.
+    set_drag_payload (a QMimeData can only carry bytes -- see that module's
+    own docstring on why a plain module-level list is enough here)."""
+
+    def mimeData(self, items):
+        rows = sorted({it.row() for it in items})
+        payload = []
+        for r in rows:
+            data = self.item(r, 0).data(QtCore.Qt.UserRole)
+            if data is not None:
+                payload.append(data)
+        variable_browser.set_drag_payload(payload)
+        md = QtCore.QMimeData()
+        md.setData(variable_browser.VARIABLE_MIME_TYPE, b'1')
+        return md
 
 
 class FigureManager(QtWidgets.QMainWindow):
@@ -180,9 +215,16 @@ class FigureManager(QtWidgets.QMainWindow):
         curve_layout.addWidget(self.curve_tree)
         curve_layout.addWidget(self._build_curve_editor())
 
+        # -- Variable Browser tab -------------------------------------------
+        self._var_arm = None     # None | 'x' | 'y' -- which field is armed
+        self._var_y = []         # [(DataSource, column), ...] -- Y selection
+        self._var_x = None       # (DataSource, column) or None (default time)
+        var_widget = self._build_variable_browser()
+
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(browser_widget, "Figure Browser")
         self.tabs.addTab(curve_widget, "Curve Browser")
+        self.tabs.addTab(var_widget, "Variable Browser")
         self.setCentralWidget(self.tabs)
 
         self._figure_items = {}    # LaFigure -> top-level QTreeWidgetItem
@@ -212,6 +254,7 @@ class FigureManager(QtWidgets.QMainWindow):
         for fig in list(self.registry.figures):
             self._add_figure_item(fig)
         self._curve_show_editor(None, None)
+        self._var_rebuild_table()
 
         # App-wide mouse watcher for the Curve Browser's recency tracker --
         # see eventFilter's own docstring for why registry.focusChanged
@@ -361,6 +404,7 @@ class FigureManager(QtWidgets.QMainWindow):
 
     def _on_figure_opened(self, fig):
         self._add_figure_item(fig)
+        self._var_rebuild_table()
 
     def _on_figure_closed(self, fig):
         item = self._figure_items.pop(fig, None)
@@ -377,11 +421,13 @@ class FigureManager(QtWidgets.QMainWindow):
         self._curve_recent[:] = [r for r in self._curve_recent if r() is not None and r() is not fig]
         if self._curve_current_fig is fig:
             self._curve_refresh_target()
+        self._var_rebuild_table()
 
     def _on_subplots_changed(self, fig):
         self._refresh_subplots(fig)
         if fig is self._curve_current_fig:
             self._curve_rebuild_tree()
+        self._var_rebuild_table()
 
     def _on_selection_changed(self, fig):
         self._apply_selection_colors(fig)
@@ -1266,3 +1312,173 @@ class FigureManager(QtWidgets.QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    # =====================================================================
+    # Variable Browser tab -- every explicit DataSource column currently in
+    # use anywhere in an open figure (see variable_browser.collect_variables
+    # for exactly what counts), with drag-and-drop onto a figure window and
+    # a Paint.NET-swatch-style top bar for building a new figure directly.
+    # Kept deliberately separate from the Figure/Curve Browser tabs' own
+    # code above (same rule PLAN.md gave WP-K2 for the Curve Browser): every
+    # method/attribute here is prefixed `_var_`/`var_`.
+    # =====================================================================
+
+    def _build_variable_browser(self):
+        widget = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(widget)
+        layout.setContentsMargins(4, 4, 4, 4)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.addWidget(QtWidgets.QLabel("select"))
+        self.var_y_field = _ClickableField()
+        self.var_y_field.setReadOnly(True)
+        self.var_y_field.setPlaceholderText("variables")
+        self.var_y_field.clicked.connect(lambda: self._var_arm_select('y'))
+        top_row.addWidget(self.var_y_field)
+        top_row.addWidget(QtWidgets.QLabel("to plot against"))
+        self.var_x_field = _ClickableField()
+        self.var_x_field.setReadOnly(True)
+        self.var_x_field.setPlaceholderText("time")
+        self.var_x_field.clicked.connect(lambda: self._var_arm_select('x'))
+        top_row.addWidget(self.var_x_field)
+        self.var_x_reset_btn = QtWidgets.QToolButton()
+        self.var_x_reset_btn.setText("✕")
+        self.var_x_reset_btn.setToolTip("Revert to the default time variable")
+        self.var_x_reset_btn.clicked.connect(self._var_reset_x)
+        self.var_x_reset_btn.hide()
+        top_row.addWidget(self.var_x_reset_btn)
+        self.var_new_figure_btn = QtWidgets.QPushButton("New Figure")
+        self.var_new_figure_btn.clicked.connect(self._var_new_figure_clicked)
+        top_row.addWidget(self.var_new_figure_btn)
+        layout.addLayout(top_row)
+
+        self.var_table = _VariableTable()
+        self.var_table.setColumnCount(3)
+        self.var_table.setHorizontalHeaderLabels(["Name", "Size", "Type"])
+        self.var_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.var_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.var_table.verticalHeader().setVisible(False)
+        self.var_table.horizontalHeader().setStretchLastSection(True)
+        self.var_table.setDragEnabled(True)
+        self.var_table.setDragDropMode(QtWidgets.QAbstractItemView.DragOnly)
+        self.var_table.itemClicked.connect(self._on_var_table_clicked)
+        layout.addWidget(self.var_table)
+
+        self.var_filter_edit = QtWidgets.QLineEdit()
+        self.var_filter_edit.setPlaceholderText("Filter (regexp)...")
+        self.var_filter_edit.textChanged.connect(self._var_apply_filter)
+        layout.addWidget(self.var_filter_edit)
+
+        return widget
+
+    def _var_all_rows(self):
+        """[(source, column, n_rows, dtype_str), ...] -- see
+        variable_browser.collect_variables for exactly what's included."""
+        return variable_browser.collect_variables(self.registry)
+
+    def _var_rebuild_table(self):
+        rows = self._var_all_rows()
+        live_sources = {id(src) for src, _, _, _ in rows}
+        # Drop any armed selection whose source no longer has an open figure.
+        self._var_y = [(s, c) for (s, c) in self._var_y if id(s) in live_sources]
+        if self._var_x is not None and id(self._var_x[0]) not in live_sources:
+            self._var_x = None
+
+        with _no_item_signals(self.var_table):
+            self.var_table.setRowCount(len(rows))
+            for i, (source, col, n_rows, dtype) in enumerate(rows):
+                name_item = QtWidgets.QTableWidgetItem(col)
+                name_item.setData(QtCore.Qt.UserRole, (source, col))
+                self.var_table.setItem(i, 0, name_item)
+                self.var_table.setItem(i, 1, QtWidgets.QTableWidgetItem(str(n_rows)))
+                self.var_table.setItem(i, 2, QtWidgets.QTableWidgetItem(dtype))
+        self._var_apply_filter(self.var_filter_edit.text())
+        self._var_refresh_fields()
+        self._var_apply_row_colors()
+
+    def _var_apply_filter(self, pattern):
+        try:
+            rx = re.compile(pattern) if pattern else None
+        except re.error:
+            rx = None  # an invalid in-progress regexp just shows everything
+        for row in range(self.var_table.rowCount()):
+            item = self.var_table.item(row, 0)
+            visible = item is not None and (rx is None or rx.search(item.text()) is not None)
+            self.var_table.setRowHidden(row, not visible)
+
+    def _var_apply_row_colors(self):
+        """Blue = currently armed (X or Y) selection -- a DIFFERENT concept
+        from the table's own native row selection (which drag uses), same
+        split as the Figure/Curve Browser tabs' own selection-color rows."""
+        y_set = set(self._var_y)
+        x_val = self._var_x
+        for row in range(self.var_table.rowCount()):
+            item = self.var_table.item(row, 0)
+            data = item.data(QtCore.Qt.UserRole) if item is not None else None
+            hit = data in y_set or data == x_val
+            brush = QtGui.QBrush(self.SELECTED_BG) if hit else QtGui.QBrush()
+            for col in range(3):
+                cell = self.var_table.item(row, col)
+                if cell is not None:
+                    cell.setBackground(brush)
+
+    def _var_refresh_fields(self):
+        self.var_y_field.setText(", ".join(c for _, c in self._var_y))
+        if self._var_x is None:
+            self.var_x_field.setText("")
+            self.var_x_reset_btn.hide()
+        else:
+            self.var_x_field.setText(self._var_x[1])
+            self.var_x_reset_btn.show()
+
+    def _var_arm_select(self, which):
+        """Click on the <variables> or <time> field: arms which one the
+        next table row click(s) feed, Paint.NET foreground/background-
+        swatch style -- stays armed until the OTHER field is clicked."""
+        self._var_arm = which
+
+    def _var_reset_x(self):
+        self._var_x = None
+        self._var_refresh_fields()
+        self._var_apply_row_colors()
+
+    def _on_var_table_clicked(self, item):
+        if self._var_arm is None:
+            return  # no field armed: a plain click is just for starting a drag
+        name_item = self.var_table.item(item.row(), 0)
+        data = name_item.data(QtCore.Qt.UserRole) if name_item is not None else None
+        if data is None:
+            return
+        source, col = data
+        if self._var_arm == 'y':
+            # Only one DataSource at a time (see variable_browser.py's own
+            # module docstring): picking a variable from a different source
+            # than the current Y selection starts a fresh one.
+            if self._var_y and id(self._var_y[0][0]) != id(source):
+                self._var_y = []
+                self._var_x = None
+            if data in self._var_y:
+                self._var_y.remove(data)
+            else:
+                self._var_y.append(data)
+        else:
+            if self._var_y and id(self._var_y[0][0]) != id(source):
+                self._var_y = []
+            self._var_x = data
+        # Drop Qt's own native row selection (which would otherwise paint
+        # over our own blue "armed" marking) -- this click was a pick, not
+        # the start of a drag.
+        self.var_table.clearSelection()
+        self._var_refresh_fields()
+        self._var_apply_row_colors()
+
+    def _var_new_figure_clicked(self):
+        if not self._var_y:
+            return
+        source = self._var_y[0][0]
+        y_cols = [c for _, c in self._var_y]
+        x_col = self._var_x[1] if self._var_x is not None else variable_browser.default_time_column(source)
+        fig = LaFigure(empty=True)
+        fig.show()
+        self._owned_figures.append(fig)
+        variable_browser.create_new_subplot_with_variables(fig, source, y_cols, x_col)

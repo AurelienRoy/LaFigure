@@ -207,6 +207,13 @@ class LaFigure(ToolbarMixin, MenusMixin, LayoutMixin, SelectionUIMixin, HistoryM
         # View history (zoom/pan undo): its observe-only filter must be
         # installed after the one above, so Qt calls it first (view_ops.py).
         self._install_view_history()
+        # Drop target for the Figure Manager's Variable Browser tab: a
+        # variable dragged from its table lands here (layout.py's
+        # eventFilter handles the actual DragEnter/DragMove/Drop events --
+        # a separate filter target from the scene above, since drag/drop
+        # events are delivered to the widget itself, not the scene).
+        self.layout_widget.setAcceptDrops(True)
+        self.layout_widget.installEventFilter(self)
 
     def subplot(self, row, col, rowspan=1, colspan=1, title='', axes_type='cartesian'):
         """The library entry point: add_subplot, wrapped in an Axes

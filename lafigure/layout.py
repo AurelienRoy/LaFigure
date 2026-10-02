@@ -54,6 +54,7 @@ from .editable_text import wire_plot_labels_editable
 from .annotations import AnnotationItem
 from .selection_ui import selection_op
 from .view3d import View3DBox
+from . import variable_browser
 
 
 # 'cartesian': a 2D pg.PlotItem. '3d': the same PlotItem with a View3DBox as
@@ -743,8 +744,25 @@ class LayoutMixin:
         band (selection_ui._band_event, reached through the scene filter
         chain) would arm on it -- a gutter is "nothing selectable" to it --
         and then consume the drag's moves. Let the chain run, then disarm
-        the band for such a press."""
+        the band for such a press.
+
+        Also the drop target for the Figure Manager's Variable Browser tab
+        (variable_browser.py): obj is self.layout_widget itself here, a
+        different object than self.layout_widget.scene() below, since
+        drag/drop events are delivered to the widget, not the scene."""
         consumed = super().eventFilter(obj, event)
+        if not consumed and obj is self.layout_widget:
+            et = event.type()
+            if et in (QtCore.QEvent.DragEnter, QtCore.QEvent.DragMove):
+                if event.mimeData().hasFormat(variable_browser.VARIABLE_MIME_TYPE):
+                    event.acceptProposedAction()
+                    return True
+            elif et == QtCore.QEvent.Drop:
+                if event.mimeData().hasFormat(variable_browser.VARIABLE_MIME_TYPE):
+                    scene_pos = self.layout_widget.mapToScene(event.pos())
+                    variable_browser.handle_drop(self, scene_pos, variable_browser.get_drag_payload())
+                    event.acceptProposedAction()
+                    return True
         if (not consumed and obj is self.layout_widget.scene()
                 and event.type() == QtCore.QEvent.GraphicsSceneMousePress
                 and self._band is not None and self._gutter_under(event.scenePos()) is not None):

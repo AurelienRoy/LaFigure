@@ -103,18 +103,20 @@ def test_figure_manager_tracks_figures_and_cross_window_paste():
     mgr.close()
 
 
-def test_central_widget_is_a_two_tab_widget():
+def test_central_widget_is_a_three_tab_widget():
     mgr = m.FigureManager()
     app.processEvents()
     assert isinstance(mgr.centralWidget(), QtWidgets.QTabWidget)
     assert mgr.tabs is mgr.centralWidget()
-    assert mgr.tabs.count() == 2
+    assert mgr.tabs.count() == 3
     assert mgr.tabs.tabText(0) == "Figure Browser"
     assert mgr.tabs.tabText(1) == "Curve Browser"
+    assert mgr.tabs.tabText(2) == "Variable Browser"
     # The Curve Browser tab is a structural placeholder a later package
     # (K2) can find and populate -- just assert the widgets exist.
     assert isinstance(mgr.curve_tree, QtWidgets.QTreeWidget)
     assert isinstance(mgr.curve_browser_label, QtWidgets.QLabel)
+    assert isinstance(mgr.var_table, QtWidgets.QTableWidget)
     mgr.close()
 
 
