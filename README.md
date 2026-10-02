@@ -9,6 +9,10 @@ annotations, data brushing/linked selection, 3D scenes, interactive controls, an
 Figure Manager for tracking multiple open figures — see the full feature list and
 design notes in [CLAUDE.md](CLAUDE.md).
 
+It is aimed at data analysis, with a lot of freedom in the interactive plotting to
+make it easier to find unknown patterns, investigate time series, then share reports
+with the rest of the team.
+
 ## Install
 
 Requires Python >= 3.9.
@@ -46,7 +50,7 @@ app.exec()
 
 More runnable examples — series kinds, annotations, linked brushing, 3D scenes,
 interactive controls, copy/paste across figures — are in [`examples/`](examples/).
-Run any of them directly: `python examples/line_signal_annotations.py`.
+Run any of them directly: `python examples/series_kinds_gallery.py`.
 
 ## Running the tests
 
@@ -62,6 +66,17 @@ narrow it, e.g. `python run_tests.py layout`.
 See [CLAUDE.md](CLAUDE.md) for the architecture, the module layout, and the
 hard-won lessons behind this codebase's design. If you're coding here with
 Claude Code, read it first — it's written for that.
+
+Future directions:
+Give maximal freedom to the user to manipulate figures/plots/data through mouse
+clicks or keyboard shortcuts.
+Once satisfied, give the ability to generate the equivalent code, to reproduce
+the same figures immediately.
+Exports are aimed to share with a team, with graphs providing zooming and data
+cursor inspection capabilities, and .png images for document reports.
+Many real world signals are noisy, only interesting on some time phases unknown
+or described in enclosed metadata (modes, messages, ...), give capacities for
+easy filtering and plotting these metadata.
 
 ## License
 
