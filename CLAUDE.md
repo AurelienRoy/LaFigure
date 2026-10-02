@@ -1142,25 +1142,33 @@ the actual code — this list is a summary, not a substitute for checking.
       `_ClickableField`) is a Paint.NET foreground/background-swatch
       convention: clicking one arms whether the next table row click(s)
       feed the Y selection (multi) or the X selection (single) --
-      `_var_arm_select`/`_on_var_table_clicked` -- and the ARMED field
-      itself is highlighted amber (`ARMED_FIELD_STYLE`,
-      `_var_update_armed_field_style`), so it's clear which one table
-      clicks currently feed. The picked variables themselves show as
-      comma-joined names in the fields and as colored table rows --
-      **red** for the X variable, **blue** for a Y variable
-      (`_var_apply_row_colors`/`X_SELECTED_BG`; blue is the same "a
-      different concept from the table's own native selection" split the
-      Figure/Curve Browser tabs' own blue-row coloring already uses; X
-      wins if a variable is picked as both); picking a variable from a
-      different `DataSource` than the current Y selection starts a fresh
-      one rather than mixing sources. A small "✕" button next to `<time>`
-      appears only once X has been overridden, to revert to the default.
-      **New Figure**
-      builds a brand-new, empty `LaFigure` window with one subplot from
-      the current selection. Live-updated from the existing
-      `registry.figureOpened`/`figureClosed`/`subplotsChanged` signals
-      (added to the Figure/Curve Browser tabs' own existing handlers for
-      those, not three new separate connections).
+      `_var_arm_select`/`_on_var_table_clicked` -- **`<variables>` (Y) is
+      armed from the start** (`self._var_arm = 'y'`, set before the tab is
+      even built), since picking Y variables is this tab's whole point and
+      shouldn't need a click on the field first. The ARMED field itself is
+      highlighted amber (`ARMED_FIELD_STYLE`, `_var_update_armed_field_
+      style`), so it's clear which one table clicks currently feed. For Y,
+      **a plain click REPLACES the selection with just that one variable;
+      Ctrl+click toggles it in/out of a growing multi-selection instead**
+      (standard list-widget convention) -- read from `_VariableTable`'s
+      own `mousePressEvent` override (`last_click_modifiers`), never from
+      `QApplication.keyboardModifiers()` (a global poll that can report
+      Ctrl held from an unrelated earlier keystroke elsewhere in the app —
+      see bug #31). The picked variables themselves show as comma-joined
+      names in the fields and as colored table rows -- **red** for the X
+      variable, **blue** for a Y variable (`_var_apply_row_colors`/
+      `X_SELECTED_BG`; blue is the same "a different concept from the
+      table's own native selection" split the Figure/Curve Browser tabs'
+      own blue-row coloring already uses; X wins if a variable is picked
+      as both); picking a variable from a different `DataSource` than the
+      current Y selection starts a fresh one rather than mixing sources. A
+      small "✕" button next to `<time>` appears only once X has been
+      overridden, to revert to the default. **New Figure** builds a
+      brand-new, empty `LaFigure` window with one subplot from the current
+      selection. Live-updated from the existing `registry.figureOpened`/
+      `figureClosed`/`subplotsChanged` signals (added to the Figure/Curve
+      Browser tabs' own existing handlers for those, not three new
+      separate connections).
 
 ## Roadmap (agreed with the user 2026-09-28) — live backlog
 
@@ -2845,6 +2853,43 @@ it to count as data for ranging purposes. And when reproducing/testing
 anything involving pyqtgraph autorange, give it a few `processEvents()`
 passes to settle before taking a "before" snapshot, or an unrelated
 settling drift gets misread as the bug under test.
+
+### 31. `QApplication.keyboardModifiers()` is a global poll, not the click's own modifiers — it can report Ctrl held from an unrelated earlier keystroke
+**Symptom (found 2026-10-02, building the Variable Browser's Ctrl+click
+multi-select):** a test that clicked two Variable Browser rows with no
+Ctrl involved at all passed in isolation but failed when the full suite
+ran — intermittently, depending on what ran just before it.
+
+**Root cause:** `QTableWidget.itemClicked(item)` carries no `QMouseEvent`,
+so the handler read `QtWidgets.QApplication.keyboardModifiers()` instead
+— a live poll of whatever modifier keys the platform currently reports as
+held, not the modifiers of the click that triggered this signal. An
+earlier, unrelated test's `QtTest.QTest.keyClick(window, Key_Z,
+ControlModifier)` (e.g. a Ctrl+Z undo test) left that global state
+reporting Control held well after its own test function returned, so the
+very next plain click anywhere in the suite silently behaved as a
+Ctrl+click.
+
+**Fix:** never poll global modifier state for a specific gesture's
+modifiers. `_VariableTable` (`manager.py`) now overrides
+`mousePressEvent` to record `event.modifiers()` — the real modifiers of
+the actual press — into `self.last_click_modifiers`, and
+`_on_var_table_clicked` reads that instead of
+`QApplication.keyboardModifiers()`.
+
+**Lesson:** this project's own established convention — every other
+modifier check in the codebase reads `ev.modifiers()` off a real event,
+never a global poll (see the `grep` for `ShiftModifier`/`ControlModifier`
+across `annotation_ops.py`/`annotations.py`/`selection_ui.py`/
+`selection.py`/`layout.py`) — exists for exactly this reason, and a new
+Qt signal that doesn't hand you an event (`itemClicked`,
+`currentItemChanged`, etc.) is not an exception to it: capture the real
+event one level earlier (here, `mousePressEvent`) instead of reaching for
+`QApplication.keyboardModifiers()`. The bug was also a textbook instance
+of CLAUDE.md's own recurring theme (items 7/11/14/19/22): it was
+invisible testing the new code in isolation and only surfaced once the
+full suite's cross-test state was in play — run the full suite, not just
+the new test file, before trusting a pass.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 

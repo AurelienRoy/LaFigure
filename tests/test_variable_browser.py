@@ -218,6 +218,51 @@ def test_variable_table_lists_columns_with_size_and_type_and_filters_live():
     fig.close()
 
 
+def _click_with_ctrl(mgr, item):
+    """itemClicked carries no QMouseEvent, so _on_var_table_clicked reads
+    the Ctrl state _VariableTable's own mousePressEvent override last
+    recorded (see its docstring) -- set that directly for one click, the
+    same "drive the underlying method directly" pattern test_manager.py
+    already uses for modal menus."""
+    original = mgr.var_table.last_click_modifiers
+    mgr.var_table.last_click_modifiers = QtCore.Qt.ControlModifier
+    try:
+        mgr._on_var_table_clicked(item)
+    finally:
+        mgr.var_table.last_click_modifiers = original
+
+
+def test_plain_y_click_replaces_the_selection_ctrl_click_adds_to_it():
+    fig = shown_figure()
+    src = _source()
+    fig.subplot(2, 0).plot(src, x='time', y='temp')
+
+    mgr = m.FigureManager()
+    app.processEvents()
+
+    def row_for(name):
+        for r in range(mgr.var_table.rowCount()):
+            if mgr.var_table.item(r, 0).text() == name:
+                return r
+        raise AssertionError(name)
+
+    mgr._var_arm_select('y')
+    mgr._on_var_table_clicked(mgr.var_table.item(row_for('temp'), 0))
+    assert mgr.var_y_field.text() == 'temp'
+    # A plain click on a DIFFERENT row replaces the selection, not adds to it.
+    mgr._on_var_table_clicked(mgr.var_table.item(row_for('pwm'), 0))
+    assert mgr.var_y_field.text() == 'pwm'
+    # Ctrl+click adds instead.
+    _click_with_ctrl(mgr, mgr.var_table.item(row_for('time'), 0))
+    assert mgr.var_y_field.text() == 'pwm, time'
+    # Ctrl+click on an already-selected row toggles it back off.
+    _click_with_ctrl(mgr, mgr.var_table.item(row_for('pwm'), 0))
+    assert mgr.var_y_field.text() == 'time'
+
+    mgr.close()
+    fig.close()
+
+
 def test_arming_y_then_x_updates_fields_and_new_figure_button_builds_a_figure():
     fig = shown_figure()
     src = _source()
@@ -234,7 +279,7 @@ def test_arming_y_then_x_updates_fields_and_new_figure_button_builds_a_figure():
 
     mgr._var_arm_select('y')
     mgr._on_var_table_clicked(mgr.var_table.item(row_for('temp'), 0))
-    mgr._on_var_table_clicked(mgr.var_table.item(row_for('pwm'), 0))
+    _click_with_ctrl(mgr, mgr.var_table.item(row_for('pwm'), 0))
     assert mgr.var_y_field.text() == 'temp, pwm'
 
     mgr._var_arm_select('x')
@@ -295,10 +340,8 @@ def test_armed_field_is_highlighted_and_unarmed_field_is_not():
     mgr = m.FigureManager()
     app.processEvents()
 
-    assert mgr.var_y_field.styleSheet() == ""
-    assert mgr.var_x_field.styleSheet() == ""
-
-    mgr._var_arm_select('y')
+    # 'y' is armed from the start -- the tab's whole point is picking Y
+    # variables, so no click on <variables> should be needed first.
     assert mgr.var_y_field.styleSheet() == mgr.ARMED_FIELD_STYLE
     assert mgr.var_x_field.styleSheet() == ""
 

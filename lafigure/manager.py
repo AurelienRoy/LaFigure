@@ -131,7 +131,25 @@ class _VariableTable(QtWidgets.QTableWidget):
     drag carrying variable_browser.VARIABLE_MIME_TYPE, whose actual payload
     (DataSource, column) pairs are stashed via variable_browser.
     set_drag_payload (a QMimeData can only carry bytes -- see that module's
-    own docstring on why a plain module-level list is enough here)."""
+    own docstring on why a plain module-level list is enough here).
+
+    Also tracks the real modifiers of the press that led to the most recent
+    click (last_click_modifiers), for _on_var_table_clicked's Ctrl-to-multi-
+    select check: QTableWidget.itemClicked carries no QMouseEvent, and
+    QApplication.keyboardModifiers() is a global poll of live key state --
+    every OTHER modifier check in this project reads ev.modifiers() off the
+    actual event instead (never a global poll), and this one does too now,
+    having confirmed live that the global poll is unreliable here (it can
+    still report Control held from an unrelated earlier Ctrl+Z/Ctrl+Shift+G
+    keystroke elsewhere in the app, with no click of this table involved)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_click_modifiers = QtCore.Qt.NoModifier
+
+    def mousePressEvent(self, event):
+        self.last_click_modifiers = event.modifiers()
+        super().mousePressEvent(event)
 
     def mimeData(self, items):
         rows = sorted({it.row() for it in items})
@@ -222,10 +240,14 @@ class FigureManager(QtWidgets.QMainWindow):
         curve_layout.addWidget(self._build_curve_editor())
 
         # -- Variable Browser tab -------------------------------------------
-        self._var_arm = None     # None | 'x' | 'y' -- which field is armed
+        # 'y' armed by default: the tab's whole point is picking Y
+        # variables, so it starts ready for that without requiring a click
+        # on the <variables> field first.
+        self._var_arm = 'y'      # None | 'x' | 'y' -- which field is armed
         self._var_y = []         # [(DataSource, column), ...] -- Y selection
         self._var_x = None       # (DataSource, column) or None (default time)
         var_widget = self._build_variable_browser()
+        self._var_update_armed_field_style()
 
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(browser_widget, "Figure Browser")
@@ -1475,10 +1497,20 @@ class FigureManager(QtWidgets.QMainWindow):
             if self._var_y and id(self._var_y[0][0]) != id(source):
                 self._var_y = []
                 self._var_x = None
-            if data in self._var_y:
-                self._var_y.remove(data)
+            # A plain click REPLACES the Y selection with just this one
+            # variable (single-select is the default); Ctrl+click toggles
+            # it in/out of a growing multi-selection instead -- standard
+            # list-widget convention. See _VariableTable's own docstring
+            # for why this reads the table's own last-press modifiers
+            # rather than polling QApplication.keyboardModifiers().
+            ctrl = bool(self.var_table.last_click_modifiers & QtCore.Qt.ControlModifier)
+            if ctrl:
+                if data in self._var_y:
+                    self._var_y.remove(data)
+                else:
+                    self._var_y.append(data)
             else:
-                self._var_y.append(data)
+                self._var_y = [data]
         else:
             if self._var_y and id(self._var_y[0][0]) != id(source):
                 self._var_y = []
