@@ -429,12 +429,26 @@ the actual code — this list is a summary, not a substitute for checking.
       rather than redraws of the originals). All 53 original files
       (used and unused) now live in `icons/nonpublished-icons/`, which
       `.gitignore` excludes — nothing under `icons/` ships publicly
-      except what `toolbar_icons.py` draws. `action()`/`menu_button()`
-      in `toolbar.py` still accept a plain filename-in-`icons/` string
-      too (for any future real icon asset someone has the rights to
-      ship), but every built-in toolbar icon today is code-drawn. A few
-      actions without a drawn icon keep a generic Qt fallback (Add
-      Subplot, Delete, Undo, Redo, Grid Layout).
+      except what `toolbar_icons.py` draws, plus the real artwork below.
+      `action()`/`menu_button()` in `toolbar.py` accept a plain
+      filename-in-`icons/` string for any real icon asset someone has
+      the rights to ship. A few actions without a drawn/shipped icon
+      keep a generic Qt fallback (Add Subplot, Delete, Undo, Redo, Grid
+      Layout). **Eight replaced with real artwork (2026-10-02):** the
+      user drew `tool_pan.png`/`tool_zoom.png`/`tool_brush.png`/
+      `tool_datacursor.png`/`tool_legend.png`/`tool_xylabels.png`/
+      `tool_link_x.png`/`tool_annotations.png` (16x16 RGBA, Paint.NET —
+      see `icons/images_pdn/`, gitignored since it's source files, not
+      needed to run/ship the app) and confirmed them free of any
+      proprietary rights; `toolbar.py`'s Hand/Zoom Rect/Brush/Data
+      Cursor/Toggle Legend/X-Y-Label-menu/Link X/Annotate-dropdown
+      actions now reference these filenames directly instead of the
+      code-drawn `ti.hand_icon()`/`zoom_in_icon()`/`data_brush_icon()`/
+      `data_cursor_icon()`/`legend_icon()`/`text_box_icon()`/
+      `link_icon()`/`pencil_icon()`, which were deleted from
+      `toolbar_icons.py` as dead code once nothing called them. Select
+      (pointer), Rotate + Zoom, FFT, Remove Average and Home are still
+      code-drawn — no replacement artwork exists for those yet.
 - [x] "Remove the average" button (subtracts the mean from every curve on
       the active subplot)
 - [x] Compute FFT and plot on a new subplot beneath the current one, acting

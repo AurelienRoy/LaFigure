@@ -24,18 +24,26 @@
 
 """Toolbar icons drawn in code instead of shipped as image files.
 
-The 13 icons here replace icons/*.png files that were copied out of a
-MATLAB installation (plotpicker-*, tool_rotate_3d, etc. -- identified
-during the open-source cleanup) and can't be redistributed under this
+These icons replace icons/*.png files that were copied out of a MATLAB
+installation (plotpicker-*, tool_rotate_3d, etc. -- identified during
+the open-source cleanup) and can't be redistributed under this
 project's BSD-2 license. Each function returns a QIcon painted once onto
 a small QPixmap and cached by the QIcon it returns -- the same technique
 toolbar.py's own pre-existing _fit_icon/_hide_points_icon already used,
-just centralized here now that there are 13 of them instead of 2.
+just centralized here now that there are several of them.
 
 fft_icon()/remove_average_icon() are deliberately NOT redrawn copies of
 the original MATLAB icons' look (a spectrum-bars glyph and a
 mean-removal glyph respectively) -- the user asked for different
 concepts, not lookalikes, for exactly those two.
+
+Eight further icons that used to live here (hand/zoom_in/data_brush/
+data_cursor/legend/text_box/link/pencil) were replaced 2026-10-02 by
+real icons/*.png artwork the user drew and confirmed is free of any
+proprietary rights (tool_pan.png, tool_zoom.png, tool_brush.png,
+tool_datacursor.png, tool_legend.png, tool_xylabels.png,
+tool_link_x.png, tool_annotations.png) -- see toolbar.py's own
+`action`/`menu_button` call sites for where each is wired in.
 """
 import math
 
@@ -78,29 +86,6 @@ def _arrowhead(p, tip, dx, dy, length=3.2, width=2.4):
     ]))
 
 
-def hand_icon():
-    """Hand mode: a four-way move/pan glyph (ldr arrows meeting at center) --
-    chosen over a literal hand silhouette, which didn't read clearly at
-    18px (see this file's own render-and-check pass)."""
-    def draw(p):
-        p.setBrush(QtGui.QBrush(_PEN_COLOR))
-        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0)):
-            tip = QtCore.QPointF(9 + dx * 7.5, 9 + dy * 7.5)
-            p.drawLine(QtCore.QPointF(9, 9), QtCore.QPointF(9 + dx * 4.5, 9 + dy * 4.5))
-            _arrowhead(p, tip, dx, dy)
-    return _make_icon(draw)
-
-
-def zoom_in_icon():
-    """Zoom Rect mode: a magnifying glass with a '+' in the lens."""
-    def draw(p):
-        p.drawEllipse(QtCore.QPointF(7.5, 7.5), 5, 5)
-        p.drawLine(QtCore.QPointF(11.2, 11.2), QtCore.QPointF(16, 16))
-        p.drawLine(QtCore.QPointF(7.5, 5), QtCore.QPointF(7.5, 10))
-        p.drawLine(QtCore.QPointF(5, 7.5), QtCore.QPointF(10, 7.5))
-    return _make_icon(draw)
-
-
 def rotate_3d_icon():
     """Rotate + Zoom mode: a circular rotate/orbit arrow -- an ellipse+dot
     read as a plain eye, and a ring+center-dot read as a target/record
@@ -119,101 +104,6 @@ def rotate_3d_icon():
         tdx, tdy = math.sin(rad), math.cos(rad)
         p.setBrush(QtGui.QBrush(_PEN_COLOR))
         _arrowhead(p, tip, tdx, tdy, length=3.6, width=3.2)
-    return _make_icon(draw)
-
-
-def data_brush_icon():
-    """Brush mode: a selection marquee around a few data points (a dashed
-    rounded rect rendered as corner-brackets-only at 18px -- see this
-    file's own render-and-check pass -- so this uses a solid outline)."""
-    def draw(p):
-        p.setBrush(QtCore.Qt.NoBrush)
-        p.drawRoundedRect(QtCore.QRectF(2.5, 2.5, 13, 13), 1.5, 1.5)
-        p.setBrush(QtGui.QBrush(_PEN_COLOR))
-        for x, y in ((6, 11.5), (9.5, 6), (13, 10)):
-            p.drawEllipse(QtCore.QPointF(x, y), 1.4, 1.4)
-    return _make_icon(draw)
-
-
-def data_cursor_icon():
-    """Data Cursor: a crosshair readout marker."""
-    def draw(p):
-        p.drawLine(QtCore.QPointF(9, 2), QtCore.QPointF(9, 6))
-        p.drawLine(QtCore.QPointF(9, 12), QtCore.QPointF(9, 16))
-        p.drawLine(QtCore.QPointF(2, 9), QtCore.QPointF(6, 9))
-        p.drawLine(QtCore.QPointF(12, 9), QtCore.QPointF(16, 9))
-        p.setBrush(QtGui.QBrush(_PEN_COLOR))
-        p.drawEllipse(QtCore.QPointF(9, 9), 2.2, 2.2)
-    return _make_icon(draw)
-
-
-def legend_icon():
-    """Toggle Legend: a small box containing two swatch+line entries."""
-    def draw(p):
-        p.drawRoundedRect(QtCore.QRectF(2.5, 3.5, 13, 11), 1.5, 1.5)
-        p.setBrush(QtGui.QBrush(_PEN_COLOR))
-        p.drawRect(QtCore.QRectF(4.5, 6.5, 2.5, 2.5))
-        p.drawRect(QtCore.QRectF(4.5, 10.5, 2.5, 2.5))
-        p.drawLine(QtCore.QPointF(8.5, 7.7), QtCore.QPointF(14, 7.7))
-        p.drawLine(QtCore.QPointF(8.5, 11.7), QtCore.QPointF(14, 11.7))
-    return _make_icon(draw)
-
-
-def text_box_icon():
-    """X/Y axis label menu: a 'T' inside an outlined box, drawn with
-    plain lines rather than QPainter.drawText -- text didn't render at
-    all under an offscreen/fontless Qt platform during this file's own
-    render-and-check pass, and plain lines also avoid any font/DPI
-    dependency across the Windows/Ubuntu platforms this ships on."""
-    def draw(p):
-        p.setBrush(QtCore.Qt.NoBrush)
-        p.drawRoundedRect(QtCore.QRectF(2.5, 2.5, 13, 13), 1.5, 1.5)
-        pen = QtGui.QPen(_PEN_COLOR, 2.0)
-        pen.setCapStyle(QtCore.Qt.FlatCap)
-        p.setPen(pen)
-        p.drawLine(QtCore.QPointF(6, 6.5), QtCore.QPointF(12, 6.5))
-        p.drawLine(QtCore.QPointF(9, 6.5), QtCore.QPointF(9, 12.5))
-    return _make_icon(draw)
-
-
-def link_icon():
-    """Link X: two overlapping chain-link rings (thicker pen, non-rounded
-    ellipses -- the rounded-rect version merged into one blob at 18px,
-    see this file's own render-and-check pass)."""
-    def draw(p):
-        p.setPen(QtGui.QPen(_PEN_COLOR, 2.0))
-        p.setBrush(QtCore.Qt.NoBrush)
-        p.save()
-        p.translate(6.5, 6.5)
-        p.rotate(-40)
-        p.drawEllipse(QtCore.QRectF(-3.6, -2.3, 7.2, 4.6))
-        p.restore()
-        p.save()
-        p.translate(11.5, 11.5)
-        p.rotate(-40)
-        p.drawEllipse(QtCore.QRectF(-3.6, -2.3, 7.2, 4.6))
-        p.restore()
-    return _make_icon(draw)
-
-
-def pencil_icon():
-    """Place a shape (Annotate dropdown): a pencil, built the same
-    rotate/translate way as link_icon -- hand-picked polygon points for
-    a diagonal pencil rendered as a single near-invisible line, see this
-    file's own render-and-check pass."""
-    def draw(p):
-        p.setBrush(QtGui.QBrush(_PEN_COLOR))
-        p.save()
-        p.translate(9, 9)
-        p.rotate(-45)
-        # Shaft, then a triangular tip just past the shaft's end.
-        p.drawRect(QtCore.QRectF(-7.5, -1.6, 11, 3.2))
-        p.drawPolygon(QtGui.QPolygonF([
-            QtCore.QPointF(3.5, -1.6), QtCore.QPointF(3.5, 1.6), QtCore.QPointF(7.5, 0),
-        ]))
-        p.setBrush(QtCore.Qt.NoBrush)
-        p.drawRect(QtCore.QRectF(-7.5, -1.6, 2.2, 3.2))
-        p.restore()
     return _make_icon(draw)
 
 

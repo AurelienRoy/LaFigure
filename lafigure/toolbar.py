@@ -152,15 +152,15 @@ class ToolbarMixin:
         self.redo_action.setEnabled(False)
 
         tb.addSeparator()
-        menu_button(ti.pencil_icon(), "Place a shape on the figure", [
+        menu_button("tool_annotations.png", "Place a shape on the figure", [
             (SHAPE_LABELS[kind], lambda checked=False, kind=kind: self.start_placing_annotation(kind))
             for kind in SHAPE_KINDS if kind != 'cursor'
         ])
 
-        action("Toggle Legend", self.toggle_legend, icon=ti.legend_icon(),
+        action("Toggle Legend", self.toggle_legend, icon="tool_legend.png",
                tooltip="Show or hide the legend")
 
-        menu_button(ti.text_box_icon(), "Edit the X or Y axis label", [
+        menu_button("tool_xylabels.png", "Edit the X or Y axis label", [
             ("X Label", lambda: self.set_axis_label('bottom')),
             ("Y Label", lambda: self.set_axis_label('left')),
         ])
@@ -169,7 +169,7 @@ class ToolbarMixin:
         # their exclusive group below, so picking one unchecks the other.
         self.brush_action = action(
             "Brush", lambda checked: self.set_interaction_mode('brush'), checkable=True,
-            icon=ti.data_brush_icon(),
+            icon="tool_brush.png",
             tooltip="Drag a rectangle to select points for editing",
         )
         self.hide_points_action = action(
@@ -191,12 +191,12 @@ class ToolbarMixin:
         )
         self.hand_action = action(
             "Hand", lambda checked: self.set_interaction_mode('hand'), checkable=True,
-            icon=ti.hand_icon(),
+            icon="tool_pan.png",
             tooltip="Pan or zoom the subplot under the cursor",
         )
         self.zoom_action = action(
             "Zoom Rect", lambda checked: self.set_interaction_mode('zoom'), checkable=True,
-            icon=ti.zoom_in_icon(),
+            icon="tool_zoom.png",
             tooltip="Drag a rectangle to zoom in",
         )
         self.rotate_action = action(
@@ -210,7 +210,7 @@ class ToolbarMixin:
         # adds a new one instead) -- see annotation_ops._handle_cursor_mode_click.
         self.cursor_action = action(
             "Data Cursor", lambda checked: self.set_interaction_mode('cursor'), checkable=True,
-            icon=ti.data_cursor_icon(),
+            icon="tool_datacursor.png",
             tooltip="Click to move the subplot's datacursor to the nearest point (Shift = add a new one)",
         )
         mode_group.addAction(self.select_action)
@@ -233,7 +233,7 @@ class ToolbarMixin:
         tb.addSeparator()
         self.link_x_action = action(
             "Link X", self.toggle_link_x, checkable=True,
-            icon=ti.link_icon(), tooltip="Link the X axis across subplots",
+            icon="tool_link_x.png", tooltip="Link the X axis across subplots",
         )
         action("FFT -> subplot below", self.fft_below, icon=ti.fft_icon(),
                tooltip="Plot the FFT of the selected curve below")

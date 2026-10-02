@@ -13,5 +13,8 @@ count_python_lines.bat
 # Icons present on disk but not cleared for redistribution (see icons/README.md)
 /icons/nonpublished-icons/
 
+# Paint.NET source files for the new toolbar icons -- not needed to run/ship the app
+/icons/images_pdn/
+
 # Unrelated content living inside this working directory, not part of this project
 /engineering-method-with-claude/
