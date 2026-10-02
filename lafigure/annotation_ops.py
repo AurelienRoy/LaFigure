@@ -559,6 +559,13 @@ class AnnotationOpsMixin:
         if anchor == 'border' and parent_plot is not None:
             ann.anchor_offset = self._box_fraction(parent_plot, p0)
         self._add_annotation_to_scene(ann, p0)
+        if kind == 'cursor' and p1_local is None:
+            # The default marker->label offset (AnnotationItem.__init__)
+            # is a fixed up-and-right screen direction, which can land
+            # the label outside the subplot near an edge -- only decidable
+            # once the item is actually positioned in its subplot, hence
+            # after _add_annotation_to_scene rather than inside __init__.
+            ann.fit_cursor_label_onscreen()
         self._select_annotation(ann)
         self._track_last_cursor(ann)
 
@@ -598,9 +605,16 @@ class AnnotationOpsMixin:
         it's the source of truth for where a border annotation sits, not
         `local_pos` (which _reposition_annotations can't reliably supply
         after a subplot has been resized/moved, or when landing in a
-        differently-sized subplot via paste)."""
+        differently-sized subplot via paste).
+
+        `ignoreBounds=True` on an 'axes' annotation: without it, pyqtgraph's
+        ViewBox.childrenBounds() folds a plain QGraphicsItem's boundingRect()
+        (padded, and -- for 'cursor' -- offset off to one side) straight into
+        auto-range, so merely placing an annotation nudges or jumps the
+        subplot's own view range while autorange is still on. An annotation
+        is a view decoration, not data; it must never drive the camera."""
         if ann.anchor == 'axes':
-            ann.parent_plot.addItem(ann)
+            ann.parent_plot.addItem(ann, ignoreBounds=True)
             ann.setPos(local_pos)
         else:
             self.layout_widget.scene().addItem(ann)

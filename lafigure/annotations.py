@@ -280,6 +280,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
     HANDLE_SIZE = 8
     ROTATE_OFFSET = 34  # constant on-screen px above the shape's center, pre-rotation
     SHIFT_SNAP_DEG = 45  # LibreOffice-Draw-style constraint step while Shift is held
+    CURSOR_DEFAULT_DX_PX = 60  # 'cursor': default marker->label offset, right on screen
+    CURSOR_DEFAULT_DY_PX = 40  # 'cursor': default marker->label offset, up on screen
 
     def __init__(self, figure, kind, anchor, parent_plot, pen, brush=None, text='', point_ref=None,
                  head_length=None, head_width=None, head_type=None):
@@ -336,7 +338,8 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         if has_extent:
             self.p1_local = QtCore.QPointF(self._px_to_local(60), self._px_to_local(40))
         elif kind == 'cursor':
-            self.p1_local = QtCore.QPointF(self._px_to_local(60), self._px_to_local(-40))
+            self.p1_local = QtCore.QPointF(self._px_to_local(self.CURSOR_DEFAULT_DX_PX),
+                                            self._px_to_local(-self.CURSOR_DEFAULT_DY_PX))
         else:
             self.p1_local = None
 
@@ -678,6 +681,50 @@ class AnnotationItem(QtWidgets.QGraphicsObject):
         box = metrics.boundingRect(label).adjusted(-4, -2, 4, 2)
         box.moveCenter(device_center)
         return box
+
+    def fit_cursor_label_onscreen(self):
+        """Pick a freshly-placed datacursor's marker->label offset so the
+        label's own bubble lands fully inside its subplot's visible data
+        area, instead of always the fixed up-and-right-on-screen default
+        set in __init__ -- which can push the label outside the subplot,
+        and so off-screen/invisible, since a ViewBox clips its
+        'axes'-anchored children (see CLAUDE.md bug #21), whenever the
+        marker itself sits near that subplot's top or right edge. Tries
+        the default direction on each axis first (so the common case --
+        room on all sides -- looks exactly as before) and only flips an
+        axis if the flip actually fits better; computed in SCENE space
+        per the lafigure-axes-geometry skill (never compared to a
+        subplot's rect in local/data space, which isn't the same scale
+        on a non-1:1 subplot), then mapped back through this item's real
+        transform (_scene_vec_to_parent) rather than _px_to_local's own
+        simplistic average scale -- needed here since this picks a
+        *direction*, not just a magnitude. No-op for anything but
+        'cursor', or if the item isn't parented into a subplot yet."""
+        if self.kind != 'cursor':
+            return
+        vb = self.parent_plot.getViewBox() if self.parent_plot is not None else None
+        if vb is None:
+            return
+        rect = vb.sceneBoundingRect()
+        marker = self.mapToScene(QtCore.QPointF(0, 0))
+        label = self._cursor_label()
+        half_w = half_h = 0.0
+        if label:
+            bubble = self._cursor_bubble_device_rect(label, QtCore.QPointF(0, 0))
+            half_w, half_h = bubble.width() / 2, bubble.height() / 2
+
+        def fits(center, half_extent, lo, hi):
+            return center - half_extent >= lo and center + half_extent <= hi
+
+        dx = self.CURSOR_DEFAULT_DX_PX
+        if not fits(marker.x() + dx, half_w, rect.left(), rect.right()) and \
+                fits(marker.x() - dx, half_w, rect.left(), rect.right()):
+            dx = -dx
+        dy = -self.CURSOR_DEFAULT_DY_PX
+        if not fits(marker.y() + dy, half_h, rect.top(), rect.bottom()) and \
+                fits(marker.y() - dy, half_h, rect.top(), rect.bottom()):
+            dy = -dy
+        self.p1_local = self._scene_vec_to_parent(QtCore.QPointF(dx, dy))
 
     @staticmethod
     def _unit(vec, fallback):

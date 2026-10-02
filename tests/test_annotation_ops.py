@@ -1184,3 +1184,31 @@ def test_successful_placement_does_not_also_log_a_spurious_cancellation():
     assert not cancels, handler.messages
     f.close()
     f.close()
+
+
+def test_placing_an_axes_annotation_does_not_change_the_subplots_view_range():
+    """An annotation is a view decoration, not data -- adding one must
+    never nudge or jump the subplot's own auto-range (reported live: the
+    first datacursor placed near a subplot's edge visibly changed its Y
+    limits). Root cause: pyqtgraph's ViewBox.childrenBounds() folds a
+    plain QGraphicsItem's (padded) boundingRect() into auto-range unless
+    the item is added with ignoreBounds=True -- _add_annotation_to_scene
+    now passes it for every 'axes'-anchored annotation, not just 'cursor'.
+    Placed deliberately near a corner (where the datacursor's own label
+    offset reaches furthest) since that's where the old bug was worst."""
+    f = shown_figure()
+    p1 = f.plots[0]
+    vb = p1.getViewBox()
+    for _ in range(5):
+        app.processEvents()
+    before = vb.viewRange()
+
+    rect = vb.sceneBoundingRect()
+    corner_scene = QtCore.QPointF(rect.right() - 5, rect.top() + 5)
+    p0 = vb.mapSceneToView(corner_scene)
+    f._create_annotation('cursor', 'axes', p1, p0, None, text='1.234567')
+    for _ in range(3):
+        app.processEvents()
+
+    assert vb.viewRange() == before
+    f.close()

@@ -519,3 +519,49 @@ def test_add_new_datacursor_menu_action_creates_a_second_one_offset_nearby():
     cursors = [a for a in f.annotations if a.kind == 'cursor']
     assert len(cursors) == 2
     f.close()
+
+
+# -- label kept inside the subplot on creation -------------------------------
+
+def test_new_cursor_label_lands_inside_the_subplot_near_every_corner():
+    """A datacursor placed near a subplot's edge used to always point its
+    label up-and-right on screen (the kind's fixed __init__ default),
+    which can land it outside the subplot -- invisible, since a ViewBox
+    clips its 'axes'-anchored children (CLAUDE.md bug #21) -- for a point
+    close enough to the top or right edge. fit_cursor_label_onscreen
+    (wired into _create_annotation) should flip the offset toward
+    whichever side has room instead, for every corner."""
+    f, (ax,) = _figure()
+    ax.plot_item.getViewBox().setRange(xRange=(0, 10), yRange=(-1, 1), padding=0)
+    app.processEvents()
+    vb = ax.plot_item.getViewBox()
+    rect = vb.sceneBoundingRect()
+    margin = 5
+    corners = {
+        'top-right': QtCore.QPointF(rect.right() - margin, rect.top() + margin),
+        'top-left': QtCore.QPointF(rect.left() + margin, rect.top() + margin),
+        'bottom-right': QtCore.QPointF(rect.right() - margin, rect.bottom() - margin),
+        'bottom-left': QtCore.QPointF(rect.left() + margin, rect.bottom() - margin),
+    }
+    for name, scene_pt in corners.items():
+        p0 = vb.mapSceneToView(scene_pt)
+        ann = f._create_annotation('cursor', 'axes', ax.plot_item, p0, None, text="1.234")
+        label_scene = ann.mapToScene(ann.p1_local)
+        assert rect.adjusted(-2, -2, 2, 2).contains(label_scene), \
+            f"{name}: label landed outside the subplot at {label_scene}"
+    f.close()
+
+
+def test_new_cursor_label_keeps_default_direction_when_there_is_room():
+    """Away from any edge, the label still goes up-and-right exactly as
+    before -- the fit only kicks in once the default would actually land
+    outside the subplot."""
+    f, (ax,) = _figure()
+    ax.plot_item.getViewBox().setRange(xRange=(0, 10), yRange=(-1, 1), padding=0)
+    app.processEvents()
+    vb = ax.plot_item.getViewBox()
+    p0 = vb.mapSceneToView(vb.sceneBoundingRect().center())
+    ann = f._create_annotation('cursor', 'axes', ax.plot_item, p0, None, text="x")
+    assert ann.p1_local.x() > 0
+    assert ann.mapToScene(ann.p1_local).y() < ann.mapToScene(QtCore.QPointF(0, 0)).y()
+    f.close()

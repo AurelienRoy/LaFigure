@@ -1008,6 +1008,29 @@ the actual code — this list is a summary, not a substitute for checking.
         on a 3D cell, the pre-existing `_nearest_3d_point` (already
         cross-curve). `_track_last_cursor`/`_purge_annotation` keep the
         map correct across undo/redo of a create or delete.
+      - **A new datacursor's label stays inside its subplot** (fixed
+        2026-10-02): the kind's default marker->label offset
+        (`AnnotationItem.__init__`, `CURSOR_DEFAULT_DX_PX`/
+        `CURSOR_DEFAULT_DY_PX`, previously inlined as `60`/`40`) always
+        pointed up-and-right on screen, which could place the label
+        outside the subplot's data area — invisible, since a ViewBox
+        clips its `'axes'`-anchored children (see bug #21) — for a
+        point created near that subplot's top or right edge.
+        `AnnotationItem.fit_cursor_label_onscreen()`, called from
+        `_create_annotation` right after the new annotation is
+        positioned in its subplot (needs real scene geometry, so it
+        can't run inside `__init__` itself), flips each axis of the
+        offset toward whichever side of the subplot's own
+        `getViewBox().sceneBoundingRect()` still has room for the
+        label's actual bubble size (`_cursor_bubble_device_rect`),
+        computed in SCENE space and mapped back via
+        `_scene_vec_to_parent` — not `_px_to_local`'s own simplistic
+        average scale, since this picks a *direction*, not just a
+        magnitude (see the `lafigure-axes-geometry` skill). The common
+        case (room on every side) keeps the exact same up-right look as
+        before. `tests/test_datacursor.py`'s
+        `test_new_cursor_label_lands_inside_the_subplot_near_every_corner`/
+        `test_new_cursor_label_keeps_default_direction_when_there_is_room`.
       - **Datacursors are a distinct kind with special-cased UI**
         (`annotations.py`'s `AnnotationItem`, `kind == 'cursor'`), all
         working in **both** Select mode and Data Cursor mode (the
@@ -2721,6 +2744,43 @@ on Windows it has no effect at all unless paired with
 `DontUseNativeDialog`. Any current or future `QColorDialog.getColor()`
 call that needs the user to actually set a non-opaque color must pass
 both flags together, never `ShowAlphaChannel` alone.
+
+### 30. Adding ANY 'axes'-anchored annotation nudged or jumped its subplot's own view range
+**Symptom (reported live, 2026-10-02):** placing the very first datacursor
+on a subplot visibly changed that subplot's Y (and X) view limits —
+reported right after the datacursor label-placement fix above, but not
+caused by it; the same thing happens for any annotation kind placed with
+`anchor='axes'` while the subplot's autorange is still on, the cursor
+case just made it easy to notice (bug #29 above fixed the same day).
+
+**Root cause:** `_add_annotation_to_scene` (`annotation_ops.py`) added an
+`'axes'`-anchored annotation via `parent_plot.addItem(ann)` with no
+`ignoreBounds` argument — pyqtgraph's own default is `ignoreBounds=False`,
+which appends the item to `ViewBox.addedItems`. `ViewBox.childrenBounds()`
+(what `updateAutoRange()` uses whenever autorange is still enabled) has no
+special case for `AnnotationItem` — it isn't a pyqtgraph `GraphicsItem`
+with a `dataBounds()` method, so it falls into the generic branch that
+folds the item's own (20px-padded, and for `'cursor'` offset off to one
+side) `boundingRect()` straight into the auto-range computation, same as
+if it were real plotted data. Confirmed live: reproduced reliably by
+settling a subplot's autorange first (a single `processEvents()` isn't
+enough — autorange itself takes a couple of passes to fully settle, a
+trap in testing this that's worth knowing about on its own), then adding
+a `'cursor'` annotation near a corner — Y range visibly widened to include
+the label's position; adding `ignoreBounds=True` made it disappear.
+
+**Fix:** `ann.parent_plot.addItem(ann, ignoreBounds=True)` for every
+`'axes'`-anchored annotation, not just `'cursor'` — an annotation is a
+view decoration, never data, and must never drive the camera.
+
+**Lesson:** any plain `QGraphicsItem` added to a pyqtgraph `ViewBox` via
+`addItem()` counts toward that view's auto-range by default, even if it
+has nothing to do with data — `ignoreBounds=True` isn't an optional
+nicety, it's required for any decorative item unless you explicitly want
+it to count as data for ranging purposes. And when reproducing/testing
+anything involving pyqtgraph autorange, give it a few `processEvents()`
+passes to settle before taking a "before" snapshot, or an unrelated
+settling drift gets misread as the bug under test.
 
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 
