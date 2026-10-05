@@ -29,6 +29,7 @@ coordinator alongside GroupsMixin, since both landed as diffs against
 figure.py in the same wave); tests here just use LaFigure directly.
 """
 import numpy as np
+from pyqtgraph.Qt import QtCore, QtGui, QtTest, QtWidgets
 
 from lafigure.console import (
     ConsoleMixin, RowAccessor, datatip_text, watch_source, refresh_series_for_source,
@@ -73,6 +74,38 @@ def test_console_dock_creates_shows_and_hides_without_error():
     assert f._console_dock.isVisible()
     f.toggle_console(checked=False)
     assert not f._console_dock.isVisible()
+
+
+def test_ctrl_c_in_console_output_copies_text_not_the_figures_copy_shortcut():
+    """Regression test: toolbar.py's window-wide Ctrl+C QShortcut
+    (copy_selection, bound to curve/subplot copy) used to win over the
+    console output's own native copy, because QTextEdit never claims the
+    ShortcutOverride event for Ctrl+C (confirmed empirically -- see
+    console.py's _OutputCopyOverride docstring). Driven through a real
+    QTest.keyClick, not a direct method call -- that dispatch-order gap is
+    invisible to a direct call."""
+    f = m.LaFigure(empty=True)
+    f.show()
+    QtWidgets.QApplication.setActiveWindow(f)
+    f.activateWindow()
+    app.processEvents()
+    f.toggle_console()
+    out = f._console_widget.output
+    out.insertPlainText("hello world\nsecond line\n")
+
+    out.setFocus()
+    app.processEvents()
+    cursor = out.textCursor()
+    cursor.select(QtGui.QTextCursor.Document)
+    out.setTextCursor(cursor)
+    app.processEvents()
+
+    QtWidgets.QApplication.clipboard().clear()
+    QtTest.QTest.keyClick(out, QtCore.Qt.Key_C, QtCore.Qt.ControlModifier)
+    app.processEvents()
+
+    assert "hello world" in QtWidgets.QApplication.clipboard().text()
+    assert "second line" in QtWidgets.QApplication.clipboard().text()
 
 
 def test_console_namespace_has_working_fig_gca_gcf_np():

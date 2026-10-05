@@ -2920,6 +2920,57 @@ invisible testing the new code in isolation and only surfaced once the
 full suite's cross-test state was in play — run the full suite, not just
 the new test file, before trusting a pass.
 
+### 32. `QTextEdit` never claims the `ShortcutOverride` event for Ctrl+C, so a window-wide `QShortcut` for the same key sequence wins instead
+**Symptom (reported live, 2026-10-04):** Ctrl+C with text selected in the
+embedded console's output pane (`console.py`'s read-only `QTextEdit`) did
+nothing useful — no text reached the clipboard.
+
+**Root cause:** `toolbar.py` registers `QShortcut(QKeySequence.Copy, self,
+activated=self.copy_selection)` on the whole window (default context
+`Qt.WindowShortcut` — fires regardless of which descendant has focus). Qt
+resolves a key press that matches a registered shortcut by first sending
+a `QEvent.ShortcutOverride` to the focused widget (and up its parent
+chain): any widget along that chain may `accept()` it to claim the key for
+itself instead, which is exactly how `QLineEdit` lets its own Ctrl+C
+(and Cut/Paste/Undo/Redo/SelectAll) win over a competing `QShortcut` —
+confirmed empirically with a bare `QLineEdit`. `QTextEdit`, including in
+read-only mode, does **not** accept that event for Copy in this Qt build
+(confirmed empirically too, both via a direct `event()` call and via a
+real `QTest.keyClick` traced through an app-wide event filter — the
+override event propagated all the way up to the `LaFigure` window
+unaccepted every time). With no claim anywhere in the chain, Qt's
+`QShortcutMap` fires the registered `QShortcut` instead of ever
+delivering a normal `KeyPress` to the text edit — so Ctrl+C ran
+`copy_selection` (the figure's own curve/subplot copy, a harmless no-op
+with nothing selected there) instead of copying the console's selected
+text. `out.copy()` called directly, and a bare `QTextEdit` with no
+competing shortcut registered anywhere in the app, both worked fine —
+proving the text-selection/clipboard mechanism itself was never the
+problem, only which code got to run for that one key combination.
+
+**Fix:** `console.py`'s `_OutputCopyOverride`, a small `QObject` installed
+via `output.installEventFilter(...)` in `_ensure_console_dock`: it watches
+for `QEvent.ShortcutOverride` events matching `QKeySequence.Copy` and
+`accept()`s them itself, returning `True` to stop that specific event
+there. The window's `QShortcut` then sees the key as already claimed and
+doesn't fire; Qt still delivers the separate, following `KeyPress` event
+to the `QTextEdit` normally (that event isn't touched by the filter),
+which performs the copy correctly through its own built-in handling.
+
+**Lesson:** don't assume every Qt widget overrides the standard editing
+shortcuts the same way — verify empirically per widget class (`QLineEdit`
+does for Copy in this Qt build, `QTextEdit`/`QPlainTextEdit` doesn't),
+the same family as bug #7/#8/#16/#27's "an object's behavior doesn't mean
+what its class or a sibling class's behavior would suggest." And this is
+only observable with a real `QTest.keyClick` dispatched to the actual
+focused widget, never a direct call to `.copy()` or to `event()` in
+isolation — both of those bypass the exact shortcut-resolution order that
+the bug lives in (CLAUDE.md's own recurring theme, items 7/11/14/19/22/31).
+Any other read-only/non-editable rich-text display added to this app later
+(not just the console) that sits inside a window with competing
+`QShortcut`/`QAction` bindings for Copy needs the same override installed
+on it, not just on `console.py`'s one `QTextEdit`.
+
 ### 33. `QWidget.grab()` on a GL-backed GraphicsView viewport comes back blank -- the exported PNG was just the baked header over the plain background
 **Symptom (reported live, 2026-10-04):** the Save dialog's preview, and
 the saved .png itself, were entirely flat/gray except for the baked

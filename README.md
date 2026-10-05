@@ -50,9 +50,41 @@ fig.show()
 app.exec()
 ```
 
-More runnable examples — series kinds, annotations, linked brushing, 3D scenes,
-interactive controls, copy/paste across figures — are in [`examples/`](examples/).
-Run any of them directly: `python examples/series_kinds_gallery.py`.
+## Examples
+
+More runnable examples are in [`examples/`](examples/). Each one is self-contained
+(it adds the repo root to `sys.path` itself, since `lafigure` isn't pip-installed
+as a prerequisite) — run any of them directly from anywhere with `python
+examples/<name>.py`:
+
+- **`series_kinds_gallery.py`** — a visual gallery of every plot kind the library
+  ships (line, bar, scatter, polar, quiver, surface, ...), spread across three
+  figure windows.
+- **`line_signal_annotations.py`** — a single line plot with a legend and three
+  annotations (text+arrow, data cursor, rectangle) placed from code.
+- **`linked_brushing_scatter.py`** — two scatter plots and a histogram sharing one
+  `DataSource`; drag a brush rectangle over either scatter to see the same rows
+  highlight across all three.
+- **`three_d_scene.py`** — a point cloud, a trajectory, and a height field in three
+  3D subplots, showing that move/resize/select/undo all work the same as on a 2D
+  subplot.
+- **`interactive_controls.py`** — a scatter plot cross-filtered live by a slider
+  and a checkbox in a separate control-panel window, with a reactive row-count
+  table.
+- **`groups_and_style.py`** — grouping related curves and recoloring a whole group
+  at once with the built-in "raw/filtered" and "sensor family" color presets.
+- **`copy_paste_across_figures.py`** — opens two separate figure windows and
+  copies a whole subplot, then a single curve, from one into the other through
+  the shared clipboard.
+- **`custom_datatip_example.py`** — customizing a data cursor's text via
+  `ax.datatip`, as both a format string and a Python callable, including on a 3D
+  curve.
+- **`image_processing_with_controls_example.py`** — a procedural grayscale image
+  edited live by sliders/a colormap dropdown/an invert checkbox, every edit
+  undoable (Ctrl+Z) back to the original.
+- **`accelerometer_thermal_bias_example.py`** — a synthetic IMU dataset (a
+  temperature-biased accelerometer driven by a heater's PWM schedule) across five
+  linked subplots, demonstrating linked brushing on a realistic sensor scenario.
 
 ## Running the tests
 

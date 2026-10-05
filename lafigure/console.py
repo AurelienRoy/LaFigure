@@ -47,7 +47,7 @@ import weakref
 
 import numpy as np
 import pyqtgraph.console
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from .axes import Axes, gca, gcf
 from .registry import get_registry
@@ -191,6 +191,28 @@ def refresh_series_for_source(source):
 
 
 # -- the console panel ---------------------------------------------------
+class _OutputCopyOverride(QtCore.QObject):
+    """QTextEdit -- unlike QLineEdit -- never claims the ShortcutOverride
+    event for Ctrl+C (confirmed empirically against the installed PyQt5/Qt
+    build; a known Qt quirk, not specific to this project). With no claim,
+    toolbar.py's own window-wide `QShortcut(QKeySequence.Copy, ...,
+    activated=self.copy_selection)` fires instead whenever the console
+    output has focus -- so Ctrl+C silently ran the figure's curve/subplot
+    copy (a harmless no-op with nothing selected there) instead of copying
+    the selected console text. Installed on the output QTextEdit only
+    (`_ensure_console_dock` below); claims the override itself so Qt
+    delivers the real KeyPress next, which QTextEdit's own handling then
+    copies correctly -- verified against a real QTest.keyClick, not a
+    direct method call (CLAUDE.md's own recurring lesson that this class
+    of dispatch-order bug only shows up through a real Qt event)."""
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.ShortcutOverride and event.matches(QtGui.QKeySequence.Copy):
+            event.accept()
+            return True
+        return False
+
+
 class ConsoleMixin:
     """Adds an embedded Python console panel. See the module docstring for
     why this isn't mixed into LaFigure from this file."""
@@ -212,6 +234,8 @@ class ConsoleMixin:
         dock.visibilityChanged.connect(self._on_console_visibility_changed)
         self._console_dock = dock
         self._console_widget = widget
+        self._console_output_copy_override = _OutputCopyOverride(widget)
+        widget.output.installEventFilter(self._console_output_copy_override)
         return dock
 
     def _on_console_visibility_changed(self, visible):
