@@ -2920,6 +2920,58 @@ invisible testing the new code in isolation and only surfaced once the
 full suite's cross-test state was in play — run the full suite, not just
 the new test file, before trusting a pass.
 
+### 33. `QWidget.grab()` on a GL-backed GraphicsView viewport comes back blank -- the exported PNG was just the baked header over the plain background
+**Symptom (reported live, 2026-10-04):** the Save dialog's preview, and
+the saved .png itself, were entirely flat/gray except for the baked
+header text -- every curve, axis, title and legend was missing.
+
+**Root cause:** `export.py`'s `_grab_figure_pixmap` called
+`figure.layout_widget.grab()`. This app's shipped default
+(`pg.setConfigOptions(useOpenGL=True)`, `figure.py`) makes the
+`GraphicsView`'s viewport GL-backed, and `PlotCurveItem.paint()` takes a
+different branch for that -- `isinstance(widget, OpenGLHelpers.
+GraphicsViewGLWidget)` -- wrapping its real drawing in `p.
+beginNativePainting()`/`paintGL(widget)` (the native-GL path bug #27
+already identified as behaving differently from the ordinary `QPainter`
+path). `QWidget.grab()` renders the widget off-screen via `render()`;
+content a child paints through `beginNativePainting()`'s native GL calls
+never reaches that off-screen composite, so the grab came back with
+nothing but whatever was drawn through ordinary `QPainter` calls (which,
+for a GL-mode curve, is none of it) -- same invisible-until-you-actually-
+look-at-the-render-path family as bug #27, just hitting `grab()` instead
+of a transparent pen. Never caught by the test suite because every test
+forces `useOpenGL=False` (`tests/helpers.py`, item 10's own note on why).
+
+**Fix:** `_grab_figure_pixmap` now renders the scene directly --
+`widget.scene().render(painter, target_rect, source_rect)` -- instead of
+grabbing the widget, mirroring pyqtgraph's own `ImageExporter`
+(`exporters/Exporter.py`'s `getSourceRect`/`getTargetRect`: `source_rect
+= widget.viewportTransform().inverted()[0].mapRect(target_rect)`, both
+derived from `widget.rect()`). `QGraphicsScene.render()` paints every
+item with `widget=None`, so `PlotCurveItem.paint()` never takes the
+native-GL branch and falls back to its ordinary `QPainter` drawing --
+exactly how pyqtgraph's own exporters avoid this trap already. Verified
+live (not just under the offscreen suite, which can't reproduce the GL
+branch at all -- item 10): a real GL-backed figure now exports with every
+curve/axis/title/legend intact. A new regression test,
+`test_grabbed_pixmap_actually_contains_the_plotted_curves`
+(`tests/test_export.py`), checks the grabbed pixmap has more than one
+distinct sampled color -- it can't exercise the GL branch itself under
+`useOpenGL=False`, but it does pin down that the scene's actual content,
+not just its background, ends up in the pixmap.
+
+**Lesson:** `QWidget.grab()`/`.render()` cannot be trusted to capture
+content a child item paints through `beginNativePainting()` -- any
+off-screen "grab this widget" code path in this app (export, thumbnails,
+a future screenshot feature) must render the *scene* directly via
+`QGraphicsScene.render(painter, ...)`, never the view widget, whenever
+`useOpenGL=True` is in play. And once more: this was invisible to the
+whole offscreen test suite (item 10/24/27's running theme) -- a GL-mode
+rendering bug needs a real GL context to even reproduce, so treat "passes
+the suite" as no signal at all for this class of bug; verify by actually
+running the real app, or writing a throwaway script against a real
+(non-offscreen) Qt session, as was done here.
+
 ## The one thing to internalize before touching this kind of code — historical (until WP-A, 2026-09-28)
 
 **This section described the codebase from the original single-file POC

@@ -242,10 +242,33 @@ def _restore_selection_chrome(figure):
 
 
 def _grab_figure_pixmap(figure):
+    """Render the figure into a QPixmap via QGraphicsScene.render(), not
+    QWidget.grab(). grab() paints through the view's real viewport, and
+    this app's shipped default (`pg.setConfigOptions(useOpenGL=True)`,
+    figure.py) makes that viewport GL-backed; PlotCurveItem.paint() then
+    takes its native paintGL() branch (gated on `isinstance(widget,
+    OpenGLHelpers.GraphicsViewGLWidget)`), whose content never reaches an
+    off-screen grab -- the exported pixmap came back a blank background
+    with nothing but whatever was painted directly onto it afterward (the
+    header text). scene.render(painter, ...) paints every item with
+    widget=None, so that branch is never taken and curves fall back to
+    their ordinary QPainter drawing -- the same technique pyqtgraph's own
+    ImageExporter uses (exporters/Exporter.py's getSourceRect/
+    getTargetRect, mirrored below) to avoid the same trap."""
     widget = getattr(figure, 'layout_widget', None) or figure.centralWidget()
     _hide_selection_chrome(figure)
     try:
-        return widget.grab()
+        target_rect = widget.rect()
+        source_rect = widget.viewportTransform().inverted()[0].mapRect(target_rect)
+        pixmap = QtGui.QPixmap(target_rect.size())
+        bg = widget.backgroundBrush()
+        pixmap.fill(bg.color() if bg.style() != QtCore.Qt.NoBrush else QtGui.QColor('white'))
+        painter = QtGui.QPainter(pixmap)
+        try:
+            widget.scene().render(painter, QtCore.QRectF(target_rect), QtCore.QRectF(source_rect))
+        finally:
+            painter.end()
+        return pixmap
     finally:
         _restore_selection_chrome(figure)
 

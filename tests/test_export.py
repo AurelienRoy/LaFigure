@@ -158,6 +158,24 @@ def test_export_png_and_svg_creates_valid_files():
         f.close()
 
 
+def test_grabbed_pixmap_actually_contains_the_plotted_curves():
+    """Regression for the exported PNG coming back blank (just the header
+    text baked over a flat background) -- reported live with the shipped
+    app's real useOpenGL=True viewport, see export.py's
+    _grab_figure_pixmap docstring. Not a true regression test for the GL
+    branch itself (this suite forces useOpenGL=False, tests/helpers.py),
+    but it does pin down that _grab_figure_pixmap renders the scene's
+    actual curves, not just its background."""
+    f = _demo_save_figure()
+    pixmap = export._grab_figure_pixmap(f)
+    img = pixmap.toImage()
+    colors = {img.pixelColor(x, y).rgb()
+              for x in range(0, img.width(), 7)
+              for y in range(0, img.height(), 7)}
+    assert len(colors) > 1
+    f.close()
+
+
 def test_export_underlying_function_directly():
     """The registry function is usable standalone, without any dialog --
     the shape WP-M's HTML branch and any non-GUI caller relies on."""
